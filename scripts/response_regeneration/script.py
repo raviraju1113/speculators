@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+from http import HTTPStatus
 from typing import Any
 
 import aiohttp
@@ -39,8 +40,22 @@ def parse_args():
     )
     parser.add_argument(
         "--endpoint",
-        default="http://127.0.0.1:8000/v1/chat/completions",
-        help="vLLM OpenAI-compatible Chat Completions endpoint",
+        nargs="+",
+        default=["http://127.0.0.1:8000/v1/chat/completions"],
+        help=(
+            "One or more vLLM OpenAI-compatible Chat Completions endpoints. "
+            "Requests are round-robined across all reachable endpoints, so you "
+            "can point at several servers (e.g. one per GPU) for higher "
+            "throughput."
+        ),
+    )
+    parser.add_argument(
+        "--skip-endpoint-validation",
+        action="store_true",
+        help=(
+            "Do not probe endpoints before starting. By default every endpoint "
+            "is health-checked and unreachable ones are dropped."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -148,6 +163,44 @@ async def detect_model(endpoint: str) -> str:
         ) from e
 
 
+async def validate_endpoints(endpoints: list[str]) -> list[str]:
+    """Probe each endpoint's /v1/models and return only the reachable ones."""
+
+    async def probe(endpoint: str) -> tuple[str, bool]:
+        models_endpoint = endpoint.replace("/v1/chat/completions", "/v1/models")
+        timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.get(models_endpoint) as response,
+            ):
+                return endpoint, response.status == HTTPStatus.OK
+        except Exception:  # noqa: BLE001
+            return endpoint, False
+
+    results = await asyncio.gather(*(probe(e) for e in endpoints))
+    reachable = [endpoint for endpoint, ok in results if ok]
+    for endpoint, ok in results:
+        print(f"  [{'ok' if ok else 'skip'}] {endpoint}")
+    if not reachable:
+        raise ValueError("No reachable endpoints. Check your servers and try again.")
+    return reachable
+
+
+async def resolve_endpoints(args) -> list[str]:
+    """Normalize --endpoint to a list and optionally drop unreachable servers."""
+    endpoints = args.endpoint if isinstance(args.endpoint, list) else [args.endpoint]
+    if args.skip_endpoint_validation:
+        print(f"Using {len(endpoints)} endpoint(s) (validation skipped):")
+        for endpoint in endpoints:
+            print(f"  {endpoint}")
+    else:
+        print(f"Validating {len(endpoints)} endpoint(s)...")
+        endpoints = await validate_endpoints(endpoints)
+    print(f"Using {len(endpoints)} endpoint(s): {endpoints}")
+    return endpoints
+
+
 async def worker(
     sem: asyncio.Semaphore,
     session: aiohttp.ClientSession,
@@ -237,12 +290,11 @@ async def main():
     """Main async function to process dataset through vLLM endpoints."""
     args = parse_args()
 
-    endpoint = args.endpoint
-    print(f"Using endpoint: {endpoint}")
+    endpoints = await resolve_endpoints(args)
 
     # Auto-detect model if not specified
     if args.model is None:
-        args.model = await detect_model(endpoint)
+        args.model = await detect_model(endpoints[0])
 
     print(f"Using model: {args.model}")
 
@@ -296,6 +348,8 @@ async def main():
             ) as progress,
         ):
             stats = {"ok": 0, "errors": 0}
+            # Round-robin each worker onto an endpoint so load spreads evenly
+            # across all reachable servers.
             workers = [
                 asyncio.create_task(
                     worker(
@@ -304,12 +358,12 @@ async def main():
                         queue,
                         args,
                         output_file,
-                        endpoint,
+                        endpoints[i % len(endpoints)],
                         progress,
                         stats,
                     )
                 )
-                for _ in range(args.concurrency)
+                for i in range(args.concurrency)
             ]
 
             processed_count = 0

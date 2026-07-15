@@ -215,6 +215,41 @@ select = [
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
+# Gemma 4 MTP trainer (ported near-verbatim): ML / binary-IO code whose
+# conventions differ from the rest of the package. Scoped ignores keep the port
+# faithful (rewriting the cache engine to pathlib/context-managers untested would
+# risk real bugs). All ignored rules are style/convention, not correctness.
+"src/speculators/models/gemma4_mtp/**/*.py" = [
+    "N806", # uppercase tensor-dim locals (B, T, V, H, K, L)
+    "N812", # `import torch.nn.functional as F` (universal PyTorch convention)
+    "S101", # asserts used as cache-integrity guards
+    "S112", # try/except/continue to skip unparseable samples
+    "C901", # inherently complex training/cache functions
+    "PLC0415", # lazy torch imports keep modules import-safe without a GPU
+    "PTH100", "PTH103", "PTH105", "PTH110", "PTH118", "PTH119",
+    "PTH123", "PTH202", "PTH208", # os.path used throughout the cache engine
+    "SIM115", # writer holds file handles open across methods (not a `with`)
+    "SIM113", # manual enumerate index in the shard loop
+    "BLE001", # blind except to skip bad samples / tolerate writer teardown
+    "PLW1508", # env-var default type
+    "PLW2901", # loop-variable reuse
+    "PLR2004", # magic values in struct/byte math
+    "PLC0206", # dict iteration without .items()
+    "ARG001", # `normalizer` kept for recipe signature symmetry (documented)
+]
+"scripts/gemma4_mtp/**/*.py" = [
+    "N806", # uppercase tensor-dim locals (B, T, V, H, K, L)
+    "N817", # `DistributedDataParallel as DDP`
+    "C901", # inherently complex training loop
+    "PLC0415", # lazy torch/transformers imports (import-safe without a GPU)
+    "PTH103", "PTH118", "PTH123", # os.path used for cache/output paths
+    "BLE001", # blind except to skip unparseable samples
+    "ARG001", # unused arg in a lambda collate shim
+    "PLW2901", # loop-variable reuse
+    "PLW1508", # int default for os.environ.get (WORLD_SIZE/RANK)
+    "S112", # try/except/continue to skip unparseable samples
+    "S101", # asserts used as runtime guards
+]
 "tests/**/*.py" = [
     "S101", # asserts allowed in tests
     "ARG", # Unused function args allowed in tests

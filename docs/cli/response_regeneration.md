@@ -79,7 +79,7 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 #### Server Arguments
 
-- **`--endpoint`** (str, default: `http://127.0.0.1:8000/v1/chat/completions`) vLLM chat completions endpoint.
+- **`--endpoint`** (str, one or more, default: `http://127.0.0.1:8000/v1/chat/completions`) vLLM chat completions endpoint(s). Pass several to round-robin requests across multiple servers (e.g. one per GPU) for higher throughput: `--endpoint http://127.0.0.1:8000/v1/chat/completions http://127.0.0.1:8001/v1/chat/completions`. Unreachable endpoints are probed and dropped at startup unless `--skip-endpoint-validation` is set.
 
 - **`--model`** (str, default: `None`) Model name exposed by vLLM. Auto-detected from the server if not specified.
 
