@@ -34,6 +34,8 @@ python scripts/prepare_data.py \
 
   Example: `--data sharegpt --data ./custom_data.jsonl`
 
+  Built-in dataset shortcuts: `sharegpt`, `ultrachat`, `gsm8k`, `sharegpt4v_coco`, and `kimi_mtp` ([`lightseekorg/kimi-mtp-dataset`](https://huggingface.co/datasets/lightseekorg/kimi-mtp-dataset), TorchSpec's ~477k-row Kimi-K2.5 EAGLE3 corpus of text, tool-call, and LLaVA multimodal turns). The multimodal turns reference remote COCO image URLs, so use a multimodal target model to train on them.
+
   The input conversation should be provided in the `conversations` column. Tool-calling datasets that include separate columns for tools are also supported, as demonstrated in [llamafactory/reason-tool-use-demo-1500](https://huggingface.co/datasets/llamafactory/reason-tool-use-demo-1500) and [interstellarninja/hermes_reasoning_tool_use](https://huggingface.co/datasets/interstellarninja/hermes_reasoning_tool_use).
 
 - **`--seq-length`** (int, default: `8192`) Maximum sequence length for each sample. Longer samples will be truncated.

@@ -174,3 +174,5 @@ cython_debug/
 
 # Visual Studio Code
 .vscode/
+# Generated GuideLLM prompt files (see scripts/evaluate/eval_datasets/to_guidellm.py)
+scripts/evaluate/eval_datasets/guidellm/
