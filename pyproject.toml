@@ -263,6 +263,11 @@ select = [
     "SIM105", # explicit try/except/pass over contextlib.suppress
     "B905", # zip() without strict= over fixed-length ABCD
 ]
+# Config-driven experiment orchestrator: launching servers/evals via subprocess
+# is the script's whole purpose; commands come from a user-controlled YAML.
+"scripts/evaluate/experiments/**/*.py" = [
+    "S603", # subprocess launch of vllm serve / eval scripts (intended)
+]
 "tests/**/*.py" = [
     "S101", # asserts allowed in tests
     "ARG", # Unused function args allowed in tests
