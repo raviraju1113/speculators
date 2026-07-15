@@ -250,6 +250,19 @@ select = [
     "S112", # try/except/continue to skip unparseable samples
     "S101", # asserts used as runtime guards
 ]
+# Server MTP/EAGLE eval (migrated): HTTP + Prometheus-scraping eval scripts.
+# Ignored rules are network-robustness / style conventions, not correctness.
+"scripts/evaluate/mtp_server_eval/**/*.py" = [
+    "BLE001", # blind except when scraping /metrics and streaming (network)
+    "PLC0415", # lazy imports of optional deps (pandas, huggingface_hub)
+    "C901", # inherently complex main() eval loop
+    "E741", # ambiguous loop var `l` (option-letter / label)
+    "E501", # long descriptive help/print lines
+    "S112", # try/except/continue to skip a bad LiveCodeBench shard
+    "PLW2901", # loop-variable reuse
+    "SIM105", # explicit try/except/pass over contextlib.suppress
+    "B905", # zip() without strict= over fixed-length ABCD
+]
 "tests/**/*.py" = [
     "S101", # asserts allowed in tests
     "ARG", # Unused function args allowed in tests
