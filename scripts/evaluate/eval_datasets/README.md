@@ -9,8 +9,13 @@ Each `*.jsonl` file stores one benchmark, one row per example, in the format:
 {"turns": ["<user turn 1>", "<user turn 2>", ...]}
 ```
 
-Datasets included: `gsm8k`, `math500`, `aime25`, `humaneval`, `mbpp`,
-`livecodebench`, `mt-bench`, `alpaca`, `arena-hard-v2`.
+Datasets included (mirroring DeepSpec's `eval_datasets/` folder, 12 total):
+
+- DeepSpec's default eval set (its `eval.py` `TASKS`): `gsm8k`, `math500`,
+  `aime25`, `humaneval`, `mbpp`, `livecodebench`, `mt-bench`, `alpaca`,
+  `arena-hard-v2`.
+- Also shipped but not in DeepSpec's default `TASKS`: `aime24`, `lbpp`,
+  `swe-bench`.
 
 ## Using them with `evaluate.py`
 
