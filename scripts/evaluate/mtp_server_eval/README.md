@@ -20,8 +20,15 @@ Only dependency beyond the stdlib is `requests` (plus `pandas` /
   number to compare against a spec-off baseline.**
 - **e2e_tok/s, mean_ttft_s** — end-to-end rate and time-to-first-token, reference.
 
-Benchmarks: **aime**, **gpqa** (GPQA-Diamond), **livecodebench** — prepared
-prompts ship in [`data/`](./data), one `{benchmark,id,prompt}` per line.
+Benchmarks:
+
+- **aime**, **gpqa** (GPQA-Diamond), **livecodebench** — static prompt sets run
+  by `run_eval.sh`; prepared prompts ship in [`data/`](./data), one
+  `{benchmark,id,prompt}` per line.
+- **AgentX** — an agentic **trace-replay load test** ([`run_agentx.sh`](./run_agentx.sh)),
+  a different mode: it replays real Claude-Code traces at fixed concurrency
+  rather than sending prompts from a file. See the [AgentX](#agentx-agentic-trace-replay-load-test)
+  section below.
 
 ## Backends — the one real difference
 
@@ -162,13 +169,73 @@ python prepare_data.py --only livecodebench --lcb-version release_v5
 # otherwise the shipped data/aime.jsonl is used as-is.
 ```
 
+## AgentX (agentic trace-replay load test)
+
+[`run_agentx.sh`](./run_agentx.sh) is the fourth benchmark and a **different mode
+of evaluation**: instead of sending prompts from a file, it drives SemiAnalysis's
+[InferenceX](https://github.com/SemiAnalysisAI/InferenceX) `trace_replay_tester.py`
+to replay real **Claude-Code agentic traces** against your server at a fixed
+concurrency. This measures speculative-decoding value under realistic
+long-context, multi-user load (where acceptance/throughput behave differently
+than at concurrency 1).
+
+Like `run_eval.sh`, it targets a **server you launch yourself** (spec on or off)
+— it does not manage the server. It sweeps one axis, **concurrency**
+(`USERS_LIST`), and reads acceptance off `/metrics` using the same backend split
+(SGLang windowed gauges vs vLLM cumulative counters).
+
+> **Network required:** on first run it clones InferenceX (the trace-replay
+> client) and downloads the traces dataset (`semianalysisai/cc-traces-weka-042026`).
+
+### AgentX settings
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `BACKEND` | `vllm` | `sglang`/`vllm` — acceptance reader |
+| `BASE_URL` | `http://127.0.0.1:8000` | server root |
+| `USERS_LIST` | `1 8 16` | concurrency levels to sweep |
+| `DURATION` | `300` | replay seconds per level (use `1800` for a real run) |
+| `TEMPERATURE` | `0` | greedy for comparable acceptance |
+| `MAX_CONTEXT` | `128000` | drop traces longer than this |
+| `HF_DATASET` | `semianalysisai/cc-traces-weka-042026` | traces dataset |
+| `RESULT_DIR` | `./results/agentx` | output dir |
+| `AGENTX_DIR` / `AGENTX_BRANCH` / `AGENTX_REPO` | `./.agentx/InferenceX`, `chore/agentx-integration`, SemiAnalysis repo | client checkout |
+
+> **Concurrency feasibility:** each request holds its full context in the KV
+> cache, so the server holds only ~`max_total_num_tokens / MAX_CONTEXT` requests
+> at once. Beyond that the cache thrashes and throughput collapses for *every*
+> config — keep `USERS × MAX_CONTEXT` under the pool (or lower `MAX_CONTEXT` to
+> study higher concurrency).
+
+### AgentX recipes
+
+```bash
+# concurrency sweep against a vLLM server
+BACKEND=vllm BASE_URL=http://127.0.0.1:8000 USERS_LIST="1 8 16" ./run_agentx.sh
+
+# a real run: longer replay, against an SGLang server
+BACKEND=sglang BASE_URL=http://127.0.0.1:8080 \
+  USERS_LIST="1 8 16 24" DURATION=1800 ./run_agentx.sh
+
+# baseline vs spec: run twice against the two servers, diff the matrices
+BASE_URL=http://127.0.0.1:8000 RESULT_DIR=./results/agentx_base ./run_agentx.sh
+BASE_URL=http://127.0.0.1:8001 RESULT_DIR=./results/agentx_spec ./run_agentx.sh
+```
+
+Each concurrency level writes `results/agentx/users<N>/result.row`; all levels are
+collected into `results/agentx/matrix.tsv`
+(`users  decode_tok_s  accept_len  accept_rate  out_tok_s`).
+
 ## Output files
 
-Each run writes into `--output-dir` / `RESULT_DIR`:
+Each `run_eval.sh` run writes into `--output-dir` / `RESULT_DIR`:
 
 - `mtp_eval_summary.json` — one row per benchmark (the numbers above). Consumed by
   `compare_speedup.py`.
 - `mtp_eval_details.jsonl` — one line per request (tokens, ttft, decode time).
+
+`run_agentx.sh` writes `matrix.tsv` plus per-concurrency `users<N>/` dirs (raw
+trace-replay output + `result.row`).
 
 ## Notes & caveats
 
@@ -182,6 +249,7 @@ Each run writes into `--output-dir` / `RESULT_DIR`:
 ## Provenance
 
 Migrated from the MirrorMoEInfer `minimax` (SGLang, MiniMax-M2.7) and
-`minimax_m3_vllm` (vLLM, MiniMax-M3) eval trees; the two evaluators were unified
-onto shared data + a single `run_eval.sh` backend switch, and internal
-infrastructure paths were genericized.
+`minimax_m3_vllm` (vLLM, MiniMax-M3) eval trees; the two prompt evaluators were
+unified onto shared data + a single `run_eval.sh` backend switch, and the AgentX
+trace-replay sweep was decoupled from its internal server-launch/reap harness
+into a standalone `run_agentx.sh`. Internal infrastructure paths were genericized.

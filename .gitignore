@@ -179,3 +179,6 @@ scripts/evaluate/eval_datasets/guidellm/
 
 # Generated server-eval results
 scripts/evaluate/mtp_server_eval/results/
+
+# AgentX trace-replay client checkout (cloned on first run)
+scripts/evaluate/mtp_server_eval/.agentx/
