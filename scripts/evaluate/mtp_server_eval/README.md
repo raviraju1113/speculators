@@ -25,6 +25,10 @@ Benchmarks:
 - **aime**, **gpqa** (GPQA-Diamond), **livecodebench** — static prompt sets run
   by `run_eval.sh`; prepared prompts ship in [`data/`](./data), one
   `{benchmark,id,prompt}` per line.
+- **gsm8k**, **math500**, **humaneval**, **mbpp** — additional static sets
+  derived offline from the sibling [`../eval_datasets/`](../eval_datasets) turns
+  files (no network / gated access); generate them with
+  `prepare_data.py --only gsm8k,math500,humaneval,mbpp` (see [§G](#g-regenerating-datasets)).
 - **AgentX** — an agentic **trace-replay load test** ([`run_agentx.sh`](./run_agentx.sh)),
   a different mode: it replays real Claude-Code traces at fixed concurrency
   rather than sending prompts from a file. See the [AgentX](#agentx-agentic-trace-replay-load-test)
@@ -66,7 +70,7 @@ how you run the **baseline** (spec off).
 |---------|---------|---------|
 | `BACKEND` | `vllm` | `sglang` or `vllm` — selects the evaluator + metric reader |
 | `BASE_URL` | `http://127.0.0.1:8000` | server root (the eval appends `/v1/...` and `/metrics`) |
-| `BENCHMARKS` | `aime,gpqa,livecodebench` | comma-separated subset |
+| `BENCHMARKS` | `aime,gpqa,livecodebench` | comma-separated subset (also available once generated: `gsm8k,math500,humaneval,mbpp`) |
 | `NUM_SAMPLES` | `20` | prompts per benchmark (`0` = all) |
 | `MAX_TOKENS` | `4096` | max generated tokens per request |
 | `TEMPERATURE` | `0.0` | `0` = greedy (canonical acceptance setting) |
@@ -116,7 +120,10 @@ python compare_speedup.py \
 ```bash
 BENCHMARKS=aime                       ./run_eval.sh   # single
 BENCHMARKS=aime,livecodebench         ./run_eval.sh   # skip gated GPQA
-BENCHMARKS=aime,gpqa,livecodebench    ./run_eval.sh   # all (default)
+BENCHMARKS=aime,gpqa,livecodebench    ./run_eval.sh   # default three
+# extra sets (generate once via prepare_data.py, then):
+BENCHMARKS=gsm8k,math500,humaneval,mbpp                    ./run_eval.sh
+BENCHMARKS=aime,gpqa,livecodebench,gsm8k,math500,humaneval,mbpp ./run_eval.sh  # all seven
 ```
 
 ### D. Sampling / length settings
@@ -159,14 +166,18 @@ python compare_speedup.py --dir ./results/sweep --baseline base
 
 ### G. Regenerating datasets
 
-Prepared prompts ship in `data/`. To refresh:
+Prepared prompts for the default three ship in `data/`. To refresh:
 
 ```bash
-python prepare_data.py --only aime,livecodebench        # open datasets
+python prepare_data.py --only aime,livecodebench        # open datasets (network)
 python prepare_data.py --only gpqa                      # gated: `hf auth login` first
 python prepare_data.py --only livecodebench --lcb-version release_v5
 # AIME source parquet is environment-specific; set AIME_PARQUET=... to rebuild it,
 # otherwise the shipped data/aime.jsonl is used as-is.
+
+# gsm8k / math500 / humaneval / mbpp are derived OFFLINE from ../eval_datasets/
+# (first user turn as the prompt) — no network or gated access:
+python prepare_data.py --only gsm8k,math500,humaneval,mbpp
 ```
 
 ## AgentX (agentic trace-replay load test)

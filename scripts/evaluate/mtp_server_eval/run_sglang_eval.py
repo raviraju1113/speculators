@@ -41,6 +41,10 @@ DATA_FILES = {
     "aime": "aime.jsonl",
     "gpqa": "gpqa_diamond.jsonl",
     "livecodebench": "livecodebench.jsonl",
+    "gsm8k": "gsm8k.jsonl",
+    "math500": "math500.jsonl",
+    "humaneval": "humaneval.jsonl",
+    "mbpp": "mbpp.jsonl",
 }
 
 

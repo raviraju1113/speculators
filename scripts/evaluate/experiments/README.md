@@ -61,6 +61,14 @@ speedup table.
 - **Results** land at `results/experiments/<name>/` (`mtp_eval_summary.json` +
   `server.log`); the final speedup table prints to stdout. Set `output_dir:` in
   the YAML for a different location.
+- **Readable tables:** the runner prints the comparison to stdout via
+  `compare_speedup.py`. For a Markdown/CSV table (adds `n`, `e2e tok/s`, `ttft`,
+  bolded speedups, files you can paste into a doc or spreadsheet) run
+  [`tabulate_results.py`](./tabulate_results.py) over the output dir:
+  ```bash
+  python tabulate_results.py --dir ./results/experiments --baseline baseline \
+      --out-dir ./results/experiments        # writes results_table.md + .csv
+  ```
 - **First run downloads weights** into `$HF_HOME` (once; cached after).
 - **Quick smoke test:** set `eval.benchmarks: [aime]` and `num_samples: 5` in the
   YAML and use `--only baseline,<one-draft>` before the full run.
@@ -83,7 +91,7 @@ server:
 
 eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
-  benchmarks: [aime, gpqa, livecodebench]
+  benchmarks: [aime, gpqa, livecodebench]   # + gsm8k, math500, humaneval, mbpp (generate via prepare_data.py)
   num_samples: 50                           # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                          # greedy = canonical acceptance

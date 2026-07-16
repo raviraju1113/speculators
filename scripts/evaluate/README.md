@@ -38,7 +38,9 @@ Use **either** for single-stream throughput; they report the same core metrics.
   [`eval_datasets/to_guidellm.py`](./eval_datasets/to_guidellm.py) once to derive
   GuideLLM-ready files (or use the hosted `RedHatAI/speculator_benchmarks`).
 - `mtp_server_eval/data/` — aime / gpqa-diamond / livecodebench prompts for the
-  direct evaluator, plus **AgentX** (agentic Claude-Code trace replay).
+  direct evaluator (plus gsm8k / math500 / humaneval / mbpp, derivable offline
+  from `eval_datasets/` via `prepare_data.py`), and **AgentX** (agentic
+  Claude-Code trace replay).
 
 ## Throughput evaluation walkthrough (backbone + draft)
 
@@ -131,6 +133,16 @@ python run_experiments.py --config example.yaml --only baseline,eagle3_k5
 anything (handy to review on a machine without GPUs). Backbone/draft/server/eval
 settings all live in the YAML; per-experiment blocks override the defaults.
 
+The runner prints a speedup table at the end; for a Markdown/CSV table (extra
+columns + bolded speedups, written to files) run
+[`experiments/tabulate_results.py`](./experiments/tabulate_results.py) over the
+output dir:
+
+```bash
+python tabulate_results.py --dir ./results/experiments --baseline baseline \
+    --out-dir ./results/experiments        # writes results_table.md + .csv
+```
+
 ## Tips for a fair comparison
 
 - Same GPU/config, dataset/subsets, and request budget for spec-on and baseline.
@@ -149,6 +161,7 @@ requirements.txt       guidellm + vllm + viz deps
 eval_datasets/         12 benchmark prompt sets + converter + GuideLLM bridge
 mtp_server_eval/       direct sglang/vllm eval + compare_speedup + AgentX
 experiments/           YAML config-driven runner (serve → eval → compare)
+                       + tabulate_results.py (results → Markdown/CSV table)
 ```
 
 See [`mtp_server_eval/README.md`](./mtp_server_eval/README.md) for detailed

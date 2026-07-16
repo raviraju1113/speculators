@@ -30,6 +30,17 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 # is missing, prep_aime() skips and the shipped data/aime.jsonl is used as-is.
 AIME_PARQUET = Path(os.getenv("AIME_PARQUET", DATA_DIR / "aime_2024.parquet"))
 
+# Static benchmarks derived offline from the sibling eval_datasets/ turns files
+# ({"turns": [...]} -> {"benchmark","id","prompt"}, first user turn as prompt).
+# No network/gated access needed -- the prompts are already fully formatted.
+EVAL_DATASETS_DIR = Path(__file__).resolve().parent.parent / "eval_datasets"
+TURNS_BENCHMARKS = {
+    "gsm8k": "gsm8k.jsonl",
+    "math500": "math500.jsonl",
+    "humaneval": "humaneval.jsonl",
+    "mbpp": "mbpp.jsonl",
+}
+
 # Prompt templates mirror benchmark/math_reason conventions.
 AIME_TMPL = "Problem: {problem}\n\nMark your solution with \\boxed Answer:"
 GPQA_TMPL = (
@@ -210,12 +221,39 @@ def prep_livecodebench(version="release_v6"):
     _write("livecodebench.jsonl", uniq)
 
 
+def prep_from_turns(name):
+    """Convert eval_datasets/<name>.jsonl ({turns}) to data/<name>.jsonl."""
+    src = EVAL_DATASETS_DIR / TURNS_BENCHMARKS[name]
+    if not src.exists():
+        print(f"[{name}] source missing at {src}; skipping")
+        return
+    recs = []
+    with src.open(encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            turns = row.get("turns")
+            prompt = (
+                turns[0]
+                if isinstance(turns, list) and turns and isinstance(turns[0], str)
+                else row.get("prompt")
+            )
+            if not isinstance(prompt, str) or not prompt:
+                continue
+            recs.append({"benchmark": name, "id": str(row.get("id", i)), "prompt": prompt})
+    _write(f"{name}.jsonl", recs)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--only",
         default="aime,gpqa,livecodebench",
-        help="comma-separated subset to prepare",
+        help="comma-separated subset to prepare (also: "
+        + ",".join(TURNS_BENCHMARKS)
+        + ")",
     )
     ap.add_argument("--lcb-version", default="release_v6")
     args = ap.parse_args()
@@ -231,6 +269,10 @@ def main():
     if "livecodebench" in todo:
         print("[livecodebench]")
         prep_livecodebench(args.lcb_version)
+    for name in TURNS_BENCHMARKS:
+        if name in todo:
+            print(f"[{name}]")
+            prep_from_turns(name)
     print("done.")
 
 

@@ -23,7 +23,7 @@ server:
 
 eval:
   backend: vllm
-  benchmarks: [aime, gpqa, livecodebench]
+  benchmarks: [aime, gpqa, livecodebench, gsm8k, math500, humaneval, mbpp]
   num_samples: 50                                      # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                                     # greedy = canonical acceptance
