@@ -11,7 +11,11 @@ pip install -r requirements.txt
 
 ### Easiest: config-driven experiments (recommended)
 
-Describe the run in a YAML and let
+Describe the run in a YAML — start from the template
+[`example.yaml`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/example.yaml),
+or a filled-in example
+[`gemma4-31b.yaml`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/gemma4-31b.yaml)
+(Gemma 4 31B-it backbone + assistant draft) — and let
 [`scripts/evaluate/experiments/run_experiments.py`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/run_experiments.py)
 do the rest: for each experiment it **launches vLLM (backbone ± draft), waits for
 `/health`, runs the eval, stops the server**, then prints a speedup table (first
