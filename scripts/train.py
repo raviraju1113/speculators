@@ -445,6 +445,53 @@ def build_draft_model(
     )
 
 
+def maybe_preprocess_from_raw(
+    args: argparse.Namespace, rank: int, is_distributed: bool
+) -> None:
+    """Tokenize a raw dataset into ``--data-path`` when ``--data`` is given.
+
+    Lets training consume a HuggingFace dataset / jsonl directly (download +
+    tokenize + loss-mask) instead of requiring a separate ``prepare_data.py``
+    run. This is the cheap step only (megabytes of token ids/masks); hidden
+    states are still generated on demand from the live vLLM endpoint, so no
+    offline hidden-state dump is produced. Rank 0 does the work; other ranks
+    wait on a barrier.
+    """
+    if not args.data:
+        return
+
+    from speculators.data_generation.preprocessing import (  # noqa: PLC0415
+        load_and_preprocess_dataset,
+    )
+
+    out = Path(args.data_path)
+    existing = out.exists() and list(out.glob("*.arrow"))
+    if existing and not args.overwrite_data:
+        if rank == 0:
+            logger.info(
+                f"Preprocessed dataset already present at '{out}'; skipping "
+                "tokenization (pass --overwrite-data to rebuild)."
+            )
+    elif rank == 0:
+        token_freq_path = args.token_freq_path or (out / "token_freq.pt")
+        out.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Tokenizing {args.data} -> '{out}' (loss-masked, no HS)")
+        dataset, _ = load_and_preprocess_dataset(
+            target_model_path=args.verifier_name_or_path,
+            train_data_paths=args.data,
+            seq_length=args.total_seq_len,
+            seed=args.seed,
+            max_samples=args.max_samples,
+            token_freq_path=token_freq_path,
+            trust_remote_code=args.trust_remote_code,
+        )
+        dataset.save_to_disk(str(out))
+        logger.info(f"Wrote preprocessed dataset ({len(dataset)} samples) to '{out}'")
+
+    if is_distributed:
+        torch.distributed.barrier()
+
+
 def main(args: argparse.Namespace):  # noqa: C901
     # Set random seed for reproducibility
     set_seed(args.seed, args.deterministic_cuda)
@@ -457,6 +504,12 @@ def main(args: argparse.Namespace):  # noqa: C901
 
     # Setup distributed training
     local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
+
+    # Optionally tokenize a raw HF/jsonl dataset into --data-path on the fly, so
+    # training can run straight from a HuggingFace dataset (no separate
+    # prepare_data.py step; hidden states are still generated online).
+    maybe_preprocess_from_raw(args, rank, is_distributed)
+
     if not hasattr(torch, args.hidden_states_dtype):
         raise ValueError(
             "--hidden-states-dtype must be a dtype attribute of torch. e.g. `bfloat16`"
@@ -780,6 +833,33 @@ def parse_args():
             "vocab mappings (d2t.npy, t2d.npy), token frequencies "
             "(token_freq.pt), and hidden states (default: ./output)"
         ),
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        action="append",
+        default=None,
+        help=(
+            "Raw training dataset(s) to tokenize on the fly into --data-path, so "
+            "you can train directly from a HuggingFace dataset without a separate "
+            "prepare_data.py step. Accepts a built-in shortcut (sharegpt, "
+            "ultrachat, gsm8k, kimi_mtp, ...), any HF dataset name, or a local "
+            ".jsonl path; repeat to combine. Only the (cheap) tokenization + "
+            "loss-mask step runs here -- hidden states are still generated "
+            "on-demand from --vllm-endpoint. If omitted, --data-path must already "
+            "contain a preprocessed dataset."
+        ),
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Max samples to tokenize when using --data (default: all).",
+    )
+    parser.add_argument(
+        "--overwrite-data",
+        action="store_true",
+        help="Re-tokenize into --data-path even if a dataset already exists there.",
     )
     parser.add_argument(
         "--hidden-states-path",

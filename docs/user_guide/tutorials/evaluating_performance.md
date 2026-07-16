@@ -9,7 +9,36 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-Run the full benchmark pipeline (output-length estimation → performance sweep → CSV):
+### Easiest: config-driven experiments (recommended)
+
+Describe the run in a YAML — start from the template
+[`example.yaml`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/example.yaml),
+or a filled-in example
+[`gemma4-31b.yaml`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/gemma4-31b.yaml)
+(Gemma 4 31B-it backbone + assistant draft) — and let
+[`scripts/evaluate/experiments/run_experiments.py`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/run_experiments.py)
+do the rest: for each experiment it **launches vLLM (backbone ± draft), waits for
+`/health`, runs the eval, stops the server**, then prints a speedup table (first
+entry = baseline). No manual server management.
+
+```bash
+cd scripts/evaluate/experiments
+# Edit example.yaml: set `backbone`, the `draft`(s), and `tensor_parallel_size`/`gpus`.
+python run_experiments.py --config example.yaml --dry-run   # preview serve+eval commands, launch nothing
+python run_experiments.py --config example.yaml             # baseline vs. each draft, then compare
+```
+
+Backbone / drafts / server (`tensor_parallel_size`, `gpus`) / eval settings all
+live in the YAML; per-experiment blocks override the defaults. See the
+[experiments README](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/README.md),
+and for a full backbone-specific walkthrough (env, GPU layout, driver
+requirements) the Gemma 4 31B-it example:
+[`examples/train/gemma4_31b_README.md`](https://github.com/vllm-project/speculators/blob/main/examples/train/gemma4_31b_README.md).
+
+### Manual: against a server you already run
+
+If you already have a vLLM server up, run the GuideLLM evaluator directly. Full
+benchmark pipeline (output-length estimation → performance sweep → CSV):
 
 ```bash
 python evaluate.py sweep --target http://localhost:8000/v1
@@ -58,3 +87,30 @@ python plot.py speedup \
 ```
 
 Both accept CSVs or raw GuideLLM sweep JSONs. Available metrics: `latency`, `itl`, `ttft`, `output_tps`.
+
+## Alternative: direct server eval (SGLang or vLLM)
+
+`evaluate.py` drives GuideLLM against **vLLM**. For a lighter-weight evaluator
+that works against **both SGLang and vLLM** — sending prompts directly to the
+server's OpenAI-compatible streaming API and reading speculative-decoding metrics
+off Prometheus (only `requests` needed) — use
+[`scripts/evaluate/mtp_server_eval/`](https://github.com/vllm-project/speculators/tree/main/scripts/evaluate/mtp_server_eval).
+It reports per-benchmark **acceptance length/rate** and **decode tok/s**, and
+`compare_speedup.py` prints the speedup vs. a baseline.
+
+```bash
+cd scripts/evaluate/mtp_server_eval
+BACKEND=vllm   BASE_URL=http://localhost:8000 RESULT_DIR=./results/spec ./run_eval.sh
+BACKEND=sglang BASE_URL=http://localhost:8080 RESULT_DIR=./results/spec ./run_eval.sh
+python compare_speedup.py base=./results/base/mtp_eval_summary.json \
+                          spec=./results/spec/mtp_eval_summary.json
+```
+
+Benchmarks (`aime`, `gpqa`, `livecodebench`, …) ship as prompt files; the two
+backends differ only in how acceptance is read (SGLang windowed gauges vs. vLLM
+cumulative counters). It also includes **AgentX** (`run_agentx.sh`) — an agentic
+trace-replay load test for measuring spec-decode value under realistic
+multi-user concurrency. See the
+[directory README](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/mtp_server_eval/README.md)
+for the full option matrix.
+

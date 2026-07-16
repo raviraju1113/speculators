@@ -50,7 +50,13 @@ torchrun --standalone --nproc_per_node=4 scripts/train.py \
 
 ### Data Arguments
 
-- **`--data-path`** (str, default: `"./data"`) Path to the processed training data directory.
+- **`--data-path`** (str, default: `"./data"`) Path to the processed training data directory. If `--data` is given, the tokenized dataset is written here; otherwise this directory must already contain a preprocessed dataset (from `prepare_data.py`).
+
+- **`--data`** (str, repeatable, default: `None`) Raw training dataset(s) to tokenize on the fly into `--data-path`, so you can train **directly from a HuggingFace dataset without a separate `prepare_data.py` step**. Accepts a built-in shortcut (`sharegpt`, `ultrachat`, `gsm8k`, `kimi_mtp`, ...), any HF dataset name, or a local `.jsonl`; repeat to combine. Only the cheap tokenization + loss-mask step runs here (megabytes of token ids/masks) — hidden states are still generated on-demand from `--vllm-endpoint`, so **no offline hidden-state dump is produced**. Example: `--data kimi_mtp` or `--data sharegpt --data ./custom.jsonl`.
+
+- **`--max-samples`** (int, default: `None`) Max samples to tokenize when using `--data` (default: all).
+
+- **`--overwrite-data`** (flag) Re-tokenize into `--data-path` even if a preprocessed dataset already exists there. Without it, an existing dataset is reused.
 
 - **`--on-missing`** (choice: `generate`|`skip`|`warn`|`raise`, default: `generate`) Behavior when cached hidden states are missing:
 
