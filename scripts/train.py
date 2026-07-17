@@ -209,6 +209,23 @@ def create_transformer_layer_config(  # noqa: C901
             _MROPE_KEYS = ("mrope_section", "mrope_interleaved", "type")  # noqa: N806
             for key in _MROPE_KEYS:
                 config.rope_parameters.pop(key, None)
+            # Some verifiers (e.g. Gemma-4) use a nested, per-attention-type rope
+            # config ({"full_attention": {...}, "sliding_attention": {...}}) with
+            # no top-level "rope_type". The flat Qwen3/Llama draft can't consume
+            # that, so collapse it to a flat rope config derived from a
+            # full-attention (else any) sub-entry.
+            if "rope_type" not in config.rope_parameters:
+                _nested = config.rope_parameters
+                _base = _nested.get("full_attention") or next(
+                    (v for v in _nested.values() if isinstance(v, dict)), {}
+                )
+                # Force plain "default" rope: Gemma-4's "proportional" type needs
+                # partial_rotary_factor and isn't understood by Qwen3; a
+                # from-scratch draft doesn't need the target's exact rope scheme.
+                config.rope_parameters = {
+                    "rope_type": "default",
+                    "rope_theta": _base.get("rope_theta", 10000.0),
+                }
     else:
         if hasattr(verifier_config, "rope_scaling"):
             config.rope_scaling = deepcopy(verifier_config.rope_scaling)

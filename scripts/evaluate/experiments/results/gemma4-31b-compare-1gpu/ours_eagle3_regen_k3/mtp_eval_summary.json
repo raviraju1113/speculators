@@ -1,0 +1,14 @@
+[
+  {
+    "benchmark": "gsm8k",
+    "n": 20,
+    "num_steps": null,
+    "total_completion_tokens": 5230,
+    "decode_tok_s": 40.2,
+    "e2e_tok_s": 39.5,
+    "mean_ttft_s": 0.136,
+    "accept_length": 2.384,
+    "accept_rate": 0.4615,
+    "metric_samples": null
+  }
+]
