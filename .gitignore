@@ -125,6 +125,12 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Generated sngpu job scripts (contain WANDB_API_KEY) and their job logs
+.job_*.sh
+scripts/.job_*.sh
+scripts/**/.job_*.sh
+*.out
+
 # Environments
 .env
 .venv
@@ -196,3 +202,12 @@ scripts/evaluate/mtp_server_eval/results/
 scripts/evaluate/mtp_server_eval/.agentx/
 slurm-*.out
 logs/
+
+# added
+initial_test_checkpoints
+ultrachat_gemma4_31b_50k_seq_len_8k
+output
+smoke_test
+notebook
+*.jsonl
+*.out
