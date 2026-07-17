@@ -484,7 +484,10 @@ class Trainer:
                 num_tokens = int((gpu_batch["document_ids"] != -1).sum().item())
                 profile = timer.profile(num_tokens)
                 if self.is_distributed:
-                    for v in metrics.values():
+                    # Dedupe by object identity: some metrics share the same
+                    # tensor object (e.g. full_acc/cond_acc numerators), and an
+                    # in-place reduce must not run on the same buffer twice.
+                    for v in {id(v): v for v in metrics.values()}.values():
                         dist.reduce(v, dst=0, op=dist.ReduceOp.SUM)
 
                 metrics = {k: v.item() for k, v in metrics.items()}
@@ -556,6 +559,10 @@ class Trainer:
                 _draft_tokens, _loss, metrics = self.model(
                     **gpu_batch, **(self.config.val_call_kwargs or {})
                 )
+
+            if self.is_distributed:
+                for m in {id(m): m for m in metrics.values()}.values():
+                    dist.all_reduce(m, op=dist.ReduceOp.SUM)
 
             for k, v in metrics.items():
                 acc = accumulated.get(k)
