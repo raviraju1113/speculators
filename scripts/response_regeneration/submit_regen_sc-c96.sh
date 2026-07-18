@@ -19,7 +19,7 @@ set -euo pipefail
 # --- paths (override via env if needed) ---
 export MODEL="${MODEL:-/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it}"
 export INPUT_JSONL="${INPUT_JSONL:-/import/ml-sc-scratch5/chenw/datasets/kimi-mtp-dataset/data/train-00000-of-00001.jsonl}"
-export OUTFILE="${OUTFILE:-/import/ml-sc-scratch5/chenw/datasets/kimi-mtp-dataset/train_regen_gemma4.jsonl}"
+export OUTFILE="${OUTFILE:-/import/ml-sc-scratch5/chenw/datasets/kimi-regen-gemma4-31b/train_regen.jsonl}"
 
 # --- run config ---
 export NUM_GPUS="${NUM_GPUS:-8}"
@@ -29,9 +29,18 @@ export CONDA_ENV="${CONDA_ENV:-gemma4-spec}"
 # (NCCL is broken under forward-compat, so N independent 1-GPU servers is the layout).
 export CUDA_COMPAT="${CUDA_COMPAT:-/import/ml-sc-scratch1/chenw/cuda-compat-13.0}"
 
-# Reasonable throughput knobs for 8 servers (override as needed).
-export CONCURRENCY="${CONCURRENCY:-256}"
-export MAX_TOKENS="${MAX_TOKENS:-2048}"
+# Context / generation length. To regenerate ALL conversations (incl. long
+# multi-turn ones) at full reply length, keep max_tokens generous and make the
+# CONTEXT big enough that input + max_tokens fits. gemma-4-31B supports 262144
+# tokens and uses sliding-window attention (KV grows slowly), so a large context
+# is cheap. 16384 gives ~12k tokens of input budget (with max_tokens=4096) — big
+# enough for essentially every conversation. Raise further if any still overflow.
+export COMPAT_MAX_MODEL_LEN="${COMPAT_MAX_MODEL_LEN:-16384}"
+export MAX_TOKENS="${MAX_TOKENS:-4096}"
+
+# Halve concurrency vs the 8192 run so the ~2x-larger KV cache still fits on one
+# 80GB GPU under single-GPU forward-compat (16 in-flight per server).
+export CONCURRENCY="${CONCURRENCY:-128}"
 
 # Absolute repo path — a Slurm/sngpu batch job copies this wrapper to a spool dir
 # (/var/spool/slurmd/...), so a $(dirname "$BASH_SOURCE") relative reference would

@@ -129,9 +129,48 @@ python scripts/response_regeneration/script.py \
 
 Pass `--skip-endpoint-validation` to skip the startup health check.
 
+### Regenerating a Local Conversations Dataset
+
+Besides the built-in single-prompt datasets, you can regenerate an existing
+**multi-turn conversations JSONL** with your target model — useful for aligning a
+training set (e.g. a ShareGPT-style corpus) to the target's own outputs. Each row
+has a `conversations` list of `{from, value}` (or `{role, content}`) turns; every
+assistant turn is regenerated in context, keeping the system/user turns:
+
+```bash
+python scripts/response_regeneration/script.py \
+  --input-jsonl /path/to/dataset/train.jsonl \
+  --outfile /path/to/train_regen.jsonl \
+  --endpoint http://127.0.0.1:8001/v1/chat/completions \
+             http://127.0.0.1:8002/v1/chat/completions \
+  --concurrency 128 --max-tokens 2048 --resume
+```
+
+- `--input-jsonl` reads a plain JSONL, so it does **not** require `datasets`/`pyarrow`.
+- Multimodal / tool-call rows are skipped by default (`--skip-sources`); use
+  `--sources` to regenerate only specific sources.
+- Failed rows (e.g. a conversation longer than the server's `max_model_len`) are
+  written to `<outfile>.errors.jsonl` — the main output stays clean, and
+  `--resume` retries them.
+
+**One-command version.** To launch the servers *and* run the client in a single
+step (N independent single-GPU servers + the round-robin client, resumable), use
+`scripts/response_regeneration/run_regen_multigpu.sh`:
+
+```bash
+MODEL=/path/to/target INPUT_JSONL=/path/to/train.jsonl OUTFILE=/path/to/train_regen.jsonl \
+  NUM_GPUS=8 \
+  bash scripts/response_regeneration/run_regen_multigpu.sh
+# add CUDA_COMPAT=/path/to/cuda-compat-13.0 on an old (<570) driver; DRY_RUN=1 to preview.
+```
+
+It spins up one vLLM server per GPU, waits for all to be healthy, regenerates the
+whole file with `--resume`, and stops the servers on exit.
+
 ### Resuming Interrupted Processing
 
-If processing is interrupted, use the `--resume` flag to skip already-processed rows:
+If processing is interrupted, use the `--resume` flag to skip already-processed
+rows (matched by uuid, id, or `metadata.idx`; error rows are retried):
 
 ```bash
 python scripts/response_regeneration/script.py \

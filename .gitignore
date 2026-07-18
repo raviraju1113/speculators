@@ -182,3 +182,5 @@ scripts/evaluate/mtp_server_eval/results/
 
 # AgentX trace-replay client checkout (cloned on first run)
 scripts/evaluate/mtp_server_eval/.agentx/
+slurm-*.out
+logs/

@@ -31,8 +31,51 @@ python -c "import torch, vllm; print(torch.__version__, vllm.__version__, 'cuda_
 # want: cuda_ok: True   gpus: 8
 ```
 
-If `cuda_ok` is `False` with a "driver too old" warning, stop here — fix the
-driver/node first; the rest of this guide won't run until that passes.
+If `cuda_ok` is `False` with a "driver too old" warning, either move to a ≥570
+node, or use CUDA forward-compatibility (below).
+
+### 0b. Old driver? CUDA forward-compatibility (A100 / datacenter GPUs)
+
+A100s support **CUDA forward compatibility**, so the cu13 vLLM/torch stack *can*
+run on a 565 / CUDA-12.7 driver by loading a newer `libcuda` from NVIDIA's
+`cuda-compat` package. This is what actually runs Gemma-4 on this box. Set **all**
+of these before serving/training (and `source`/`conda activate` the env):
+
+```bash
+ENV=/import/snvm-sc-scratch2/chenw/miniconda3/envs/gemma4-spec
+COMPAT=/path/to/cuda-compat-13.0     # forward-compat libcuda.so.580.x, extracted
+                                     # from NVIDIA's rhel8 cuda-compat-13-0 rpm
+                                     # (conda's cuda-compat is an empty stub)
+
+# env lib FIRST (its libstdc++ has GLIBCXX_3.4.29 that libzmq needs), then compat libcuda
+export LD_LIBRARY_PATH="$ENV/lib:$COMPAT:${LD_LIBRARY_PATH:-}"
+# ninja + nvcc: vLLM JIT-compiles a flashinfer sampler kernel at runtime
+export PATH="$ENV/lib/python3.10/site-packages/ninja/data/bin:$ENV/lib/python3.10/site-packages/nvidia/cu13/bin:$PATH"
+export CUDA_HOME="$ENV/lib/python3.10/site-packages/nvidia/cu13"
+export PYTHONNOUSERSITE=1             # ignore a broken ~/.local pyarrow that breaks `import transformers`
+export VLLM_USE_FLASHINFER_SAMPLER=0
+# one-time: `pip uninstall flash-attn` (its .so has a torch ABI mismatch; vLLM falls back to native rotary)
+```
+
+The run scripts apply all of this **automatically** when you activate the
+`gemma4-spec` env and set `CUDA_COMPAT`:
+
+```bash
+conda activate gemma4-spec
+CUDA_COMPAT=/path/to/cuda-compat-13.0 bash examples/train/eagle3_online_gemma4_31b.sh
+CUDA_COMPAT=/path/to/cuda-compat-13.0 bash examples/evaluate/eval_gemma4_31b.sh
+```
+
+They derive the env from the active conda env (`$CONDA_PREFIX`) and force
+single-GPU serving; on a proper ≥570 driver, just omit `CUDA_COMPAT`.
+
+**Limitation — NCCL is broken under forward-compat**: multi-GPU collectives
+segfault, so run vLLM **single-GPU only** (`--tensor-parallel-size 1
+--data-parallel-size 1 --enforce-eager`); the 31B fits on one 80 GB A100. For
+throughput, run **N independent single-GPU servers** (one per GPU) and fan the
+client out across them (the `--endpoint a b c ...` round-robin) — this is exactly
+what `run_regen_8gpu.sh` and the data-regeneration flow do. The clean fix is a
+sysadmin driver bump to ≥580 (then drop the compat lib and use multi-GPU/TP).
 
 ## 1. Environment (one-time)
 
@@ -84,6 +127,47 @@ recheck it's still compatible with the installed vLLM).
 backbone : /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
 dataset  : /import/ml-sc-scratch5/chenw/datasets/kimi-mtp-dataset/data/train-00000-of-00001.jsonl
 ```
+
+## 2b. (Optional) Regenerate training data with the target
+
+Aligning the training answers to Gemma-4's own outputs can raise draft
+acceptance. `run_regen_multigpu.sh` starts one single-GPU vLLM server per GPU
+(the only layout that works under forward-compat — NCCL is broken) and
+regenerates the text conversations in the kimi dataset, round-robin across all
+servers, resumable. Multimodal (`llava_instruct`) + tool (`continual_tool_kimi`)
+rows are skipped automatically.
+
+A ready submit wrapper with the sc-c96 paths + forward-compat env baked in is
+[`scripts/response_regeneration/submit_regen_sc-c96.sh`](../../scripts/response_regeneration/submit_regen_sc-c96.sh):
+
+```bash
+# preview on the login node (no GPUs — prints the resolved commands and exits):
+DRY_RUN=1 bash scripts/response_regeneration/submit_regen_sc-c96.sh
+
+# submit the 8-GPU job (job command goes after `--`; logs -> ./logs/regen_gemma4.txt):
+mkdir -p logs
+sngpu --jobname regen_gemma4 --partition gpuonly --nodelist sc-c96 \
+  --gpu 8 --gputype a100m80 --cpu 32 --mem 128000 \
+  --output ./logs/regen_gemma4.txt --time 48:00:00 \
+  -- bash /import/ml-sc-scratch1/chenw/speculators/scripts/response_regeneration/submit_regen_sc-c96.sh
+```
+
+(This node's `sngpu` has no `--bash` flag — pass the job command after `--`, or
+use `--filepath <script>`. Use an **absolute** path to the wrapper: a batch job
+copies a `--filepath` script to a spool dir, so relative references break.)
+
+Output → `/import/ml-sc-scratch5/chenw/datasets/kimi-regen-gemma4-31b/train_regen.jsonl`
+(over-length / failed rows → `.errors.jsonl`). It goes to a **dedicated dir**, so
+**resubmit the exact same command to resume** — `--resume` skips already-done rows
+(matched by `metadata.idx`), so an interrupted run picks up where it left off. Do
+**not** point `OUTFILE` into the source dataset dir. Then point training's `DATA`
+at the regenerated file instead of the original.
+
+Context length matters: the wrapper defaults to `COMPAT_MAX_MODEL_LEN=8192` and
+`MAX_TOKENS=4096`. A shorter context (e.g. the bare 4096 forward-compat default)
+leaves too little input budget and makes many long multi-turn conversations fail
+with "maximum context length exceeded" — bump these, not lower them. Other knobs:
+`CONCURRENCY`, `SKIP_SOURCES=''` (keep multimodal/tool rows).
 
 ## 3. Train (disaggregated online EAGLE-3)
 

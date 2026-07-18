@@ -10,8 +10,11 @@ from http import HTTPStatus
 from typing import Any
 
 import aiohttp
-from datasets import load_dataset
 from tqdm import tqdm
+
+# NOTE: `datasets` is imported lazily inside iter_input_items (HF-dataset branch
+# only). The --input-jsonl (local conversations) path does not need it, so a
+# broken/absent `datasets`/`pyarrow` install won't block regenerating a JSONL.
 
 DATASET_CONFIGS = {
     "magpie": {
@@ -159,9 +162,23 @@ def load_seen(path: str):
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            key = obj.get("uuid") or obj.get("idx")
-            if key is not None:
-                seen.add(str(key))
+            # Skip failed rows so --resume retries them (errors are recorded in
+            # a sibling .errors.jsonl; older runs may have written them inline).
+            if (obj.get("metadata") or {}).get("error") is not None:
+                continue
+            # An output row is identified by any of: top-level uuid/idx (legacy
+            # single-prompt), top-level id, or metadata.idx (conversations mode).
+            # The consumer key is `str(uuid if uuid is not None else index)`, and
+            # for a local JSONL that index is stored as metadata.idx — so collect
+            # all of these to make --resume robust across both output shapes.
+            for key in (
+                obj.get("uuid"),
+                obj.get("idx"),
+                obj.get("id"),
+                (obj.get("metadata") or {}).get("idx"),
+            ):
+                if key is not None:
+                    seen.add(str(key))
     return seen
 
 
@@ -263,6 +280,20 @@ def normalize_input_conversation(conv: Any) -> list[dict[str, str]] | None:
     return messages
 
 
+def _choice_content(data: dict) -> str:
+    """Return the assistant message content, or raise a clear error.
+
+    vLLM returns a body without ``choices`` on failure (e.g. a 400 when the
+    conversation exceeds ``max_model_len``); surface that instead of a cryptic
+    ``KeyError('choices')``.
+    """
+    choices = data.get("choices")
+    if not choices:
+        detail = data.get("error") or data.get("message") or data
+        raise RuntimeError(f"server returned no choices: {str(detail)[:200]}")
+    return choices[0]["message"]["content"]
+
+
 async def regenerate_conversation(
     sem, session, endpoint, args, messages
 ) -> tuple[list[dict[str, str]], dict | None]:
@@ -287,14 +318,14 @@ async def regenerate_conversation(
         }
         async with sem, session.post(endpoint, json=payload) as response:
             data = await response.json()
-        content = data["choices"][0]["message"]["content"]
+        content = _choice_content(data)
         regenerated.append({"role": "assistant", "content": content})
         last_usage = data.get("usage")
     return regenerated, last_usage
 
 
 async def _regenerate_conversation_item(
-    sem, session, queue_item, args, out_fh, endpoint, progress, stats
+    sem, session, queue_item, args, out_fh, err_fh, endpoint, progress, stats
 ):
     """Regenerate one conversation item and write it out (conversations mode)."""
     idx = queue_item["idx"]
@@ -321,14 +352,15 @@ async def _regenerate_conversation_item(
         out_fh.flush()
         stats["ok"] += 1
     except Exception as e:  # noqa: BLE001
-        out_fh.write(
+        # Errors go to a sibling .errors.jsonl so the training output stays clean.
+        err_fh.write(
             json.dumps(
                 {"id": sample_id, "metadata": {"idx": idx, "error": repr(e)}},
                 ensure_ascii=False,
             )
             + "\n"
         )
-        out_fh.flush()
+        err_fh.flush()
         stats["errors"] += 1
     finally:
         progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
@@ -341,6 +373,7 @@ async def worker(
     queue: "asyncio.Queue[dict[str, Any]]",
     args,
     out_fh,
+    err_fh,
     endpoint: str,
     progress,
     stats: dict[str, int],
@@ -355,7 +388,7 @@ async def worker(
         # Conversations mode (multi-turn regeneration from a local JSONL).
         if "messages" in item:
             await _regenerate_conversation_item(
-                sem, session, item, args, out_fh, endpoint, progress, stats
+                sem, session, item, args, out_fh, err_fh, endpoint, progress, stats
             )
             queue.task_done()
             continue
@@ -372,9 +405,9 @@ async def worker(
             async with sem, session.post(endpoint, json=payload) as response:
                 data = await response.json()
 
+            generated_text = _choice_content(data)
             choice = data["choices"][0]
             message = choice["message"]
-            generated_text = message["content"]
             reasoning_content = message.get("reasoning_content")
             if reasoning_content is None:
                 reasoning_content = message.get("reasoning")
@@ -408,15 +441,14 @@ async def worker(
         except Exception as e:  # noqa: BLE001
             error_output = {
                 "id": item.get("uuid") or f"sample_{idx}",
-                "conversations": [{"from": "human", "value": item["prompt"]}],
                 "metadata": {
                     "idx": idx,
                     "error": repr(e),
                     "endpoint": endpoint,
                 },
             }
-            out_fh.write(json.dumps(error_output, ensure_ascii=False) + "\n")
-            out_fh.flush()
+            err_fh.write(json.dumps(error_output, ensure_ascii=False) + "\n")
+            err_fh.flush()
             stats["errors"] += 1
         finally:
             progress.set_postfix(
@@ -460,6 +492,8 @@ def iter_input_items(args):
                     continue  # multimodal / malformed
                 yield index, row.get("id") or row.get("uuid"), {"messages": messages}
         return
+
+    from datasets import load_dataset  # noqa: PLC0415  (lazy: HF path only)
 
     cfg = DATASET_CONFIGS[args.dataset]
     split = args.split if args.split is not None else cfg["default_split"]
@@ -522,6 +556,9 @@ async def main():
     ) as session:
         with (
             open(args.outfile, "a", encoding="utf-8") as output_file,  # noqa: ASYNC230
+            open(  # noqa: ASYNC230
+                args.outfile + ".errors.jsonl", "a", encoding="utf-8"
+            ) as error_file,
             tqdm(
                 total=args.limit,
                 desc="Generating responses",
@@ -540,6 +577,7 @@ async def main():
                         queue,
                         args,
                         output_file,
+                        error_file,
                         endpoints[i % len(endpoints)],
                         progress,
                         stats,
