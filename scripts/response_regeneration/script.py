@@ -66,7 +66,35 @@ def parse_args():
         "--dataset",
         default="ultrachat",
         choices=list(DATASET_CONFIGS.keys()),
-        help="Dataset to process",
+        help="Built-in HF dataset to process (ignored if --input-jsonl is set)",
+    )
+    parser.add_argument(
+        "--input-jsonl",
+        default=None,
+        help=(
+            "Path to a local conversations JSONL to regenerate (each row has a "
+            "`conversations` list of {from,value} or {role,content} turns, e.g. "
+            "the kimi-mtp-dataset). Every assistant turn is regenerated in-context "
+            "by the target. Overrides --dataset; multimodal rows are skipped."
+        ),
+    )
+    parser.add_argument(
+        "--skip-sources",
+        default="llava_instruct,continual_tool_kimi",
+        help=(
+            "Comma-separated `source` values to skip when using --input-jsonl. "
+            "Default drops multimodal (llava_instruct) and tool-call "
+            "(continual_tool_kimi) rows, which can't be cleanly text-regenerated. "
+            "Pass '' to keep all."
+        ),
+    )
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help=(
+            "If set, only regenerate rows whose `source` is in this comma-separated "
+            "allowlist (applied after --skip-sources). --input-jsonl only."
+        ),
     )
     parser.add_argument(
         "--split",
@@ -201,6 +229,112 @@ async def resolve_endpoints(args) -> list[str]:
     return endpoints
 
 
+# Map ShareGPT-style `from` (or OpenAI `role`) to chat roles, and back.
+_ROLE_MAP = {
+    "human": "user",
+    "user": "user",
+    "gpt": "assistant",
+    "assistant": "assistant",
+    "system": "system",
+}
+_TO_FROM = {"user": "human", "assistant": "gpt", "system": "system"}
+
+
+def normalize_input_conversation(conv: Any) -> list[dict[str, str]] | None:
+    """Normalize a ShareGPT/OpenAI conversation to `[{role, content}]`.
+
+    Returns None for unusable rows (multimodal/list content, missing roles, or no
+    user turn) so the caller can skip them.
+    """
+    if not isinstance(conv, list) or not conv:
+        return None
+    messages: list[dict[str, str]] = []
+    for turn in conv:
+        role = _ROLE_MAP.get(turn.get("from") or turn.get("role"))
+        content = turn.get("value")
+        if content is None:
+            content = turn.get("content")
+        # Skip multimodal (list content) and malformed turns.
+        if role is None or not isinstance(content, str) or not content:
+            return None
+        messages.append({"role": role, "content": content})
+    if not any(m["role"] == "user" for m in messages):
+        return None
+    return messages
+
+
+async def regenerate_conversation(
+    sem, session, endpoint, args, messages
+) -> tuple[list[dict[str, str]], dict | None]:
+    """Walk a conversation and regenerate each assistant turn with the target.
+
+    Keeps system/user turns; for every user turn, generates a fresh assistant
+    reply conditioned on the accumulated context (original assistant turns are
+    replaced). Returns (regenerated_messages, last_usage).
+    """
+    regenerated: list[dict[str, str]] = []
+    last_usage = None
+    for turn in messages:
+        if turn["role"] not in ("system", "user"):
+            continue  # drop original assistant turns; we regenerate them
+        regenerated.append(turn)
+        if turn["role"] != "user":
+            continue
+        payload = {
+            "model": args.model,
+            "messages": regenerated,
+            "max_tokens": args.max_tokens,
+        }
+        async with sem, session.post(endpoint, json=payload) as response:
+            data = await response.json()
+        content = data["choices"][0]["message"]["content"]
+        regenerated.append({"role": "assistant", "content": content})
+        last_usage = data.get("usage")
+    return regenerated, last_usage
+
+
+async def _regenerate_conversation_item(
+    sem, session, queue_item, args, out_fh, endpoint, progress, stats
+):
+    """Regenerate one conversation item and write it out (conversations mode)."""
+    idx = queue_item["idx"]
+    sample_id = queue_item.get("uuid") or f"sample_{idx}"
+    start_time = time.time()
+    try:
+        regen, usage = await regenerate_conversation(
+            sem, session, endpoint, args, queue_item["messages"]
+        )
+        output = {
+            "id": sample_id,
+            "conversations": [
+                {"from": _TO_FROM[m["role"]], "value": m["content"]} for m in regen
+            ],
+            "metadata": {
+                "idx": idx,
+                "num_turns": len(regen),
+                "latency_s": round(time.time() - start_time, 3),
+                "usage": usage,
+                "endpoint": endpoint,
+            },
+        }
+        out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
+        out_fh.flush()
+        stats["ok"] += 1
+    except Exception as e:  # noqa: BLE001
+        out_fh.write(
+            json.dumps(
+                {"id": sample_id, "metadata": {"idx": idx, "error": repr(e)}},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        out_fh.flush()
+        stats["errors"] += 1
+    finally:
+        progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
+        progress.update(1)
+
+
 async def worker(
     sem: asyncio.Semaphore,
     session: aiohttp.ClientSession,
@@ -217,6 +351,14 @@ async def worker(
         if item is None:
             queue.task_done()
             return
+
+        # Conversations mode (multi-turn regeneration from a local JSONL).
+        if "messages" in item:
+            await _regenerate_conversation_item(
+                sem, session, item, args, out_fh, endpoint, progress, stats
+            )
+            queue.task_done()
+            continue
 
         idx = item["idx"]
         payload = {
@@ -286,6 +428,53 @@ async def worker(
             queue.task_done()
 
 
+def iter_input_items(args):
+    """Yield (index, id, payload) rows from the selected source.
+
+    payload is ``{"messages": [...]}`` for a local conversations JSONL
+    (``--input-jsonl``) or ``{"prompt": ...}`` for a built-in HF dataset.
+    Rows to skip (multimodal, empty, filtered) are omitted.
+    """
+    if args.input_jsonl:
+        skip_sources = {
+            s.strip() for s in (args.skip_sources or "").split(",") if s.strip()
+        }
+        only_sources = (
+            {s.strip() for s in args.sources.split(",") if s.strip()}
+            if args.sources
+            else None
+        )
+        with open(args.input_jsonl, encoding="utf-8") as f:
+            for index, line in enumerate(f):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                row = json.loads(stripped)
+                source = row.get("source")
+                if source in skip_sources:
+                    continue
+                if only_sources is not None and source not in only_sources:
+                    continue
+                messages = normalize_input_conversation(row.get("conversations"))
+                if messages is None:
+                    continue  # multimodal / malformed
+                yield index, row.get("id") or row.get("uuid"), {"messages": messages}
+        return
+
+    cfg = DATASET_CONFIGS[args.dataset]
+    split = args.split if args.split is not None else cfg["default_split"]
+    subset = args.subset if args.subset is not None else cfg.get("subset")
+    prompt_field = cfg["prompt_field"]
+    dataset = load_dataset(cfg["id"], name=subset, split=split, streaming=True)
+    for index, row in enumerate(dataset):
+        if args.language_filter and row.get("language") != args.language_filter:
+            continue
+        prompt = row.get(prompt_field)
+        if not prompt:
+            continue
+        yield index, row.get("uuid"), {"prompt": prompt}
+
+
 async def main():
     """Main async function to process dataset through vLLM endpoints."""
     args = parse_args()
@@ -298,30 +487,23 @@ async def main():
 
     print(f"Using model: {args.model}")
 
-    # Get dataset configuration
-    dataset_config = DATASET_CONFIGS[args.dataset]
-    dataset_id = dataset_config["id"]
-    prompt_field = dataset_config["prompt_field"]
-
-    # Use dataset-specific defaults if not provided
-    split = args.split if args.split is not None else dataset_config["default_split"]
-    subset = args.subset if args.subset is not None else dataset_config.get("subset")
-
-    # Generate output filename if not specified
+    # Output filename default depends on the source.
     if args.outfile is None:
-        # Extract simple model name from full path
-        model_name = args.model.split("/")[-1] if "/" in args.model else args.model
-        model_name = sanitize_filename(model_name)
-        args.outfile = f"{args.dataset}_{model_name}.jsonl"
+        model_name = sanitize_filename(
+            args.model.split("/")[-1] if "/" in args.model else args.model
+        )
+        if args.input_jsonl:
+            stem = os.path.splitext(os.path.basename(args.input_jsonl))[0]
+            args.outfile = f"{stem}_regen_{model_name}.jsonl"
+        else:
+            args.outfile = f"{args.dataset}_{model_name}.jsonl"
 
-    print(f"Using dataset: {dataset_id}")
-    print(f"Split: {split}")
-    print(f"Prompt field: {prompt_field}")
+    mode = "conversations" if args.input_jsonl else "single-prompt"
+    print(f"Source: {args.input_jsonl or args.dataset + ' (HF)'}  [{mode} mode]")
     print(f"Output file: {args.outfile}")
     print()
 
     seen_ids = load_seen(args.outfile) if args.resume else set()
-    dataset = load_dataset(dataset_id, name=subset, split=split, streaming=True)
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
     semaphore = asyncio.Semaphore(args.concurrency)
@@ -367,29 +549,15 @@ async def main():
             ]
 
             processed_count = 0
-            for index, row in enumerate(dataset):
+            for index, uuid, payload in iter_input_items(args):
                 if args.limit is not None and processed_count >= args.limit:
                     break
 
-                if args.language_filter and row.get("language") != args.language_filter:
-                    continue
-
-                prompt = row.get(prompt_field)
-                if not prompt:
-                    continue
-
-                uuid = row.get("uuid")
-                key = str(uuid or index)
+                key = str(uuid if uuid is not None else index)
                 if key in seen_ids:
                     continue
 
-                await queue.put(
-                    {
-                        "idx": index,
-                        "uuid": uuid,
-                        "prompt": prompt,
-                    }
-                )
+                await queue.put({"idx": index, "uuid": uuid, **payload})
                 processed_count += 1
 
             # Signal workers to stop
