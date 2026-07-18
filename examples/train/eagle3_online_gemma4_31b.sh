@@ -55,11 +55,31 @@ MAX_MODEL_LEN=8192
 # VLLM_GPUS="0,1,2,3,4,5,6"; VLLM_TP=1; VLLM_DP=7; TRAIN_GPUS="7"; MAX_MODEL_LEN=4096
 # ==========================================================================
 
+# ---- Optional: CUDA forward-compatibility (old <570 driver, datacenter GPUs) --
+# Set CUDA_COMPAT=/path/to/cuda-compat-13.0 (forward-compat libcuda from NVIDIA's
+# cuda-compat rpm) to run the cu13 vLLM/torch stack on a 12.7 driver. Derives the
+# rest from the active conda env; no hardcoded paths. NCCL is broken under
+# forward-compat, so this forces SINGLE-GPU vLLM (TP=1, DP=1, --enforce-eager).
+VLLM_EXTRA=""
+if [ -n "${CUDA_COMPAT:-}" ]; then
+    # Derive paths from the activated conda env (gemma4-spec), not ambient `python`.
+    PREFIX="${CONDA_PREFIX:-$(python -c 'import sys; print(sys.prefix)')}"
+    SP="$("$PREFIX/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    export LD_LIBRARY_PATH="$PREFIX/lib:$CUDA_COMPAT:${LD_LIBRARY_PATH:-}"
+    export PATH="$SP/ninja/data/bin:$SP/nvidia/cu13/bin:$PATH"
+    export CUDA_HOME="$SP/nvidia/cu13"
+    export PYTHONNOUSERSITE=1 VLLM_USE_FLASHINFER_SAMPLER=0
+    echo "[compat] CUDA forward-compat on; NCCL broken -> single-GPU vLLM (TP=1,DP=1)"
+    VLLM_GPUS="0"; VLLM_TP=1; VLLM_DP=1; TRAIN_GPUS="1"
+    MAX_MODEL_LEN="${COMPAT_MAX_MODEL_LEN:-4096}"
+    VLLM_EXTRA="--enforce-eager"
+fi
+
 # Step 1: launch vLLM (hidden-state extraction) on the inference GPUs
 echo "=== Step 1: launching vLLM (TP=$VLLM_TP, DP=$VLLM_DP) on GPUs $VLLM_GPUS ==="
 CUDA_VISIBLE_DEVICES="$VLLM_GPUS" python scripts/launch_vllm.py "$MODEL" \
     -- --tensor-parallel-size "$VLLM_TP" --data-parallel-size "$VLLM_DP" \
-       --max-model-len "$MAX_MODEL_LEN" --port "$VLLM_PORT" &
+       --max-model-len "$MAX_MODEL_LEN" --port "$VLLM_PORT" $VLLM_EXTRA &
 VLLM_PID=$!
 cleanup() {
     echo "Stopping vLLM server..."
