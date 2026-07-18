@@ -109,6 +109,26 @@ python scripts/response_regeneration/script.py \
 # 3. Stop server when done (Ctrl+C)
 ```
 
+### Multiple Servers (round-robin)
+
+`--endpoint` accepts more than one server, and requests are round-robined across
+all of them — useful when you run several independent vLLM servers (e.g. one per
+GPU) instead of one data-parallel server, for higher regeneration throughput:
+
+```bash
+# Start several single-GPU servers
+CUDA_VISIBLE_DEVICES=0 vllm serve "meta-llama/Llama-3.3-70B-Instruct" --port 8000 &
+CUDA_VISIBLE_DEVICES=1 vllm serve "meta-llama/Llama-3.3-70B-Instruct" --port 8001 &
+
+# Fan out across them (unreachable endpoints are probed and dropped at startup)
+python scripts/response_regeneration/script.py \
+  --dataset magpie --limit 1000 \
+  --endpoint http://127.0.0.1:8000/v1/chat/completions \
+             http://127.0.0.1:8001/v1/chat/completions
+```
+
+Pass `--skip-endpoint-validation` to skip the startup health check.
+
 ### Resuming Interrupted Processing
 
 If processing is interrupted, use the `--resume` flag to skip already-processed rows:
