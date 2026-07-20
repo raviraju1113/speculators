@@ -186,7 +186,12 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
     gpus = str(cfg.get("gpus", "")) if cfg.get("gpus") is not None else ""
 
     print(f"\n{'=' * 64}\n=== experiment: {exp['name']} ===")
-    print(f"  draft: {exp.get('draft') or '(none — baseline)'}")
+    if exp.get("draft"):
+        print(f"  draft: {exp['draft']}")
+    elif exp.get("speculative_config"):
+        print(f"  spec : {json.dumps(exp['speculative_config'])}")
+    else:
+        print("  draft: (none — baseline)")
     print(f"  CUDA_VISIBLE_DEVICES={gpus or '(inherit)'}")
     print(f"  serve: {' '.join(serve_cmd)}")
     print(f"  eval : {' '.join(eval_cmd)}")

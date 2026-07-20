@@ -27,7 +27,7 @@ cd "$(dirname "$0")"
 # --- defaults (override via env) -------------------------------------------
 MODEL="${MODEL:-zai-org/GLM-5.2-FP8}"
 PORT="${PORT:-8000}"
-TP="${TP:-8}"
+TP="${TP:-8}"                                           # 8x B200 on this box
 NUM_SP="${NUM_SP:-5}"                                   # native MTP depth
 GPU_MEM="${GPU_MEM:-0.9}"
 CTX="${CTX:-1048576}"                                   # 1M GLM-5.2 native context
