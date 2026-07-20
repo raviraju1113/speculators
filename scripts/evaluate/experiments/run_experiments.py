@@ -100,12 +100,15 @@ def build_serve_command(cfg: dict, exp: dict, server: dict) -> list[str]:
         str(server["max_model_len"]),
     ]
     draft = exp.get("draft")
-    if draft:
-        spec = {"model": draft}
+    speculative_config = exp.get("speculative_config")
+    if draft or speculative_config:
+        spec: dict = {}
+        if draft:
+            spec["model"] = draft
         if exp.get("num_speculative_tokens") is not None:
             spec["num_speculative_tokens"] = exp["num_speculative_tokens"]
         # allow arbitrary extra speculative-config keys from the experiment
-        spec.update(exp.get("speculative_config", {}))
+        spec.update(speculative_config or {})
         cmd += ["--speculative-config", json.dumps(spec)]
     cmd += list(server.get("extra_args", []))
     return cmd
