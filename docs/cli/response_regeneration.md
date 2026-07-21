@@ -69,7 +69,13 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 #### Data Arguments
 
-- **`--dataset`** (str, default: `ultrachat`, choices: `magpie`, `ultrachat`) Dataset to process.
+- **`--dataset`** (str, default: `ultrachat`, choices: `magpie`, `ultrachat`, `gsm8k`) Built-in HF dataset to process (single-prompt mode). Ignored if `--input-jsonl` is set.
+
+- **`--input-jsonl`** (str, default: `None`) Path to a local **conversations JSONL** to regenerate — each row has a `conversations` list of `{from, value}` (ShareGPT) or `{role, content}` (OpenAI) turns (e.g. `lightseekorg/kimi-mtp-dataset`). Every assistant turn is regenerated **in context** by the target (system/user turns kept, original assistant turns replaced). Overrides `--dataset`; multimodal/malformed rows are skipped. Reads a plain JSONL, so it does not require `datasets`/`pyarrow`.
+
+- **`--skip-sources`** (str, default: `llava_instruct,continual_tool_kimi`) Comma-separated `source` values to skip in `--input-jsonl` mode. The default drops multimodal (`llava_instruct`) and tool-call (`continual_tool_kimi`) rows, which can't be cleanly text-regenerated. Pass `''` to keep all.
+
+- **`--sources`** (str, default: `None`) If set, only regenerate rows whose `source` is in this comma-separated allowlist (applied after `--skip-sources`). `--input-jsonl` only.
 
 - **`--split`** (str, default: dataset-specific) Dataset split. Defaults to `train` for magpie and `train_sft` for ultrachat.
 
@@ -79,7 +85,7 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 #### Server Arguments
 
-- **`--endpoint`** (str, default: `http://127.0.0.1:8000/v1/chat/completions`) vLLM chat completions endpoint.
+- **`--endpoint`** (str, one or more, default: `http://127.0.0.1:8000/v1/chat/completions`) vLLM chat completions endpoint(s). Pass several to round-robin requests across multiple servers (e.g. one per GPU) for higher throughput: `--endpoint http://127.0.0.1:8000/v1/chat/completions http://127.0.0.1:8001/v1/chat/completions`. Unreachable endpoints are probed and dropped at startup unless `--skip-endpoint-validation` is set.
 
 - **`--model`** (str, default: `None`) Model name exposed by vLLM. Auto-detected from the server if not specified.
 
@@ -91,9 +97,9 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 #### Output Arguments
 
-- **`--outfile`** (str, default: auto-generated) Output JSONL path. If not specified, auto-generated as `{dataset}_{model}.jsonl`.
+- **`--outfile`** (str, default: auto-generated) Output JSONL path. Auto-generated as `{dataset}_{model}.jsonl`, or `{input-stem}_regen_{model}.jsonl` for `--input-jsonl`. Failed rows are written to a sibling **`<outfile>.errors.jsonl`** (with the server's error message) so the main output stays clean — a common cause is a conversation longer than the server's `max_model_len`.
 
-- **`--resume`** (flag) Skip rows already present in the output file (matched by uuid or index).
+- **`--resume`** (flag) Skip rows already present in the output file (matched by uuid, id, or `metadata.idx`). Rows recorded as errors are **not** skipped, so a resume retries them.
 
 ### Full Example
 
@@ -107,6 +113,23 @@ python scripts/response_regeneration/script.py \
   --outfile magpie_Llama-3.3-70B-Instruct.jsonl \
   --resume
 ```
+
+### Conversations Example (regenerate a local dataset with the target)
+
+Regenerate a multi-turn ShareGPT-style JSONL (e.g. to align an existing training
+set to your target model's outputs), fanning out across several servers:
+
+```bash
+python scripts/response_regeneration/script.py \
+  --input-jsonl /path/to/kimi-mtp-dataset/train.jsonl \
+  --outfile /path/to/train_regen.jsonl \
+  --endpoint http://127.0.0.1:8001/v1/chat/completions \
+             http://127.0.0.1:8002/v1/chat/completions \
+  --concurrency 128 --max-tokens 2048 --resume
+```
+
+Each assistant turn is regenerated in context; failed rows (e.g. contexts over
+`max_model_len`) go to `train_regen.jsonl.errors.jsonl`.
 
 ## Supported Datasets
 

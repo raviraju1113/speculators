@@ -1,0 +1,44 @@
+# Speculative-decoding eval: gemma-4-31b-it backbone + gemma-4-31B-it-assistant draft.
+#
+# Backbone (google/gemma-4-31B-it) is already local at
+#   /nvmedata/hf_checkpoints/gemma-4-31b-it
+# Draft (google/gemma-4-31B-it-assistant) must be downloaded to
+#   /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant   (not yet present)
+#
+# Run:  python run_experiments.py --config gemma4-31b.yaml --dry-run   # print commands only
+#       python run_experiments.py --config gemma4-31b.yaml             # full serve -> eval -> compare
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it     # target / verifier (local, ~62GB)
+gpus: "0,1,2,3"                                        # 4x A100 80GB on this box
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4                              # 4x A100 (backbone ~62GB fits)
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench, gsm8k, math500, humaneval, mbpp]
+  num_samples: 50                                      # per benchmark (0 = all)
+  max_tokens: 4096
+  temperature: 0.0                                     # greedy = canonical acceptance
+
+output_dir: ./results/gemma4-31b
+
+experiments:
+  # First entry is the baseline (backbone alone) — the speedup denominator.
+  - name: baseline
+
+  # Attach the assistant draft and sweep speculative depth.
+  - name: assistant_k5
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 5
+
+  - name: assistant_k3
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 3

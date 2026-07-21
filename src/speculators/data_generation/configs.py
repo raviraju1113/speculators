@@ -1,5 +1,6 @@
 """Configuration registries for data generation pipeline."""
 
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -91,6 +92,63 @@ def _normalize_sharegpt4v_coco(example: dict) -> dict:
     return {"conversations": messages}
 
 
+def _adapt_openai_content_part(part: dict) -> dict:
+    """Map an OpenAI-style content part to the pipeline's internal part format.
+
+    The pipeline represents media internally as
+    ``{"type": <modality>, "url"|"path": ...}`` (see
+    ``preprocessing._adapt_part_for_vllm``). OpenAI chat parts instead nest the
+    payload, e.g. ``{"type": "image_url", "image_url": {"url": ...}}``.
+    """
+    part_type = part.get("type")
+    if part_type == "text":
+        return {"type": "text", "text": part.get("text", "")}
+
+    for modality in ("image", "video", "audio"):
+        if part_type == f"{modality}_url":
+            payload = part.get(f"{modality}_url") or {}
+            url = payload.get("url") if isinstance(payload, dict) else payload
+            return {"type": modality, "url": url}
+
+    # Already in the internal format (or an unknown part we leave untouched).
+    return part
+
+
+def _normalize_kimi_mtp(example: dict) -> dict:
+    """Normalize ``lightseekorg/kimi-mtp-dataset`` rows.
+
+    The dataset mixes three shapes under a single ShareGPT-style ``conversations``
+    field of ``{"from", "value"}`` turns:
+
+    * text-only turns (``value`` is a plain string),
+    * ``continual_tool_kimi`` turns (plain-string system prompts / Kimi tool-call
+      markers -- handled downstream as text), and
+    * ``llava_instruct`` multimodal turns whose ``value`` is a JSON-encoded string
+      of OpenAI content parts, e.g.
+      ``'[{"type":"image_url","image_url":{"url":...}},{"type":"text","text":...}]'``.
+
+    Downstream (``preprocessing._normalize_conversation``) already maps
+    ``from``/``value``, ``system``, and ``tool`` roles, so here we only decode the
+    multimodal JSON-string values into the pipeline's internal content-part format.
+    """
+    conversations = []
+    for turn in example.get("conversations", []):
+        value = turn.get("value")
+        if isinstance(value, str):
+            stripped = value.lstrip()
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list) and all(
+                    isinstance(part, dict) and "type" in part for part in parsed
+                ):
+                    value = [_adapt_openai_content_part(part) for part in parsed]
+        conversations.append(turn | {"value": value})
+    return {"conversations": conversations}
+
+
 DATASET_CONFIGS: dict[str, DatasetConfig] = {
     "sharegpt": DatasetConfig(
         name="sharegpt",
@@ -109,6 +167,18 @@ DATASET_CONFIGS: dict[str, DatasetConfig] = {
         subset="main",
         split="train",
         normalize_fn=_normalize_gsm8k,
+    ),
+    # TorchSpec's Kimi-K2.5 EAGLE3 training corpus (~477k ShareGPT-style rows).
+    # Mixes text (mostly open-perfectblend), llava_instruct multimodal turns whose
+    # `value` is a JSON-encoded list of OpenAI content parts, and continual_tool_kimi
+    # tool-call/system turns. Multimodal rows reference remote COCO image URLs, so a
+    # text-only target processor will skip/mishandle them -- use a multimodal target
+    # (and a vLLM server allowed to fetch those URLs) to train on the image turns.
+    "kimi_mtp": DatasetConfig(
+        name="kimi_mtp",
+        hf_path="lightseekorg/kimi-mtp-dataset",
+        split="train",
+        normalize_fn=_normalize_kimi_mtp,
     ),
     # NOTE: You need to serve vLLM with `--allowed-local-media-path /path/to/coco`
     "sharegpt4v_coco": DatasetConfig(

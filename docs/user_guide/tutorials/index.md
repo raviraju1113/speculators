@@ -20,6 +20,12 @@ Learn how to train an Eagle-3 speculator using offline training with pre-generat
 
 **Time required:** ~3 hours
 
+## [Train Eagle-3 for Gemma-4-31B-it (Online, Disaggregated)](train_eagle3_online_gemma4_31b.md)
+
+End-to-end Gemma-4-31B-it recipe, including running the CUDA-13 vLLM stack on an older (CUDA 12.7) GPU node via forward compatibility, single-GPU fallback, and the dependency/config fixes needed.
+
+**Time required:** ~1 hour (single A100 80 GB, 20k samples)
+
 ## [Train DFlash Model Online](train_dflash_online.md)
 
 Learn how to train a DFlash speculator model with block-based token generation.

@@ -7,3 +7,7 @@ matplotlib
 numpy
 scikit-learn
 scipy
+
+# Direct server eval (mtp_server_eval/) + config-driven experiments (experiments/)
+requests
+pyyaml

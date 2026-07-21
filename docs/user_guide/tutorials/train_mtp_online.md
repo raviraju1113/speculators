@@ -78,6 +78,23 @@ output/mtp_qwen3_5_9b/
 
 **Note:** This step is the same for all speculator types. For more information please see the [prepare_data.py cli reference](/cli/prepare_data.md).
 
+**Tip — skip this step entirely.** Since online training generates hidden states on the fly (no offline dump), the only thing this step produces is a small tokenized dataset. You can let `train.py` do that tokenization itself by passing `--data` (a HuggingFace dataset name/shortcut or a local `.jsonl`) instead of a pre-built `--data-path`. Then the whole flow is just "download-from-HF + train":
+
+```bash
+# Step 3 becomes a single command — no separate prepare_data.py run:
+CUDA_VISIBLE_DEVICES=1 python scripts/train.py \
+  --verifier-name-or-path Qwen/Qwen3.5-9B \
+  --data ./output/dataset/gsm8k.jsonl \
+  --data-path ./output/mtp_qwen3_5_9b \
+  --max-samples 5000 \
+  --vllm-endpoint http://localhost:8000/v1 \
+  --speculator-type mtp --num-speculative-steps 3 \
+  --on-missing generate --on-generate delete
+  # ... remaining train.py flags as in Step 3
+```
+
+`--data` tokenizes into `--data-path` on startup (rank 0), then training proceeds normally. See the [train.py cli reference](/cli/train.md#data-arguments).
+
 ## Step 2: Launch vLLM Server
 
 Start vLLM to serve the verifier for hidden state extraction. The server stays running throughout training.

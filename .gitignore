@@ -174,3 +174,13 @@ cython_debug/
 
 # Visual Studio Code
 .vscode/
+# Generated GuideLLM prompt files (see scripts/evaluate/eval_datasets/to_guidellm.py)
+scripts/evaluate/eval_datasets/guidellm/
+
+# Generated server-eval results
+scripts/evaluate/mtp_server_eval/results/
+
+# AgentX trace-replay client checkout (cloned on first run)
+scripts/evaluate/mtp_server_eval/.agentx/
+slurm-*.out
+logs/

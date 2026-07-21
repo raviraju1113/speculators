@@ -1,0 +1,36 @@
+# Speculative-decoding eval for the freshly-trained eagle-3 draft, adapted for a
+# single-GPU CUDA-13-forward-compat node (driver 12.7). NCCL segfaults under
+# forward compat, so TP=1 / one GPU only, and --enforce-eager. Run it with the
+# forward-compat env exported (see run_eval_1gpu.sh in the session scratchpad):
+#   LD_LIBRARY_PATH=<envlib>:<compat> PYTHONNOUSERSITE=1 VLLM_USE_FLASHINFER_SAMPLER=0 \
+#   PATH=<ninja>:<nvcc>:$PATH CUDA_HOME=<cu13> python run_experiments.py --config gemma4-31b-regen-1gpu.yaml
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"                                   # single GPU — no NCCL (forward-compat limitation)
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1                   # TP=1 (no multi-GPU collectives)
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: ["--enforce-eager"]           # skip graph capture (memory + fwd-compat kernel path)
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k]                        # one fast benchmark for a first speedup number
+  num_samples: 20                            # per benchmark
+  max_tokens: 2048
+  temperature: 0.0                           # greedy = canonical acceptance
+
+output_dir: ./results/gemma4-31b-regen-1gpu
+
+experiments:
+  # baseline (backbone alone) — the speedup denominator
+  - name: baseline
+  # our trained eagle-3 draft (regenerated data, off-policy), 3 speculative tokens
+  - name: eagle3_regen_k3
+    draft: /import/ml-sc-scratch1/chenw/speculators/output/gemma4_31b_eagle3_regen/checkpoints/checkpoint_best
+    num_speculative_tokens: 3

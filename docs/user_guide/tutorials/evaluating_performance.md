@@ -9,7 +9,76 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-Run the full benchmark pipeline (output-length estimation → performance sweep → CSV):
+### Easiest: config-driven experiments (recommended)
+
+Describe the run in a YAML — start from the template
+[`example.yaml`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/example.yaml),
+or a filled-in example
+[`gemma4-31b.yaml`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/gemma4-31b.yaml)
+(Gemma 4 31B-it backbone + assistant draft) — and let
+[`scripts/evaluate/experiments/run_experiments.py`](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/run_experiments.py)
+do the rest: for each experiment it **launches vLLM (backbone ± draft), waits for
+`/health`, runs the eval, stops the server**, then prints a speedup table (first
+entry = baseline). No manual server management.
+
+```bash
+cd scripts/evaluate/experiments
+# Edit example.yaml: set `backbone`, the `draft`(s), and `tensor_parallel_size`/`gpus`.
+python run_experiments.py --config example.yaml --dry-run   # preview serve+eval commands, launch nothing
+python run_experiments.py --config example.yaml             # baseline vs. each draft, then compare
+```
+
+Backbone / drafts / server (`tensor_parallel_size`, `gpus`) / eval settings all
+live in the YAML; per-experiment blocks override the defaults. See the
+[experiments README](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/experiments/README.md),
+and for a full backbone-specific walkthrough (env, GPU layout, driver
+requirements) the Gemma 4 31B-it example:
+[`examples/train/gemma4_31b_README.md`](https://github.com/vllm-project/speculators/blob/main/examples/train/gemma4_31b_README.md).
+
+## Measured results — Gemma-4-31B-it (single-GPU, forward-compat node)
+
+Our trained eagle-3 draft (from scratch, on gemma-4-regenerated data, off-policy —
+see [Train Eagle-3 for Gemma-4-31B-it](train_eagle3_online_gemma4_31b.md)),
+evaluated with the `mtp_server_eval` evaluator via `run_experiments.py`.
+
+**Setup:** single A100 80 GB, `tensor_parallel_size: 1`, `--enforce-eager`,
+`max_model_len 8192`; benchmark `gsm8k`, `num_samples 20`, greedy
+(`temperature 0.0`), `num_speculative_tokens: 3`. (Single-GPU because NCCL
+segfaults under CUDA-13 forward compat — see the training tutorial.) Config:
+`scripts/evaluate/experiments/gemma4-31b-regen-1gpu.yaml`.
+
+Head-to-head vs. the two **official** drafts, all at k=3 in one run
+(`scripts/evaluate/experiments/gemma4-31b-compare-1gpu.yaml`):
+
+| draft | decode tok/s | accept_len | accept_rate | speedup |
+|---|---|---|---|---|
+| baseline (backbone only) | 18.0 | — | — | 1.00× |
+| **ours** — eagle-3, regen 5k, 3 ep, k=3 | 40.2 | 2.38 | 0.46 | **2.23×** |
+| official RedHat eagle-3 (`…-speculator.eagle3`) | 51.2 | 3.10 | 0.70 | 2.84× |
+| official Google assistant (`…-it-assistant`, MTP) | 56.8 | 3.69 | 0.90 | 3.16× |
+
+Reading it:
+- Every draft roughly **doubles+ decode throughput**; the official drafts lead
+  (Google assistant best at 3.16×, 90% acceptance).
+- **Ours reaches 2.23×** — about **79%** of the official eagle-3's speedup and
+  **71%** of the Google assistant's — from a *quick proof run*: only **5,000**
+  regenerated samples, **3 epochs**, and a **reduced draft vocab (32k)**. The
+  official drafts are fully trained (and the Google assistant is a larger 4-layer
+  MTP head). Expect ours to close much of the gap with more data/epochs and full
+  draft vocab. The reduced vocab in particular caps `accept_rate` (the draft
+  can't propose out-of-vocab tokens).
+- `accept_len` is out of a max of k+1 = 4 (the k speculated tokens + the target's
+  always-accepted bonus token).
+
+> **Note on absolute tok/s:** these are single-GPU, `--enforce-eager` numbers, so
+> throughput is low in absolute terms; the **speedup ratio** is the meaningful
+> figure. On a driver ≥580 you'd use multi-GPU + CUDA graphs for higher absolute
+> throughput (ratios stay comparable).
+
+### Manual: against a server you already run
+
+If you already have a vLLM server up, run the GuideLLM evaluator directly. Full
+benchmark pipeline (output-length estimation → performance sweep → CSV):
 
 ```bash
 python evaluate.py sweep --target http://localhost:8000/v1
@@ -58,3 +127,30 @@ python plot.py speedup \
 ```
 
 Both accept CSVs or raw GuideLLM sweep JSONs. Available metrics: `latency`, `itl`, `ttft`, `output_tps`.
+
+## Alternative: direct server eval (SGLang or vLLM)
+
+`evaluate.py` drives GuideLLM against **vLLM**. For a lighter-weight evaluator
+that works against **both SGLang and vLLM** — sending prompts directly to the
+server's OpenAI-compatible streaming API and reading speculative-decoding metrics
+off Prometheus (only `requests` needed) — use
+[`scripts/evaluate/mtp_server_eval/`](https://github.com/vllm-project/speculators/tree/main/scripts/evaluate/mtp_server_eval).
+It reports per-benchmark **acceptance length/rate** and **decode tok/s**, and
+`compare_speedup.py` prints the speedup vs. a baseline.
+
+```bash
+cd scripts/evaluate/mtp_server_eval
+BACKEND=vllm   BASE_URL=http://localhost:8000 RESULT_DIR=./results/spec ./run_eval.sh
+BACKEND=sglang BASE_URL=http://localhost:8080 RESULT_DIR=./results/spec ./run_eval.sh
+python compare_speedup.py base=./results/base/mtp_eval_summary.json \
+                          spec=./results/spec/mtp_eval_summary.json
+```
+
+Benchmarks (`aime`, `gpqa`, `livecodebench`, …) ship as prompt files; the two
+backends differ only in how acceptance is read (SGLang windowed gauges vs. vLLM
+cumulative counters). It also includes **AgentX** (`run_agentx.sh`) — an agentic
+trace-replay load test for measuring spec-decode value under realistic
+multi-user concurrency. See the
+[directory README](https://github.com/vllm-project/speculators/blob/main/scripts/evaluate/mtp_server_eval/README.md)
+for the full option matrix.
+

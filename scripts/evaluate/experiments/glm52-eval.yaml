@@ -1,0 +1,60 @@
+# Speculative-decoding evaluation: GLM-5.2 (FP8) with native MTP.
+#
+# Backbone  : zai-org/GLM-5.2-FP8    (~743B total, 39B active MoE, FP8)
+# MTP       : method=mtp (GLM's built-in multi-token prediction, NOT dspark)
+#             num_speculative_tokens=5
+#
+# Reference: https://recipes.vllm.ai/zai-org/GLM-5.2
+#
+# Run:  python run_experiments.py --config glm52-eval.yaml --dry-run   # print commands only
+#       python run_experiments.py --config glm52-eval.yaml             # full serve -> eval -> compare
+#
+# Alternative (manual / interactive):
+#   # Terminal 1: serve
+#   ./glm52/run_glm52_vllm.sh
+#   # Terminal 2: eval
+#   ./glm52/run_glm52_eval.sh
+#
+# Notes:
+#   - Requires vLLM >= 0.23.0 (native MTP + 1M context support)
+#   - GLM-5.2 uses IndexShare (reuses indexer across every 4 sparse layers),
+#     reducing per-token FLOPs by 2.9x at 1M context
+#   - Native MTP is built into the GLM-5.2 checkpoint — no separate draft model needed
+
+engine: vllm
+backbone: zai-org/GLM-5.2-FP8
+gpus: "0,1,2,3,4,5,6,7"                                 # 8x A100/H100 on this box
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  # GLM-5.2 FP8: ~743B total params. 8 GPUs x 80GB ~= 640GB; should fit with tp=8
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.9
+  # 1M context (GLM-5.2 native) — keep max_model_len high for long-horizon tasks
+  max_model_len: 16384
+  health_timeout: 3600                                  # large model load + IndexShare init is slow
+  extra_args:
+    - --enable-prefix-caching
+    - --kv-cache-dtype
+    - fp8
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 50                                        # per benchmark (0 = all)
+  max_tokens: 4096
+  temperature: 0.0                                       # greedy = canonical acceptance
+
+output_dir: ./results/glm52-eval
+
+experiments:
+  # First entry = baseline (backbone alone, no MTP) — speedup denominator.
+  - name: baseline
+
+  # GLM-5.2 native MTP (method=mtp, no separate draft model needed).
+  # num_speculative_tokens=5 per https://recipes.vllm.ai/zai-org/GLM-5.2
+  - name: glm52-native-mtp
+    speculative_config:
+      method: mtp
+      num_speculative_tokens: 5
