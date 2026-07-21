@@ -75,6 +75,44 @@ Reading it:
 > figure. On a driver ≥580 you'd use multi-GPU + CUDA graphs for higher absolute
 > throughput (ratios stay comparable).
 
+## Measured results — GLM-5.2-FP8, native MTP (8×B200)
+
+GLM-5.2 ships with **native multi-token prediction** built into the checkpoint
+(`method=mtp`, `num_speculative_tokens=5`) — no separate draft model. Evaluated
+with the `mtp_server_eval` evaluator via `run_experiments.py`.
+
+**Setup:** 8×B200, `tensor_parallel_size: 8`, FP8 weights + FP8 KV cache, CUDA
+graphs (not eager), `max_model_len 16384`; benchmarks `aime`, `gpqa`,
+`livecodebench`, `num_samples 50`, greedy (`temperature 0.0`),
+`num_speculative_tokens: 5`. Config:
+`scripts/evaluate/experiments/glm52-eval.yaml`.
+
+Baseline (backbone alone) vs. native MTP, per benchmark:
+
+| benchmark | accept_len (of k+1=6) | accept_rate | decode speedup |
+|---|---|---|---|
+| baseline (no MTP) | — | — | 1.00× |
+| **aime** (math) | **4.54** | **0.708** | **2.38×** |
+| **livecodebench** (code) | 3.90 | 0.580 | ~1.5× |
+| **gpqa** (science QA) | 3.33 | 0.466 | — |
+| **overall** | — | — | **~2.0×** |
+
+Reading it:
+- **Native MTP roughly doubles decode throughput** — vLLM's server-side generation
+  throughput went from **~104 tok/s (baseline) to ~209 tok/s (MTP)**, ~2.0× overall,
+  up to **2.38× on `aime`**, the most predictable workload.
+- **Acceptance tracks workload predictability**: math (`aime`, 71%) > code
+  (`livecodebench`, 58%) > science QA (`gpqa`, 47%). Higher acceptance → longer
+  accepted runs (`accept_len = accept_rate × k + 1`) → larger speedup.
+- `accept_len` is out of a max of k+1 = 6 (the 5 speculated tokens + the target's
+  always-accepted bonus token).
+
+> **Metric provenance:** acceptance comes from vLLM's cumulative Prometheus
+> counters (`vllm:spec_decode_*`) and the speedup from vLLM's own server-side
+> generation-throughput logs — both independent of per-request client timing. The
+> `gpqa` throughput cell is left blank because its per-request decode timing was
+> unreliable in this run; its acceptance (from Prometheus) is unaffected.
+
 ### Manual: against a server you already run
 
 If you already have a vLLM server up, run the GuideLLM evaluator directly. Full
