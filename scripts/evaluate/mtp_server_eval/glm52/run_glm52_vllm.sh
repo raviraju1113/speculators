@@ -60,7 +60,7 @@ CMD=(
     --max-model-len "$MAXMODEL"
     --speculative-config "$SPEC_CONFIG"
     --kv-cache-dtype "$KV_DTYPE"
-    --disable-chunked-prefill
+    --no-enable-chunked-prefill
     --enable-prefix-caching
     --tool-call-parser glm47
     --reasoning-parser glm45

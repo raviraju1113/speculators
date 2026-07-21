@@ -33,13 +33,13 @@ server:
   gpu_memory_utilization: 0.9
   # 1M context (GLM-5.2 native) — keep max_model_len high for long-horizon tasks
   max_model_len: 16384
-  health_timeout: 3600                                  # large model load + IndexShare init is slow
+  health_timeout: 7200                                  # large model load + IndexShare init is slow (2h safety net)
   # Keep these in sync with glm52/run_glm52_vllm.sh (the manual launcher).
   extra_args:
     - --enable-prefix-caching
     - --kv-cache-dtype
     - fp8
-    - --disable-chunked-prefill
+    - --no-enable-chunked-prefill
     - --tool-call-parser
     - glm47
     - --reasoning-parser

@@ -128,11 +128,15 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-vllm/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local eval run outputs (results are recomputed, not tracked)
+scripts/evaluate/experiments/results/
 
 # Spyder project settings
 .spyderproject

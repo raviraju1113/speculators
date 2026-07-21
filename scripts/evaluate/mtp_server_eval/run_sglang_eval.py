@@ -169,9 +169,13 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
             choices = obj.get("choices") or []
             if choices:
                 delta = choices[0].get("delta") or {}
-                # first chunk carrying actual content marks time-to-first-token
-                if first_tok_t is None and (
-                    delta.get("content") or delta.get("reasoning_content")
+                # First token = first chunk carrying any non-empty textual field
+                # (content, reasoning_content, or any parser-specific field), except
+                # the leading role-only chunk. Checking just content/reasoning_content
+                # misses reasoning tokens under some reasoning parsers, leaving long
+                # reasoning outputs with ttft=None -> bogus decode rate.
+                if first_tok_t is None and any(
+                    k != "role" and isinstance(v, str) and v for k, v in delta.items()
                 ):
                     first_tok_t = time.perf_counter()
     t_end = time.perf_counter()
