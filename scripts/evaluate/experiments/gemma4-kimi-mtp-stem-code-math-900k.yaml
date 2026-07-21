@@ -1,0 +1,45 @@
+# Speculative-decoding evaluation experiments — Gemma 4 31B-it backbone.
+#
+# Run:  python run_experiments.py --config example.yaml
+#       python run_experiments.py --config example.yaml --dry-run   # print commands only
+#
+# The runner launches one vLLM server per experiment (backbone, optionally with a
+# draft attached via --speculative-config), runs the acceptance/throughput eval,
+# stops the server, then prints a speedup table (first experiment = baseline).
+
+engine: vllm
+# Local copy on scratch (downloaded from google/gemma-4-31B-it); the HF id
+# "google/gemma-4-31B-it" also works and is ungated.
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+gpus: "0,1,2,3,4,5,6,7"                                      # CUDA_VISIBLE_DEVICES for the server
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  # gemma-4-31B-it is ~62.6 GB in bf16. tensor_parallel_size: 2 fits comfortably
+  # on 2x80GB (or is required on 40GB GPUs); use 1 on a single 80GB GPU if the KV
+  # cache headroom is enough for your max_model_len.
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800                           # s to wait for /health (weight load + graph capture)
+  extra_args: []                                 # extra `vllm serve` flags
+
+eval:
+  backend: vllm                                  # mtp_server_eval evaluator: vllm | sglang
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 50                                # per benchmark (0 = all)
+  max_tokens: 4096
+  temperature: 0.0                               # greedy = canonical acceptance
+
+output_dir: ./results/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math
+
+experiments:
+  # First entry is the baseline (backbone alone, no draft) — the speedup denominator.
+  - name: baseline
+
+  # Published Gemma 4 31B-it speculators (speculators-format; num_speculative_tokens
+  # is read from each draft's own config, so it's omitted here — set it to override).
+  - name: eagle3
+    draft: /sms-scratch/ravira/checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math/checkpoint_best/
+    num_speculative_tokens: 3
