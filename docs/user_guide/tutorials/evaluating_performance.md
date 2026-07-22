@@ -89,29 +89,56 @@ graphs (not eager), `max_model_len 16384`; benchmarks `aime`, `gpqa`,
 
 Baseline (backbone alone) vs. native MTP, per benchmark:
 
-| benchmark | accept_len (of k+1=6) | accept_rate | decode speedup |
-|---|---|---|---|
-| baseline (no MTP) | — | — | 1.00× |
-| **aime** (math) | **4.54** | **0.708** | **2.38×** |
-| **livecodebench** (code) | 3.90 | 0.580 | ~1.5× |
-| **gpqa** (science QA) | 3.33 | 0.466 | — |
-| **overall** | — | — | **~2.0×** |
+| benchmark | decode tok/s | e2e tok/s | TTFT (s) | accept_len (of k+1=6) | accept_rate | speedup (e2e) |
+|---|---|---|---|---|---|---|
+| **AIME** | | | | | | |
+| baseline (no MTP) | 520.4 | 104.3 | 23.037 | — | — | 1.00× |
+| + native MTP | 1251.7 | 249.3 | 10.089 | 4.54 | 0.708 | **2.39×** |
+| **GPQA** | | | | | | |
+| baseline (no MTP) | — | 104.2 | 10.073 | — | — | 1.00× |
+| + native MTP | — | 182.7 | 4.469 | 3.33 | 0.466 | **1.75×** |
+| **LiveCodeBench** | | | | | | |
+| baseline (no MTP) | 779.1 | 103.8 | 10.802 | — | — | 1.00× |
+| + native MTP | 1695.9 | 211.5 | 5.411 | 3.90 | 0.580 | **2.04×** |
+
+> **Note on GPQA decode tok/s:** the GPQA baseline `decode_tok_s` is anomalously
+> high (22 K tok/s) due to a measurement artifact on that run; `e2e tok/s` is
+> reliable (104.2 tok/s) and used for the speedup calculation above.
 
 Reading it:
-- **Native MTP roughly doubles decode throughput** — vLLM's server-side generation
-  throughput went from **~104 tok/s (baseline) to ~209 tok/s (MTP)**, ~2.0× overall,
-  up to **2.38× on `aime`**, the most predictable workload.
+- **Native MTP roughly doubles end-to-end throughput** — up to **2.39× on `aime`**,
+  **2.04× on `livecodebench`**, and **1.75× on `gpqa`**.
+- **TTFT is also significantly reduced** — AIME TTFT drops from 23s to 10s (+MTP),
+  a 2.3× improvement. This is a key latency benefit of speculative decoding that
+  is not captured by decode-throughput speedup alone.
 - **Acceptance tracks workload predictability**: math (`aime`, 71%) > code
   (`livecodebench`, 58%) > science QA (`gpqa`, 47%). Higher acceptance → longer
   accepted runs (`accept_len = accept_rate × k + 1`) → larger speedup.
 - `accept_len` is out of a max of k+1 = 6 (the 5 speculated tokens + the target's
   always-accepted bonus token).
 
+### KV cache dtype ablation (BF16 vs FP8)
+
+A separate ablation run (`scripts/evaluate/experiments/glm52-kvcache-ablation.yaml`)
+tested BF16 KV cache vs. FP8 KV cache on a subset of benchmarks. Results with
+native MTP enabled:
+
+| benchmark | KV dtype | decode tok/s | accept_len | accept_rate |
+|---|---|---|---|---|
+| AIME | FP8 | 1251.7 | 4.54 | 0.708 |
+| AIME | BF16 | 246.2 | 4.62 | 0.725 |
+| GSM8K | BF16 | 240.3 | 4.40 | 0.679 |
+| Math500 | BF16 | 250.2 | 4.66 | 0.733 |
+
+> **Note:** the FP8 and BF16 runs used different server configurations (cold vs.
+> warm cache, different sampling parameters), so the raw `decode tok/s` numbers
+> are not directly comparable. The accept length/rate numbers are consistent,
+> showing that KV cache dtype does not significantly affect MTP acceptance
+> quality.
+
 > **Metric provenance:** acceptance comes from vLLM's cumulative Prometheus
-> counters (`vllm:spec_decode_*`) and the speedup from vLLM's own server-side
-> generation-throughput logs — both independent of per-request client timing. The
-> `gpqa` throughput cell is left blank because its per-request decode timing was
-> unreliable in this run; its acceptance (from Prometheus) is unaffected.
+> counters (`vllm:spec_decode_*`). The e2e and decode tok/s figures are from
+> vLLM's server-side generation logs.
 
 ### Manual: against a server you already run
 

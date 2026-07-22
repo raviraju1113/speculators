@@ -20,6 +20,7 @@ nav:
                 - Train MTP Model Online: user_guide/tutorials/train_mtp_online.md
                 - Response Regeneration: user_guide/tutorials/response_regeneration.md
                 - Evaluating Model Performance: user_guide/tutorials/evaluating_performance.md
+                - GLM-5.2 MTP Evaluation Results: user_guide/tutorials/glm52_mtp_results.md
                 - Serve in vLLM: user_guide/tutorials/serve_vllm.md
     - Developer Guide:
           - developer/index.md
