@@ -41,6 +41,28 @@ Everything below explains the pieces, the knobs, and why the wrappers exist.
 
 ## 1. Environment
 
+### Creating the conda environment
+
+Do this once inside the container (or on any box with the toolchain). It builds the
+`speculators` env the wrappers expect:
+
+```bash
+conda create -n speculators python=3.11 -y
+conda activate speculators
+
+# Install the package (editable) from the repo root
+pip install -e .
+
+# Extra deps for the evaluation scripts (vllm, guidellm, plotting, yaml, …)
+pip install -r scripts/evaluate/requirements.txt
+```
+
+`pip install -e .` is editable so host code edits take effect immediately (this is what
+makes the mounted-checkout overlay in `launch_interactive_docker.sh` work — no reinstall
+needed after editing `src/`). The eval requirements are only needed if you'll run §5.
+
+### Where training runs
+
 Training runs **inside the project Docker image**, not directly on the node. The
 `sngpu` scheduler has no `--shm-size`/`--ipc` knob, and the DataLoader passes large
 per-sample hidden-state tensors through `/dev/shm`; without a big shared-memory segment
