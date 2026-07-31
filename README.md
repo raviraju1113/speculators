@@ -207,6 +207,7 @@ Served models can then be benchmarked using [GuideLLM](https://github.com/vllm-p
 ## Additional Utility Scripts
 
 - [Regenerate responses to enhance your training data](https://github.com/vllm-project/speculators/tree/main/scripts/response_regeneration)
+- For a concrete example of preparing downloaded OpenCodeInstruct parquet data and regenerating it with Gemma-4 on a multi-GPU cluster, see [scripts/response_regeneration/submit_regen_opencodeinstruct_sc-c96.sh](scripts/response_regeneration/submit_regen_opencodeinstruct_sc-c96.sh).
 
 ## Getting Started
 
