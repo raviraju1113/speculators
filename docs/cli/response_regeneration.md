@@ -1,6 +1,6 @@
 # response_regeneration
 
-Regenerates assistant responses in existing datasets using a vLLM-served model. Given a dataset containing user prompts (e.g., Magpie, UltraChat), this pipeline extracts the prompts, sends them to a vLLM server, and produces a new dataset with the original prompts paired with freshly generated responses from the target model. This is useful for creating training data where you want a specific model's outputs in place of the original assistant responses.
+Regenerates assistant responses in existing datasets using a vLLM-served model. Given a dataset containing conversations (e.g., Magpie, UltraChat, GSM8K), this pipeline extracts conversation turns, regenerates each assistant response turn-by-turn against the model's own prior outputs, and produces pre-tokenized training samples. For multi-turn conversations, each turn conditions on the regenerated history, producing on-policy training data.
 
 The pipeline consists of two scripts:
 
@@ -33,7 +33,13 @@ Orchestrates the entire pipeline: starts a vLLM server (with optional data/tenso
 
 - **`--tp-size`** (int) Tensor parallel size per replica (maps to vLLM's `--tensor-parallel-size`).
 
+- **`--max-model-len`** (int) Maximum model context length (passed to `vllm serve --max-model-len`).
+
+- **`--reasoning-parser`** (str) Reasoning parser for the vLLM server (passed to `vllm serve --reasoning-parser`).
+
 - **`--keep-server`** (flag) Don't stop the vLLM server after processing completes.
+
+- **`--tool-call-parser`** (str) vLLM tool-call parser (e.g. `hermes`, `llama3_json`). Adds `--enable-auto-tool-choice --tool-call-parser` to the server; required for tool-call regeneration, otherwise tool calls arrive as raw text and are not regenerated as tools.
 
 All other arguments are passed through to `script.py`.
 
@@ -51,13 +57,15 @@ All other arguments are passed through to `script.py`.
 
 ## script.py
 
-Extracts user prompts from a dataset, sends them to a vLLM chat completion endpoint, and writes out new prompt-response pairs with the target model's generated responses.
+Extracts conversation turns from a dataset, regenerates each assistant response turn-by-turn via a vLLM chat completion endpoint, and writes out pre-tokenized training samples with generation boundaries marked in the loss mask.
 
 ### Features
 
+- **Multi-turn support** — detects `messages`/`conversations` fields and regenerates each assistant turn against the model's own prior responses
 - **Auto-detects model** from vLLM server (no need to specify `--model`)
-- **Resume capability** to skip already-processed rows
+- **Resume capability** to skip already-processed conversations
 - **Async processing** with configurable concurrency
+- **Automatic retries** with exponential backoff on transient failures
 
 ### Basic Usage
 
@@ -69,15 +77,11 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 #### Data Arguments
 
-- **`--dataset`** (str, default: `ultrachat`, choices: `magpie`, `ultrachat`, `gsm8k`) Built-in HF dataset to process (single-prompt mode). Ignored if `--input-jsonl` is set.
+- **`--dataset`** (str, default: `ultrachat`) Dataset preset to process (see [Supported Datasets](#supported-datasets)).
 
-- **`--input-jsonl`** (str, default: `None`) Path to a local **conversations JSONL** to regenerate — each row has a `conversations` list of `{from, value}` (ShareGPT) or `{role, content}` (OpenAI) turns (e.g. `lightseekorg/kimi-mtp-dataset`). Every assistant turn is regenerated **in context** by the target (system/user turns kept, original assistant turns replaced). Overrides `--dataset`; multimodal/malformed rows are skipped. Reads a plain JSONL, so it does not require `datasets`/`pyarrow`.
+- **`--split`** (str, default: preset-specific) Dataset split. Defaults to the preset's split.
 
-- **`--skip-sources`** (str, default: `llava_instruct,continual_tool_kimi`) Comma-separated `source` values to skip in `--input-jsonl` mode. The default drops multimodal (`llava_instruct`) and tool-call (`continual_tool_kimi`) rows, which can't be cleanly text-regenerated. Pass `''` to keep all.
-
-- **`--sources`** (str, default: `None`) If set, only regenerate rows whose `source` is in this comma-separated allowlist (applied after `--skip-sources`). `--input-jsonl` only.
-
-- **`--split`** (str, default: dataset-specific) Dataset split. Defaults to `train` for magpie and `train_sft` for ultrachat.
+- **`--subset`** (str, default: preset-specific) Dataset subset/config name. Defaults to the preset's subset.
 
 - **`--limit`** (int, default: `None`) Stop after N rows.
 
@@ -85,7 +89,7 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 #### Server Arguments
 
-- **`--endpoint`** (str, one or more, default: `http://127.0.0.1:8000/v1/chat/completions`) vLLM chat completions endpoint(s). Pass several to round-robin requests across multiple servers (e.g. one per GPU) for higher throughput: `--endpoint http://127.0.0.1:8000/v1/chat/completions http://127.0.0.1:8001/v1/chat/completions`. Unreachable endpoints are probed and dropped at startup unless `--skip-endpoint-validation` is set.
+- **`--endpoint`** (str, default: `http://127.0.0.1:8000/v1/chat/completions`) vLLM chat completions endpoint.
 
 - **`--model`** (str, default: `None`) Model name exposed by vLLM. Auto-detected from the server if not specified.
 
@@ -95,11 +99,15 @@ python scripts/response_regeneration/script.py --dataset magpie
 
 - **`--max-tokens`** (int, default: `8192`) Max tokens for generation.
 
+- **`--sampling-params`** (str, default: `None`) JSON object merged into each chat-completion request, e.g. `'{"temperature": 0.6, "top_p": 0.95, "seed": 0}'`. Unset keys use the server defaults.
+
+- **`--max-retries`** (int, default: `3`) Max retry attempts per request on transient HTTP failures (408, 409, 425, 429, 5xx) with exponential backoff. Permanent errors (e.g., 400, 404) fail immediately.
+
 #### Output Arguments
 
-- **`--outfile`** (str, default: auto-generated) Output JSONL path. Auto-generated as `{dataset}_{model}.jsonl`, or `{input-stem}_regen_{model}.jsonl` for `--input-jsonl`. Failed rows are written to a sibling **`<outfile>.errors.jsonl`** (with the server's error message) so the main output stays clean — a common cause is a conversation longer than the server's `max_model_len`.
+- **`--outfile`** (str, default: auto-generated) Output JSONL path. If not specified, auto-generated as `{dataset}_{model}.jsonl`.
 
-- **`--resume`** (flag) Skip rows already present in the output file (matched by uuid, id, or `metadata.idx`). Rows recorded as errors are **not** skipped, so a resume retries them.
+- **`--resume`** (flag) Skip conversations already present in the output file (matched by `primary_id`: the row's `id`/`uuid` if it has one, otherwise a content hash).
 
 ### Full Example
 
@@ -114,69 +122,70 @@ python scripts/response_regeneration/script.py \
   --resume
 ```
 
-### Conversations Example (regenerate a local dataset with the target)
-
-Regenerate a multi-turn ShareGPT-style JSONL (e.g. to align an existing training
-set to your target model's outputs), fanning out across several servers:
-
-```bash
-python scripts/response_regeneration/script.py \
-  --input-jsonl /path/to/kimi-mtp-dataset/train.jsonl \
-  --outfile /path/to/train_regen.jsonl \
-  --endpoint http://127.0.0.1:8001/v1/chat/completions \
-             http://127.0.0.1:8002/v1/chat/completions \
-  --concurrency 128 --max-tokens 2048 --resume
-```
-
-Each assistant turn is regenerated in context; failed rows (e.g. contexts over
-`max_model_len`) go to `train_regen.jsonl.errors.jsonl`.
-
 ## Supported Datasets
 
-| Dataset   | HuggingFace ID                                    | Prompt Field  | Default Split |
-| --------- | ------------------------------------------------- | ------------- | ------------- |
-| Magpie    | `Magpie-Align/Magpie-Llama-3.1-Pro-300K-Filtered` | `instruction` | `train`       |
-| UltraChat | `HuggingFaceH4/ultrachat_200k`                    | `prompt`      | `train_sft`   |
+The text presets from the shared dataset registry (`DATASET_CONFIGS` in `speculators/data_generation/configs.py`) — the same ones `prepare-data` accepts:
+
+| Dataset             | HuggingFace ID                                    | Default Split |
+| ------------------- | ------------------------------------------------- | ------------- |
+| `sharegpt`          | `Aeala/ShareGPT_Vicuna_unfiltered`                | `train`       |
+| `ultrachat`         | `HuggingFaceH4/ultrachat_200k`                    | `train_sft`   |
+| `gsm8k`             | `openai/gsm8k`                                    | `train`       |
+| `magpie`            | `Magpie-Align/Magpie-Llama-3.1-Pro-300K-Filtered` | `train`       |
+| `nemotron`          | `nvidia/Llama-Nemotron-Post-Training-Dataset`     | `chat`        |
+| `open-perfectblend` | `mlabonne/open-perfectblend`                      | `train`       |
+| `hermes-fc`         | `NousResearch/hermes-function-calling-v1`         | `train`       |
+
+The registry's multimodal preset, `sharegpt4v_coco`, is **off-policy only** and `--dataset` rejects it. Its turns carry image content parts, which the Chat Completions API rejects, and the pre-tokenized output row has nowhere to keep pixel data. Use it with `prepare-data`.
 
 ## Output Format
 
-Each line of the output JSONL file pairs the original user prompt with the newly generated response, in a conversations format compatible with fine-tuning:
+Rows are pre-tokenized and ready for training: one row per target generation, holding the prompt the target conditioned on followed by the tokens it generated. The endpoint must support `return_token_ids`, which the script uses to read the generation boundary directly instead of re-tokenizing the text and recovering the boundary with a regex.
 
 ```json
 {
-  "id": "sample_0",
-  "conversations": [
-    {"from": "human", "value": "What is the capital of France?"},
-    {"from": "gpt", "value": "The capital of France is Paris."}
-  ],
+  "id": "conv-abc_gen0",
+  "primary_id": "conv-abc",
+  "input_ids": [151644, 872, ...],
+  "loss_mask": [0, 0, ..., 1, 1],
+  "text": "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nThe capital of France is Paris.<|im_end|>",
   "metadata": {
     "idx": 0,
     "finish_reason": "stop",
-    "latency_s": 1.234,
+    "is_tool_call": false,
     "usage": {...},
     "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
-    "reasoning_content": "..."
+    "sampling_params": {...}
   }
 }
 ```
 
-- The `id` field uses the dataset's UUID if available, otherwise falls back to `sample_{idx}`.
-- The `reasoning_content` field in metadata is only included when the model provides reasoning content (e.g., with reasoning models).
+- `loss_mask` is `0` over the prompt and `1` over the generated tokens. This *is* the generation boundary, so training applies no further masking.
+- A conversation yields one row per target generation, each carrying the history before it. Generation `k`'s row is `{primary_id}_gen{k}`. A plain assistant turn is one generation; a turn that calls a tool is two or more (see [Tool calls](#tool-calls)).
+- `primary_id` is the conversation's stable id, used by `--resume`. The row `id` is generation-suffixed and never matches it.
+- `is_tool_call` marks a row whose generated tokens are a tool call rather than a final answer.
+- `text` is a human-readable decode of `input_ids` (`tokenizer.decode`, special tokens kept) for review only — faithful to the tokens by construction. Training drops it.
 
-On error, the response conversation turn is omitted and an `error` field is included in metadata:
+Rows are written only once a conversation finishes. A conversation that fails partway writes nothing to the output file and one row to a sibling error file instead (`--outfile out.jsonl` gives `out.errors.jsonl`), so `--resume` retries it whole:
 
 ```json
 {
-  "id": "sample_0",
-  "conversations": [
-    {"from": "human", "value": "What is the capital of France?"}
-  ],
+  "id": "conv-abc",
   "metadata": {
     "idx": 0,
     "error": "ConnectionError(...)",
+    "generations_completed": 1,
     "endpoint": "http://127.0.0.1:8000/v1/chat/completions"
   }
 }
 ```
+
+### Tool calls
+
+If a source row carries a `tools` schema, it is forwarded to the endpoint on every request and the target regenerates its own tool calls, which are supervised like any other generation.
+
+Tools are **not executed**. The target's *k*-th regenerated call is paired with the *k*-th cached tool result already present in the source row, spliced back as a `tool` message so the conversation can continue. This keeps the call tokens on-policy while the results stay off-policy.
+
+A conversation stops early — keeping the rows completed so far — when the target emits a call that cannot be paired 1:1 with a cached result: it has exhausted the cached results, emitted parallel calls in a single generation, or called a different tool than the next cached result answers. Such conversations are counted under `truncated` in the progress bar.
 
 If `--outfile` is not specified, the filename is auto-generated based on dataset and model (e.g., `magpie_Llama-3.3-70B-Instruct.jsonl`).
