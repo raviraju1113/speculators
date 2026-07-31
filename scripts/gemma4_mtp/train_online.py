@@ -529,6 +529,7 @@ def main():
 
     assistant_module.train()
     step = 0
+    run = {}  # accumulates micro-batch metrics for a windowed (readable) log
     optim.zero_grad()
 
     log("=== Starting training ===")
@@ -576,6 +577,12 @@ def main():
                 )
                 (loss / args.grad_accum).backward()
 
+            # Accumulate EVERY micro-batch's metrics so the log reports a mean
+            # over the window, not one (batch-size-1) conversation's loss.
+            for _k, _v in metrics.items():
+                run[_k] = run.get(_k, 0.0) + float(_v)
+            run["_n"] = run.get("_n", 0) + 1
+
             if (i + 1) % args.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(trainable, 1.0)
                 optim.step()
@@ -584,9 +591,15 @@ def main():
                 step += 1
 
                 if step % args.log_every == 0:
+                    # mean over all micro-batches since the last log -> smooth,
+                    # representative curve (vs. a single noisy conversation)
+                    n = run.pop("_n", 1)
+                    avg = {k: run[k] / n for k in run}
+                    run = {}
                     lr = sched.get_last_lr()[0]
-                    msg = " ".join(f"{k}={float(v):.4f}" for k, v in metrics.items())
-                    log(f"epoch {epoch} step {step}/{total_steps} lr={lr:.2e} {msg}")
+                    msg = " ".join(f"{k}={v:.4f}" for k, v in avg.items())
+                    log(f"epoch {epoch} step {step}/{total_steps} "
+                        f"lr={lr:.2e} {msg} (mean/{n})")
 
                 if is_main and args.save_every and step % args.save_every == 0:
                     _save(assistant_module, tokenizer, os.path.join(args.output, f"step{step}"))
