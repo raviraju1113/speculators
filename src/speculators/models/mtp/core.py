@@ -69,8 +69,9 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
     d2t: torch.Tensor | None
 
     def __init__(self, config: MTPSpeculatorConfig) -> None:
+        # SDPA, not eager — eager OOMs on long sequences (#886).
         if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001
-            config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001
+            config.transformer_layer_config._attn_implementation = "sdpa"  # noqa: SLF001
         super().__init__(config=config)
         self._init_vocab(config)
         if self.use_draft_vocab:
@@ -107,7 +108,8 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         super().load_verifier_weights()
         del self.verifier_lm_head
 
-    @conditional_torch_compile
+    # requires `dynamic=False`. See #876
+    @conditional_torch_compile(dynamic=False)
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -130,12 +132,12 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         separate label tensor is needed. Use loss_mask to exclude positions
         (e.g. prompt tokens) from the loss.
 
-        :param input_ids: Token IDs [batch, seq_len]. Serves as both the
+        :param input_ids: Token IDs [1, seq_len]. Serves as both the
             embedding source and the prediction target (offset by step+2).
-        :param hidden_states: Hidden states from verifier [batch, seq_len, hidden_size]
-        :param attention_mask: Optional attention mask [batch, seq_len]
-        :param position_ids: Optional position IDs [batch, seq_len]
-        :param loss_mask: Optional binary mask [batch, seq_len]; 1=compute loss,
+        :param hidden_states: Hidden states from verifier [1, seq_len, hidden_size]
+        :param attention_mask: Optional attention mask [1, seq_len]
+        :param position_ids: Optional position IDs [1, seq_len]
+        :param loss_mask: Optional binary mask [1, seq_len]; 1=compute loss,
             0=ignore.
         :param step_weights: Per-step loss weights (None = uniform). Training only.
         :param return_dict: Unused, kept for interface compatibility.
