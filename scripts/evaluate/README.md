@@ -31,16 +31,38 @@ Use **either** for single-stream throughput; they report the same core metrics.
 
 ## Datasets
 
-- [`eval_datasets/`](./eval_datasets) — 12 static benchmarks as `{turns:[...]}`
-  JSONL (gsm8k, math500, aime24/25, humaneval, mbpp, lbpp, livecodebench,
-  mt-bench, alpaca, arena-hard-v2, swe-bench) + a converter to regenerate them.
-  `evaluate.py` needs a `prompt` column, so run
-  [`eval_datasets/to_guidellm.py`](./eval_datasets/to_guidellm.py) once to derive
-  GuideLLM-ready files (or use the hosted `RedHatAI/speculator_benchmarks`).
-- `mtp_server_eval/data/` — aime / gpqa-diamond / livecodebench prompts for the
-  direct evaluator (plus gsm8k / math500 / humaneval / mbpp, derivable offline
-  from `eval_datasets/` via `prepare_data.py`), and **AgentX** (agentic
-  Claude-Code trace replay).
+- [`eval_datasets/`](./eval_datasets) — static `{turns:[...]}` JSONL benchmarks +
+  converter. `evaluate.py` needs a `prompt` column, so run
+  [`eval_datasets/to_guidellm.py`](./eval_datasets/to_guidellm.py) once (or use
+  hosted `RedHatAI/speculator_benchmarks`).
+- SPEED-Bench / AA-LCR preparers (large; not committed):
+  [`prepare_speedbench.py`](./prepare_speedbench.py),
+  [`prepare_aa_lcr.py`](./prepare_aa_lcr.py).
+- `mtp_server_eval/data/` — `{benchmark,id,prompt}` files for the direct
+  evaluator (build with `mtp_server_eval/prepare_data.py`) + **AgentX**.
+
+### Kimi-K3-DSpark acceptance suite
+
+Aligned with the 14-benchmark table on
+[Inferact/Kimi-K3-DSpark](https://huggingface.co/Inferact/Kimi-K3-DSpark):
+
+| Card name | Eval name | Source |
+|-----------|-----------|--------|
+| GSM8K | `gsm8k` | `eval_datasets/` |
+| HumanEval | `humaneval` | `eval_datasets/` |
+| MBPP | `mbpp` | `eval_datasets/` |
+| SPEED-Bench · coding / multilingual / RAG / QA / writing | `speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing` | NVIDIA SPEED-Bench qualitative |
+| MATH-500 | `math500` | `eval_datasets/` |
+| SPEED-Bench · low-entropy | `speed-low-entropy` | SPEED-Bench `throughput_16k` / `low_entropy` |
+| SWE-bench Pro | `swe-bench-pro` | `ScaleAI/SWE-bench_Pro` |
+| SWE-Rebench | `swe-rebench` | `nebius/SWE-rebench` ([RadixArk/Kimi-K3-DSpark](https://huggingface.co/RadixArk/Kimi-K3-DSpark) uses 50 prompts) |
+| AA-LCR · ~95k | `aa-lcr` | `ArtificialAnalysis/AA-LCR` |
+| MT-Bench | `mt-bench` | `eval_datasets/` |
+| AIME 2026 | `aime26` | `MathArena/aime_2026` |
+
+Generate prompts (once), then run via `mtp_server_eval` — see
+[`mtp_server_eval/README.md`](./mtp_server_eval/README.md#h-kimi-k3-dspark-acceptance-suite).
+Follow-ups live in [`TODO.md`](./TODO.md).
 
 ## Throughput evaluation walkthrough (backbone + draft)
 
@@ -158,7 +180,10 @@ evaluate.py            GuideLLM-based acceptance/throughput/sweep eval
 perf_utils.py          metric parsing + GuideLLM invocation helpers
 plot.py                plots from sweep output
 requirements.txt       guidellm + vllm + viz deps
-eval_datasets/         12 benchmark prompt sets + converter + GuideLLM bridge
+TODO.md                follow-ups (harness + YAML runner + suite gaps)
+eval_datasets/         turns JSONL + converter + GuideLLM bridge
+prepare_speedbench.py  NVIDIA SPEED-Bench → per-category turns JSONL
+prepare_aa_lcr.py      ArtificialAnalysis/AA-LCR → turns JSONL
 mtp_server_eval/       direct sglang/vllm eval + compare_speedup + AgentX
 experiments/           YAML config-driven runner (serve → eval → compare)
                        + tabulate_results.py (results → Markdown/CSV table)

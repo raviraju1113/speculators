@@ -91,7 +91,11 @@ server:
 
 eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
-  benchmarks: [aime, gpqa, livecodebench]   # + gsm8k, math500, humaneval, mbpp (generate via prepare_data.py)
+  # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
+  # math500, humaneval, mbpp, mt-bench, aime26, swe-bench-pro, swe-rebench, aa-lcr,
+  # speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
+  # speed-low-entropy). Generate extras via prepare_data.py / parent README.
+  benchmarks: [aime, gpqa, livecodebench]
   num_samples: 50                           # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                          # greedy = canonical acceptance

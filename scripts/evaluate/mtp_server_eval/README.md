@@ -25,10 +25,15 @@ Benchmarks:
 - **aime**, **gpqa** (GPQA-Diamond), **livecodebench** — static prompt sets run
   by `run_eval.sh`; prepared prompts ship in [`data/`](./data), one
   `{benchmark,id,prompt}` per line.
-- **gsm8k**, **math500**, **humaneval**, **mbpp** — additional static sets
-  derived offline from the sibling [`../eval_datasets/`](../eval_datasets) turns
-  files (no network / gated access); generate them with
-  `prepare_data.py --only gsm8k,math500,humaneval,mbpp` (see [§G](#g-regenerating-datasets)).
+- **gsm8k**, **math500**, **humaneval**, **mbpp**, **mt-bench**, **aime26**,
+  **swe-bench-pro**, **swe-rebench**, **aa-lcr** — derived from sibling
+  [`../eval_datasets/`](../eval_datasets) turns files (generate AA-LCR /
+  aime26 / swe-bench-pro / swe-rebench first; see
+  [`../README.md`](../README.md#kimi-k3-dspark-acceptance-suite)).
+- **speed-coding**, **speed-multilingual**, **speed-rag**, **speed-qa**,
+  **speed-writing**, **speed-low-entropy** — NVIDIA SPEED-Bench slices via
+  [`../prepare_speedbench.py`](../prepare_speedbench.py) then
+  `prepare_data.py` (`SPEEDBENCH_DIR`).
 - **AgentX** — an agentic **trace-replay load test** ([`run_agentx.sh`](./run_agentx.sh)),
   a different mode: it replays real Claude-Code traces at fixed concurrency
   rather than sending prompts from a file. See the [AgentX](#agentx-agentic-trace-replay-load-test)
@@ -70,7 +75,7 @@ how you run the **baseline** (spec off).
 |---------|---------|---------|
 | `BACKEND` | `vllm` | `sglang` or `vllm` — selects the evaluator + metric reader |
 | `BASE_URL` | `http://127.0.0.1:8000` | server root (the eval appends `/v1/...` and `/metrics`) |
-| `BENCHMARKS` | `aime,gpqa,livecodebench` | comma-separated subset (also available once generated: `gsm8k,math500,humaneval,mbpp`) |
+| `BENCHMARKS` | `aime,gpqa,livecodebench` | comma-separated subset; also: `gsm8k,math500,humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy` |
 | `NUM_SAMPLES` | `20` | prompts per benchmark (`0` = all) |
 | `MAX_TOKENS` | `4096` | max generated tokens per request |
 | `TEMPERATURE` | `0.0` | `0` = greedy (canonical acceptance setting) |
@@ -123,7 +128,10 @@ BENCHMARKS=aime,livecodebench         ./run_eval.sh   # skip gated GPQA
 BENCHMARKS=aime,gpqa,livecodebench    ./run_eval.sh   # default three
 # extra sets (generate once via prepare_data.py, then):
 BENCHMARKS=gsm8k,math500,humaneval,mbpp                    ./run_eval.sh
-BENCHMARKS=aime,gpqa,livecodebench,gsm8k,math500,humaneval,mbpp ./run_eval.sh  # all seven
+BENCHMARKS=aime,gpqa,livecodebench,gsm8k,math500,humaneval,mbpp ./run_eval.sh
+# Inferact/Kimi-K3-DSpark acceptance suite (see §H):
+BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
+  NUM_SAMPLES=0 ./run_eval.sh
 ```
 
 ### D. Sampling / length settings
@@ -175,10 +183,75 @@ python prepare_data.py --only livecodebench --lcb-version release_v5
 # AIME source parquet is environment-specific; set AIME_PARQUET=... to rebuild it,
 # otherwise the shipped data/aime.jsonl is used as-is.
 
-# gsm8k / math500 / humaneval / mbpp are derived OFFLINE from ../eval_datasets/
-# (first user turn as the prompt) — no network or gated access:
-python prepare_data.py --only gsm8k,math500,humaneval,mbpp
+# Turns-derived sets (first user turn as the prompt) from ../eval_datasets/:
+python prepare_data.py --only gsm8k,math500,humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr
 ```
+
+Generate `aime26` / `swe-bench-pro` / `swe-rebench` / `aa-lcr` turns files first if missing:
+
+```bash
+python ../eval_datasets/convert_eval_datasets_to_jsonl.py MathArena/aime_2026
+python ../eval_datasets/convert_eval_datasets_to_jsonl.py ScaleAI/SWE-bench_Pro
+python ../eval_datasets/convert_eval_datasets_to_jsonl.py nebius/SWE-rebench
+python ../prepare_aa_lcr.py
+```
+
+SPEED-Bench slices (set `SPEEDBENCH_DIR` if not `../speedbench_data`):
+
+```bash
+# Preferred (full fills): needs HF login for gated upstream sources used by NVIDIA prepare.py
+python ../prepare_speedbench.py --data-dir ../speedbench_data \
+    --download --configs qualitative,throughput_16k
+SPEEDBENCH_DIR=../speedbench_data python prepare_data.py --only \
+  speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy
+```
+
+### H. Kimi-K3-DSpark acceptance suite
+
+Same 14 workloads as the acceptance table on
+[Inferact/Kimi-K3-DSpark](https://huggingface.co/Inferact/Kimi-K3-DSpark). Card →
+eval name mapping is in the [parent README](../README.md#kimi-k3-dspark-acceptance-suite).
+
+```bash
+# after §G preparation:
+BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
+  NUM_SAMPLES=0 TEMPERATURE=0.0 BASE_URL=http://127.0.0.1:8000 \
+  RESULT_DIR=./results/kimi_suite ./run_eval.sh
+```
+
+In a YAML experiment, set:
+
+```yaml
+eval:
+  backend: vllm
+  benchmarks:
+    - gsm8k
+    - humaneval
+    - mbpp
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - math500
+    - speed-low-entropy
+    - swe-bench-pro
+    - aa-lcr
+    - mt-bench
+    - speed-qa
+    - speed-writing
+    - aime26
+  num_samples: 0          # all prompts
+  max_tokens: 4096
+  temperature: 0.0
+```
+
+Notes:
+
+- `aa-lcr` prompts are ~tens of k tokens; raise server `max_model_len` accordingly.
+- Without `HF_TOKEN`, SPEED-Bench may only materialise public non-placeholder
+  rows (counts below the card). Re-run NVIDIA prepare after `huggingface-cli login`
+  for full fills.
+- `speed-low-entropy` uses SPEED-Bench `throughput_16k` / `low_entropy` (card
+  wording: “low-entropy, 10k input”).
 
 ## AgentX (agentic trace-replay load test)
 
