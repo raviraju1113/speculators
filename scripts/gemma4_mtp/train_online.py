@@ -57,6 +57,10 @@ def parse_args():
                     help="DataLoader workers for on-the-fly tokenization (0 = main process)")
     ap.add_argument("--ttt-steps", type=int, default=5)
     ap.add_argument("--step-weight-beta", type=float, default=0.8)
+    ap.add_argument("--soft-ce-weight", type=float, default=0.5)
+    ap.add_argument("--hard-ce-weight", type=float, default=0.0)
+    ap.add_argument("--feature-l1-weight", type=float, default=0.0,
+                    help="EAGLE/DSpark feature (hidden) smooth-L1 distillation weight")
     ap.add_argument("--bf16", action="store_true", help="load models in bfloat16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--log-every", type=int, default=10)
@@ -335,26 +339,11 @@ def patch_hidden_shift(log=print):
     pad, so patching build_target_signals' return is safe and needs no edit to
     training_step.py. The TTT recurrence is self-consistent after this fix.
     """
-    import importlib
-    # NB: the package re-exports the `training_step` FUNCTION, which shadows the
-    # submodule under `import ... as`; import_module returns the module reliably.
-    ts = importlib.import_module("speculators.models.gemma4_mtp.training_step")
-
-    if getattr(ts, "_hidden_shift_patched", False):
-        return
-    _orig = ts.build_target_signals
-
-    def shifted_build_target_signals(target, input_ids, attention_mask):
-        sig = _orig(target, input_ids, attention_mask)
-        lh = sig["last_hidden"]  # (B, T, H), row t = h_t
-        # row t -> h_{t-1}; row 0 keeps h_0 (boundary; low-weight start token)
-        sig["last_hidden"] = torch.cat([lh[:, :1, :], lh[:, :-1, :]], dim=1)
-        return sig
-
-    ts.build_target_signals = shifted_build_target_signals
-    ts._hidden_shift_patched = True
-    log("[hidden-shift] patched build_target_signals -> draft consumes h_{t-1} "
-        "(EAGLE/vLLM alignment); labels (target_logits) unchanged")
+    # The h_{t-1} shift is now folded DIRECTLY into training_step.py (the draft's
+    # step-0 input uses the shifted target hidden; feature-distillation labels use
+    # the UNSHIFTED hidden). Patching build_target_signals here too would
+    # DOUBLE-shift, so this is a no-op now (kept so launchers don't break).
+    log("[hidden-shift] folded into training_step.py (no-op here)")
 
 
 def main():
@@ -514,10 +503,18 @@ def main():
     )
 
     log(f"=== Training: {len(dataset)} samples, {len(loader)} batches/epoch ===")
+    log(
+        f"[loss-config] soft_ce_weight={args.soft_ce_weight} "
+        f"hard_ce_weight={args.hard_ce_weight} "
+        f"feature_l1_weight={args.feature_l1_weight}"
+    )
 
     loss_cfg = MTPLossConfig(
         ttt_steps=args.ttt_steps,
         step_weight_beta=args.step_weight_beta,
+        soft_ce_weight=args.soft_ce_weight,
+        hard_ce_weight=args.hard_ce_weight,
+        feature_l1_weight=args.feature_l1_weight,
     )
     optim = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
     total_steps = (len(loader) // max(args.grad_accum, 1)) * args.epochs

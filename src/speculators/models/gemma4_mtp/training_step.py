@@ -42,9 +42,15 @@ class MTPLossConfig:
     step_weight_beta: float = 0.8
     temperature: float = 1.0
     # Distillation (soft-CE / KL to target) weight.
-    soft_ce_weight: float = 1.0
+    # Kept non-zero and balanced so the target-policy signal contributes
+    # meaningfully alongside hard CE and feature distillation.
+    soft_ce_weight: float = 0.5
     # Hard-CE against the ground-truth next token weight.
     hard_ce_weight: float = 0.0
+    # EAGLE/DSpark-style feature distillation: smooth-L1 between the draft's
+    # produced backbone hidden and the TARGET's hidden at the aligned position.
+    # 0 = off (legacy logit-only). DSpark uses ~0.9 (with 0.1 hard-CE).
+    feature_l1_weight: float = 0.0
     ignore_index: int = -100
     # Rows per softmax chunk in _step_loss; bounds peak memory on batches with
     # many supervised tokens (the 262144-wide vocab softmax is the OOM risk).
@@ -192,11 +198,12 @@ def _step_loss(draft_logits, target_logits, hard_targets, mask, cfg):
     for start in range(0, n_sup, chunk):
         d = d_flat[start : start + chunk]  # (c, V)
         t = t_flat[start : start + chunk]  # (c, V)
-        with torch.no_grad():
-            soft_t = F.softmax(t / temp, dim=-1)
-        log_p = F.log_softmax(d / temp, dim=-1)
-        # sum over vocab, sum over rows (divide by n_sup at the end -> mean).
-        soft_ce_sum = soft_ce_sum + -(soft_t * log_p).sum(dim=-1).sum() * (temp * temp)
+        if cfg.soft_ce_weight > 0:
+            with torch.no_grad():
+                soft_t = F.softmax(t / temp, dim=-1)
+            log_p = F.log_softmax(d / temp, dim=-1)
+            # sum over vocab, sum over rows (divide by n_sup -> mean).
+            soft_ce_sum = soft_ce_sum + -(soft_t * log_p).sum(dim=-1).sum() * (temp * temp)
         if cfg.hard_ce_weight > 0:
             hard_ce_sum = hard_ce_sum + F.cross_entropy(
                 d, ht_flat[start : start + chunk], reduction="sum"
@@ -212,11 +219,46 @@ def _step_loss(draft_logits, target_logits, hard_targets, mask, cfg):
     return total, out
 
 
+def _shift_right(h):
+    """Row t -> h_{t-1} (row 0 keeps h_0). The draft's STEP-0 input hidden must
+    be the PREVIOUS position's target hidden (EAGLE/vLLM alignment); the target
+    hidden is post-final-norm h_t, so we shift it right by one before feeding.
+    Labels / feature-targets use the UNSHIFTED hidden."""
+    import torch
+
+    return torch.cat([h[:, :1, :], h[:, :-1, :]], dim=1)
+
+
+def _feature_l1(pred, label, mask, cfg):
+    """Smooth-L1 between the draft's produced backbone hidden (pred) and the
+    target's hidden (label), over supervised positions only. label is detached
+    (distillation target)."""
+    import torch
+    import torch.nn.functional as F
+
+    m = mask.reshape(-1).bool()
+    n = int(m.sum())
+    if n == 0:
+        return pred.sum() * 0.0
+    H = pred.shape[-1]
+    p = pred.reshape(-1, H)[m]
+    with torch.no_grad():
+        lab = label.reshape(-1, H)[m]
+    # smooth-L1 (Huber) is more robust than raw L1 to Gemma's massive-activation
+    # dims; mean over supervised rows and features.
+    return F.smooth_l1_loss(p, lab, reduction="mean")
+
+
 def training_step(target, assistant, batch, cfg: MTPLossConfig):
     """One TTT training step. Returns (loss, metrics).
 
     batch: input_ids, attention_mask, loss_mask (all (B, T)).
     Target frozen (no grad); assistant trained.
+
+    Hidden alignment (folded in here, not a monkeypatch): the draft's STEP-0
+    input is the shifted target hidden h_{t-1}; the recurrent steps use the
+    draft's own backbone hidden. Feature-distillation labels use the UNSHIFTED
+    target hidden h_{t+k}.
     """
     import torch
 
@@ -239,8 +281,10 @@ def training_step(target, assistant, batch, cfg: MTPLossConfig):
     total_loss = torch.zeros((), device=input_ids.device)
     metrics: dict[str, object] = {}
 
-    # Recurrent hidden fed to the draft; starts as the target's last hidden.
-    hidden = target_last_hidden  # (B, T, H) indexed by t
+    # Draft's STEP-0 input hidden = SHIFTED target hidden (row t -> h_{t-1}),
+    # the EAGLE/vLLM alignment. Recurrent steps overwrite this with the draft's
+    # own backbone hidden. (target_last_hidden stays UNSHIFTED for labels.)
+    hidden = _shift_right(target_last_hidden)  # (B, T, H)
 
     for k in range(K):
         # At step k, position t consumes token[t+k] and predicts token[t+k+1].
@@ -275,10 +319,20 @@ def training_step(target, assistant, batch, cfg: MTPLossConfig):
             mask_k,
             cfg,
         )
+        # Feature distillation: the draft's backbone_hidden[t] (produced after
+        # consuming token[t+k]) should match the target's UNSHIFTED hidden at
+        # position t+k = target_last_hidden[:, k:k+L].
+        if cfg.feature_l1_weight > 0:
+            feat_label = target_last_hidden[:, k : k + L, :]
+            feat_loss = _feature_l1(backbone_hidden, feat_label, mask_k, cfg)
+            step_loss = step_loss + cfg.feature_l1_weight * feat_loss
+            step_metrics["feat_l1"] = feat_loss.detach()
         total_loss = total_loss + weights[k] * step_loss
         metrics[f"step{k}_soft_ce"] = step_metrics["soft_ce"]
         if "hard_ce" in step_metrics:
             metrics[f"step{k}_hard_ce"] = step_metrics["hard_ce"]
+        if "feat_l1" in step_metrics:
+            metrics[f"step{k}_feat_l1"] = step_metrics["feat_l1"]
 
         # Recurrent feedback: next step consumes this step's backbone hidden.
         # backbone_hidden is indexed by t (query position); pad back to full T

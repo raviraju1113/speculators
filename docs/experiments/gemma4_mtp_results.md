@@ -156,6 +156,20 @@ come from the in-process HF forward (`return_shared_kv_states=True`) — **not**
 vLLM `Gemma4SharedKVStatesConnector` (that connector is the decoupled
 vLLM-server export path, unused here).
 
+Representative repro command for the post-fix trainer run (with soft-CE enabled):
+
+```bash
+/root/miniconda3/envs/speculator/bin/python -u scripts/gemma4_mtp/train_online.py \
+  --target /nvmedata/hf_checkpoints/gemma-4-26B-A4B-it \
+  --assistant /nvmedata/chenw/speculators/output/gemma4_26b_mtp_rinit_shiftfix_4gpu/checkpoints/step10000 \
+  --data /nvmedata/data/kimi-regen-gemma4-26b-moe/train_regen.jsonl \
+  --output /nvmedata/chenw/speculators/output/gemma4_26b_mtp_assistant_featdistill/checkpoints \
+  --epochs 10 --batch-size 1 --grad-accum 128 --lr 2e-4 --max-length 1024 \
+  --ttt-steps 7 --max-samples 0 --bf16 \
+  --soft-ce-weight 0.5 --hard-ce-weight 0.1 --feature-l1-weight 0.9 \
+  --num-workers 4 --log-every 5 --save-every 200
+```
+
 > **Note:** runs above predate the §3 fix and produce non-inference-valid drafts.
 > Post-fix reruns supersede them.
 
