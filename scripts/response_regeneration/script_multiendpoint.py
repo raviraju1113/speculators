@@ -76,9 +76,10 @@ def parse_args():
         default=None,
         help=(
             "Path to a local conversations JSONL to regenerate (each row has a "
-            "`conversations` list of {from,value} or {role,content} turns, e.g. "
-            "the kimi-mtp-dataset). Every assistant turn is regenerated in-context "
-            "by the target. Overrides --dataset; multimodal rows are skipped."
+            "`conversations` or `messages` list of {from,value} or {role,content} "
+            "turns, e.g. the kimi-mtp-dataset). Every assistant turn is regenerated "
+            "in-context by the target. Overrides --dataset; multimodal rows are "
+            "skipped."
         ),
     )
     parser.add_argument(
@@ -464,7 +465,8 @@ def iter_input_items(args):
     """Yield (index, id, payload) rows from the selected source.
 
     payload is ``{"messages": [...]}`` for a local conversations JSONL
-    (``--input-jsonl``) or ``{"prompt": ...}`` for a built-in HF dataset.
+    (``--input-jsonl``, reading ``conversations`` or ``messages``) or
+    ``{"prompt": ...}`` for a built-in HF dataset.
     Rows to skip (multimodal, empty, filtered) are omitted.
     """
     if args.input_jsonl:
@@ -487,7 +489,12 @@ def iter_input_items(args):
                     continue
                 if only_sources is not None and source not in only_sources:
                     continue
-                messages = normalize_input_conversation(row.get("conversations"))
+                # Prefer ShareGPT `conversations`; fall back to OpenAI `messages`
+                # (prepare_* scripts may emit either or both).
+                raw_conv = row.get("conversations")
+                if not (isinstance(raw_conv, list) and raw_conv):
+                    raw_conv = row.get("messages")
+                messages = normalize_input_conversation(raw_conv)
                 if messages is None:
                     continue  # multimodal / malformed
                 yield index, row.get("id") or row.get("uuid"), {"messages": messages}

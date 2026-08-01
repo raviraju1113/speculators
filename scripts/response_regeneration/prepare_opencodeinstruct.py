@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Iterator
@@ -67,8 +68,12 @@ def row_to_conversation(row: dict) -> dict | None:
     if not prompt.strip() or not answer.strip():
         return None
 
+    record_id = row.get("id")
+    if not isinstance(record_id, str) or not record_id.strip():
+        payload = f"{prompt}\n{answer}"
+        record_id = f"opencodeinstruct_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+
     metadata = {
-        "id": row.get("id"),
         "domain": row.get("domain"),
         "generation_algorithm": row.get("generation_algorithm"),
         "llm_judgement": row.get("llm_judgement"),
@@ -82,7 +87,12 @@ def row_to_conversation(row: dict) -> dict | None:
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": answer},
         ],
+        "conversations": [
+            {"from": "human", "value": prompt},
+            {"from": "gpt", "value": answer},
+        ],
         "source": "OpenCodeInstruct",
+        "id": record_id,
         **metadata,
     }
 

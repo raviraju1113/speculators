@@ -89,6 +89,27 @@ LIMIT=1000 \
 
 The first stage prepares the raw dataset into a conversation JSONL, and the second stage regenerates the assistant responses with the target Gemma-4 model across the configured multi-GPU servers.
 
+For the current workflow, the local training-data sources used were the downloaded OpenCodeInstruct parquet shards and the Aya dataset parquet files under `/import/ml-sc-scratch5/chenw/datasets/`, with the prepared OpenCodeInstruct JSONL used as the regeneration input.
+
+### Preparing Aya data
+
+The same multi-GPU regeneration flow can be used for the Aya dataset by converting the parquet shards into a conversation-style JSONL and then feeding that JSONL into the regeneration client.
+
+```bash
+bash scripts/response_regeneration/submit_regen_aya_sc-c96.sh
+```
+
+You can override the model, input/output paths, and optionally limit the number of rows:
+
+```bash
+MODEL=/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it \
+INPUT_DIR=/import/ml-sc-scratch5/chenw/datasets/aya_dataset/data \
+INPUT_JSONL=/import/ml-sc-scratch5/chenw/datasets/aya_dataset/aya_conversations.jsonl \
+OUTFILE=/import/ml-sc-scratch5/chenw/datasets/aya_dataset/aya_regen_gemma4_31b.jsonl \
+LIMIT=1000 \
+  bash scripts/response_regeneration/submit_regen_aya_sc-c96.sh
+```
+
 ### Features
 
 - **Multi-turn support** — detects `messages`/`conversations` fields and regenerates each assistant turn against the model's own prior responses
