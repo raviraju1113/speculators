@@ -12,11 +12,24 @@ SambaNova cluster. Branch: `mengmengj/dspark-upstream`. Last updated 2026-07-31.
 | Data prep (full) | ✅ 349,389 examples, `datasets/gemma4_dspark` |
 | Data prep (overfit split) | ✅ `datasets/gemma4_dspark_256` (or `_32`) |
 | Job scripts | ✅ this directory |
-| Usable GPU node found | ✅ `sc3-c98` only |
-| Recon on sc3-c98 | ⬜ |
-| Overfit gate | ⬜ |
+| Usable GPU node found | ✅ `sc3-c98` only (`sc3-c81` still unprobed) |
+| Recon on sc3-c98 | ✅ driver 595.71.05, /dev/shm 504 GB, W&B reachable |
+| Overfit gate | 🟡 partial — 22/50 epochs before TIMEOUT; learning but not converged |
+| Container / NCCL fix | ⬜ script ready, not yet run (§8) |
 | Full run | ⬜ |
 | Eval | ⬜ |
+
+**Overfit progress so far** (job 58571742, TIMEOUT at 1 h, resumes from epoch 21):
+
+| Metric | Early | Epoch ~21 | Gate |
+|---|---|---|---|
+| `position_1_acc` | 0.184 | 0.354 | > 0.95 |
+| `accept_len` | 1.195 | 1.435 | climbing |
+
+Rising steadily, not plateaued — most likely step-starved (256 samples packed into
+8192-token batches ≈ 25 optimizer steps/epoch). `ON_GENERATE=cache` has since been
+set in `run_overfit_nonccl.sh`; epochs were ~3.2 min each and were dominated by
+vLLM regenerating hidden states, not by training.
 
 **Key background:** DSpark was already merged upstream (PR #677, 2026-06-29) five
 days after this fork branched, so no algorithm code needed writing.
@@ -185,18 +198,76 @@ Flags that **no longer exist** after the upstream merge: `--data`,
 `--max-samples`, `--overwrite-data`, `--sliding-window-indices`. Subset via
 `prepare_data.py --max-samples` instead.
 
-## 5. Code worth reading
+## 5. Code reading guide (~3-4 h, in this order)
 
-| File | Why |
-|---|---|
-| `src/speculators/models/dspark/model_definitions.py:12-90` | `MarkovHead` + `ConfidenceHead` — the whole DSpark delta over DFlash, ~90 lines |
-| `src/speculators/models/dspark/core.py:32-56`, `:112+` | how the heads attach to the DFlash forward |
-| `src/speculators/models/dflash/core.py:271-373` | backbone forward: anchors, mask tokens, verifier KV injection, local target logits |
-| `src/speculators/models/dspark/metrics.py:48-150` | the real loss; confidence target is `1 − d_TV`; `accept_len` = τ |
-| `src/speculators/train/config/schema.py` | every CLI flag (`DataArgs` ~195, `DFlashArgs` ~437, `DSparkArgs` ~464) |
-| `src/speculators/train/data.py:203-264` | online hidden-state path (`on_missing`/`on_generate`) |
-| `scripts/launch_vllm.py` | server side; `--include-last-layer` supplies `verifier_last_hidden_states` separately from the 5 aux layers |
-| `src/speculators/train/trainer.py:424-530`, `:639` | train loop, metric reduction |
+Each block makes the next one legible. Answer the questions rather than skimming —
+they are the things you will need when the overfit gate misbehaves.
+
+### Block 1 (~30 min) — the DSpark delta
+
+`src/speculators/models/dspark/model_definitions.py` (whole file, ~100 lines)
+- Where does the "previous token" come from at train time? (teacher forcing off
+  `input_ids`; there is no sequential loop in training)
+- `MarkovHead` takes both `verifier_vocab_size` and `draft_vocab_size` — why does
+  `W1` index one and `W2` project to the other?
+- `ConfidenceHead` input dim is `hidden + markov_rank`: what is concatenated, and
+  what is detached before it?
+
+`src/speculators/models/dspark/core.py:32-56` and `:112+`
+- how the heads attach; note `DSparkDraftModel(DFlashDraftModel)` — everything
+  else is inherited, hence Block 2
+
+### Block 2 (~60 min) — the inherited backbone
+
+`src/speculators/models/dflash/core.py:271-373` (the real forward)
+- what an "anchor" is, and why `--max-anchors` controls memory
+- lines 299-306: how mask tokens are built and where the anchor token is spliced in
+- lines 327-333: target distributions computed locally from
+  `verifier_last_hidden_states` via the frozen LM head — why the `torch.roll(...,1)`?
+  (this is why DeepSpec's offline target cache is unnecessary here)
+- line 362: `aligned_loss_mask[:, ::block_size] = 0` — what does it zero, and how
+  does `sample_from_anchor` change it?
+
+`src/speculators/models/dflash/model_definitions.py` — `Qwen3DFlashAttention.forward`:
+the KV-injection trick (`k_ctx` from `target_hidden`). This one function explains
+the architecture.
+
+### Block 3 (~45 min) — loss and metrics (what you watch during training)
+
+`src/speculators/models/dspark/metrics.py:48-150`
+- `accept_rate = sum_v min(q_v,p_v) = 1 - d_TV`: why is this the confidence
+  head's label instead of a 0/1 accepted flag?
+- how `accept_len` is computed, and whether it includes the bonus token (matters
+  for comparing against the paper's 6.05 / 5.64)
+- what `confidence_cumprod_bias` measures, and why STS would target it
+
+`src/speculators/models/metrics.py` — `loss_function`, `resolve_loss_config`,
+`dflash_loss_decay` (line 286).
+
+**Discrepancy to resolve:** the paper uses `w_k = exp(-(k-1)/gamma)` with
+**gamma = block_size = 8**; the code uses the same formula but
+`--dflash-decay-gamma` defaults to **4.0**, decaying twice as fast and
+down-weighting exactly the tail positions the Markov head exists to rescue.
+Decide whether to pass `--dflash-decay-gamma 8` for parity.
+
+### Block 4 (~45 min) — plumbing you will debug
+
+- `src/speculators/train/data.py:203-264` — `ArrowDataset` online path; trace one
+  sample from `__getitem__` through `on_missing=generate` to `on_generate=delete`
+- `scripts/launch_vllm.py` + `hs_connectors/src/hs_connectors/transfer.py:132-155`
+  — server side and the file handoff
+- `src/speculators/train/trainer.py:424-530`, `:639` — loop, and how
+  `_sum`/`_total` metrics reduce across ranks
+- `src/speculators/train/config/schema.py` — every CLI flag (`DataArgs` ~195,
+  `DFlashArgs` ~437, `DSparkArgs` ~464)
+
+### Capstone (~20 min) — paper vs implementation
+
+Diff `.claude/skills/dspark-speculators/reference.md` §1-4 against the code.
+Three known deltas to confirm:
+1. position-weight gamma: 4.0 (code) vs block_size=8 (paper)
+2. `sample_from_anchor`: upstream defaults `True`, RedHat's checkpoint says `false`
+3. STS calibration (§4) is absent upstream — only calibration *metrics* exist
 
 ## 6. Open items / known risks
 
@@ -215,7 +286,87 @@ Flags that **no longer exist** after the upstream merge: `--data`,
       consumes per-position temperatures (RedHat's config has no such field).
 - [ ] Queue contention is the schedule's dominant term, not engineering.
 
-## 7. Realistic timeline
+## 7. Container path (the candidate NCCL fix)
+
+### Why
+
+On bare metal, NCCL segfaults in `ncclNetPluginInit` (`plugin/net.cc:216`) during
+`ncclCommInitRank`. It kills vLLM TP>=2 and any `torchrun` launch. Tried and did
+NOT help: `NCCL_NET_PLUGIN=none`, `NCCL_IB_DISABLE=1`, `NCCL_SOCKET_IFNAME=lo`.
+
+Ravi runs vLLM **TP=4 on this same node** inside the NGC container, so the
+container is the prime suspect for a fix — the host's broken `libnccl-net.so`
+simply is not visible inside it.
+
+**We do not strictly need this.** The working bare-metal layout (vLLM TP=1 +
+training launched as plain `python`) trains fine; the container buys *throughput*
+(TP=2/4 for hidden-state generation), not correctness.
+
+### Facts established 2026-07-31
+
+- `nvcr.io/nvidia/pytorch:25.12-py3` is **public** — `docker manifest inspect`
+  succeeds with no NGC auth.
+- `docker` exists on the login node (`/usr/bin/docker`), but compute nodes pull
+  their own image; a login-node pull does not warm their cache.
+- **`sngpu --image` works only with `--interactive`.** In batch it fails
+  (`boot_docker.sh` needs sudo and a TTY). This is the crux for long runs.
+- A container is **ephemeral**: `pip install`s inside it vanish when the session
+  ends. Only installs into our conda env on `/import` persist — which is why
+  phase 1 below (reuse the existing env, zero installs) is the path to prefer.
+- Ravi's docker notes: the image defaults to a **64 MB `/dev/shm`**, far too small
+  for the DataLoader; he passes `--ipc=host --ulimit memlock=-1
+  --ulimit stack=67108864`. Bare metal has 504 GB, so this is a container-only
+  problem we do not otherwise have.
+
+### Procedure
+
+```bash
+# 2 GPUs to get the NCCL answer; 1 GPU still answers everything else
+sngpu --interactive --time 00:30:00 --cpu 24 --mem 200000 --gpu 2 \
+  --nodelist sc3-c98 --image nvcr.io/nvidia/pytorch:25.12-py3
+# inside the container shell:
+bash /import/ml-sc-scratch1/mengmengj/speculators/examples/train/container_setup.sh
+```
+
+`container_setup.sh` runs three phases, cheapest first:
+
+| Phase | Question | Outcome |
+|---|---|---|
+| 0 | in a container? `/dev/shm` size? host `libnccl-net.so` visible? | absent plugin ⇒ strong signal the container fixes it |
+| 1 | does our `/import` conda env import torch/vLLM/speculators in here? | if yes, **no installs needed at all** |
+| 2 | **does a 2-rank NCCL all_reduce pass?** | the answer that matters |
+| 3 | fallback only if 2 fails | build on the image's own torch (`pip install --no-deps vllm==0.26.0`) — means the bad NCCL is in our pip torch, not the host |
+
+### If it works, long runs still need more work
+
+Because `--image` is interactive-only, a multi-hour training job cannot simply
+"use the container". Two options:
+
+1. **Port Ravi's docker-in-batch pattern** (`scripts/submit_train.sh` on
+   `origin/ravir/eagle3_branch`): request a *bare* sngpu node, then have the job
+   script `docker run` the image itself with `--shm-size 16G --ipc=host`. ~1 h of
+   work. This is the only way to get a container into a batch job here.
+2. **Stay bare metal** at TP=1 / single rank and accept lower hidden-state
+   throughput. Costs nothing, already working.
+
+Decide based on whether the final run is online-at-scale (throughput matters, do
+option 1) or offline-at-30k (generation is a one-time cost, option 2 is fine).
+
+### Scheduling reality (2026-07-31)
+
+One user holds the `gpuonly` partition: ~36 pending **1-GPU** jobs at higher
+priority than ours, plus 3 running interactive `bash` sessions on sc3-c98 with
+`TIME_LIMIT=10-16:00:00` declared (actual runtime <1 h per the user).
+Consequences:
+
+- SLURM's `StartTime` estimate is fiction — it assumes declared limits.
+- Real risk is **starvation of multi-GPU requests**: freed GPUs are absorbed
+  one-at-a-time by his 1-GPU jobs, so 2 rarely free simultaneously.
+- Our priority rises with age (QOS 444444 + age), so we do climb.
+- Most useful asks: shorter declared `--time` (enables backfill for everyone),
+  and keeping sc3-c98 clear since it is the only driver-compatible node.
+
+## 8. Realistic timeline
 
 ~20–40 GPU-hours of work. On a free 4-GPU node: **3–4 working days** to a trained
 checkpoint plus a measured acceptance length against RedHat's. Paper-parity on

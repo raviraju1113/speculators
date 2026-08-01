@@ -87,6 +87,20 @@ TOTAL_SEQ_LEN="${TOTAL_SEQ_LEN:-8192}"   # must be a multiple of 128 for flex at
 
 # ---------------- runtime ----------------
 VLLM_PORT="${VLLM_PORT:-8000}"
+# Gemma-4 advertises a 262144 context; left unset, vLLM sizes the KV cache for
+# that and there is no room after 62.6 GB of weights. Even 8192 is too much at
+# TP=1: measured 2026-07-31, only 10.91 GiB is left for KV and 8192 needs
+# 11.89 GiB (vLLM's own estimate of the feasible max was 7504).
+# MUST be >= the --seq-length used by prepare_data.py (8192): that is where
+# samples get truncated, so a prepared sample can be up to 8192 tokens and the
+# server has to accept it. Do not size this from a sample of conversation
+# lengths -- 4096 was tried and 4114-token requests returned HTTP 400.
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+# At TP=1 the 62.6 GB of weights leave ~10.9 GiB for KV at util 0.92, but an
+# 8192 context needs ~11.9 GiB. 0.95 buys roughly +2.4 GiB, which covers it.
+# If vLLM still reports insufficient KV: raise toward 0.96, add --enforce-eager
+# (frees CUDA-graph memory), or use TP>=2 so the weights split across GPUs.
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}"
 HS_PATH="${HS_PATH:-$OUT_ROOT/hidden_states_$RUN_NAME}"
 SAVE_PATH="${SAVE_PATH:-$OUT_ROOT/$RUN_NAME/checkpoints}"
 LOG_DIR="${LOG_DIR:-$OUT_ROOT/$RUN_NAME/logs}"
@@ -124,6 +138,24 @@ fi
 VLLM_GPUS=$(seq -s, 0 $(( VLLM_GPUS_N - 1 )))
 TRAIN_GPUS=$(seq -s, "$VLLM_GPUS_N" $(( TOTAL_NEEDED - 1 )))
 
+# ---------------- driver guard ----------------
+# Only some nodes have a driver new enough for torch 2.11+cu130 (needs CUDA 13,
+# i.e. >= ~580). As of 2026-07-31 that is sc3-c98 only; sc-c96 / sc3-c97 /
+# sc-c82 / sc-c120 are on 565.57.01. SLURM exposes no driver feature to select
+# on, so submit with an explicit --nodelist. Fail in seconds rather than after
+# loading 62.6 GB of weights.
+DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
+DRV_MAJOR=${DRV%%.*}
+if [ -z "$DRV_MAJOR" ]; then
+  echo "!! cannot read the NVIDIA driver version -- is this a GPU node?" >&2; exit 1
+fi
+if [ "$DRV_MAJOR" -lt 580 ]; then
+  echo "!! driver $DRV on $(hostname) is too old for torch 2.11+cu130 (needs >= 580)." >&2
+  echo "   Resubmit with --nodelist sc3-c98 (known good: 595.71.05)." >&2
+  exit 1
+fi
+echo " driver      : $DRV (OK)"
+
 mkdir -p "$HS_PATH" "$SAVE_PATH" "$LOG_DIR"
 
 echo "=========================================="
@@ -143,12 +175,32 @@ source "$CONDA_SH"
 conda activate "$CONDA_ENV"
 cd "$REPO"
 
+# ---------------- NCCL ----------------
+# Observed 2026-07-31 on sc3-c98: NCCL segfaults inside ncclNetPluginInit
+# (plugin/net.cc:216) while loading an external network plugin -- identically in
+# vLLM's TP=2 init and in a bare 2-rank all_reduce. Disabling plugin discovery
+# makes NCCL fall back to its built-in transports.
+# NOTE: this is needed even for single-rank training, because torchrun sets
+# LOCAL_RANK and the trainer then calls init_process_group("nccl") regardless.
+# Drop these if the cluster's plugin is ever fixed.
+export NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
+export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+# The crash is in net init, and Ravi's working torchrun pins rendezvous to
+# loopback (--local-addr=127.0.0.1) -- a strong hint that this cluster's default
+# interface selection misbehaves. Everything here is single-node, so force NCCL
+# onto loopback sockets and off InfiniBand rather than letting it probe.
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-lo}"
+
 # ---------------- 1. verifier server ----------------
 echo "=== launching vLLM (verifier + hidden-state streaming) ==="
 CUDA_VISIBLE_DEVICES="$VLLM_GPUS" python scripts/launch_vllm.py "$MODEL" \
     --hidden-states-path "$HS_PATH" \
     --target-layer-ids $TARGET_LAYER_IDS \
     -- --tensor-parallel-size "$VLLM_TP" \
+       --max-model-len "$MAX_MODEL_LEN" \
+       --gpu-memory-utilization "$GPU_MEM_UTIL" \
+       --no-enable-prefix-caching \
        --data-parallel-size "$VLLM_DP" \
        --port "$VLLM_PORT" \
     > "$LOG_DIR/vllm.log" 2>&1 &
@@ -177,9 +229,24 @@ curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null || {
     echo "!! vLLM did not become healthy in 30 min" >&2; tail -40 "$LOG_DIR/vllm.log" >&2; exit 1; }
 
 # ---------------- 2. train ----------------
-echo "=== training DSpark draft ==="
-CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" torchrun \
-    --standalone --nproc_per_node "$TRAIN_GPUS_N" \
+# With a single training rank, launch train.py DIRECTLY instead of through
+# torchrun. torchrun sets LOCAL_RANK, which makes maybe_setup_distributed() call
+# init_process_group("nccl") even for world_size=1 -- and on this cluster that
+# segfaults in ncclNetPluginInit. Plain python leaves _is_distributed False and
+# never touches NCCL. Multi-rank still needs torchrun (and a working NCCL).
+if [ "$TRAIN_GPUS_N" -eq 1 ]; then
+  echo "=== training DSpark draft (single process, no torchrun / no NCCL) ==="
+  LAUNCHER=(python)
+else
+  echo "=== training DSpark draft (torchrun, $TRAIN_GPUS_N ranks) ==="
+  # Rendezvous pinned to loopback, matching the invocation Ravi has working on
+  # this cluster: --standalone alone can pick a bad interface for the c10d store.
+  LAUNCHER=(torchrun --nnodes=1 --nproc_per_node "$TRAIN_GPUS_N"
+            --rdzv-backend=c10d --rdzv-endpoint=127.0.0.1:29500
+            --local-addr=127.0.0.1)
+fi
+
+CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     scripts/train.py \
     --verifier-name-or-path "$MODEL" \
     --data-path "$DATA_PATH" \

@@ -79,7 +79,9 @@ else
 fi
 
 echo "=================== NCCL SMOKE (2 GPUs) ==================="
-# Confirms collectives work -- the thing that was broken under forward-compat.
+# sc3-c98 (2026-07-31): NCCL segfaults in ncclNetPluginInit while loading an
+# external net plugin. Test BOTH ways so we know whether the workaround is still
+# needed: first as-is, then with plugin discovery disabled.
 if [ "$(nvidia-smi -L 2>/dev/null | wc -l)" -ge 2 ]; then
   # Must live in a real file: mp.spawn re-imports __main__ in the child, and a
   # heredoc on stdin gives the child a '<stdin>' path it cannot re-open.
@@ -91,8 +93,11 @@ import torch.multiprocessing as mp
 def worker(rank):
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT="29555",
                       RANK=str(rank), WORLD_SIZE="2")
-    dist.init_process_group("nccl", rank=rank, world_size=2)
+    # set_device BEFORE init_process_group: otherwise both ranks initialize NCCL
+    # against device 0 and the collective segfaults.
     torch.cuda.set_device(rank)
+    dist.init_process_group("nccl", rank=rank, world_size=2,
+                            device_id=torch.device(f"cuda:{rank}"))
     t = torch.ones(1024, device=f"cuda:{rank}")
     dist.all_reduce(t)
     if rank == 0:
@@ -102,7 +107,23 @@ def worker(rank):
 if __name__ == "__main__":
     mp.spawn(worker, nprocs=2, join=True)
 PY
-  python "$NCCL_TEST"; rm -f "$NCCL_TEST"
+  echo "--- attempt 1: stock settings (plugin discovery ON) ---"
+  if NCCL_DEBUG=WARN python "$NCCL_TEST"; then
+    echo "RESULT: NCCL works as-is -- the NCCL_NET_PLUGIN workaround is NOT needed"
+  else
+    echo "RESULT: stock NCCL FAILED (expected here: segfault in ncclNetPluginInit)"
+    echo "--- attempt 2: NCCL_NET_PLUGIN=none (skip external net plugin) ---"
+    if NCCL_NET_PLUGIN=none NCCL_DEBUG=WARN python "$NCCL_TEST"; then
+      echo "RESULT: works with NCCL_NET_PLUGIN=none -- keep that export in the training scripts"
+    else
+      echo "RESULT: still failing. Next things to try, in order:"
+      echo "  NCCL_IB_DISABLE=1        (skip InfiniBand transport)"
+      echo "  NCCL_P2P_DISABLE=1       (skip peer-to-peer)"
+      echo "  NCCL_DEBUG=INFO          (shows which plugin/transport it loads)"
+      echo "  -> if none work, single-GPU vLLM + non-torchrun training is the fallback"
+    fi
+  fi
+  rm -f "$NCCL_TEST"
 else
   echo "fewer than 2 GPUs visible; skipping NCCL check"
 fi
