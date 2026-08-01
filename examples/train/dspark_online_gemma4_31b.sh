@@ -151,7 +151,7 @@ if [ -z "$DRV_MAJOR" ]; then
 fi
 if [ "$DRV_MAJOR" -lt 580 ]; then
   echo "!! driver $DRV on $(hostname) is too old for torch 2.11+cu130 (needs >= 580)." >&2
-  echo "   Resubmit with --nodelist sc3-c98 (known good: 595.71.05)." >&2
+  echo "   Resubmit with --exclude sc-c96,sc3-c97,sc-c82 (leaves sc3-c98/sc3-c81, both 595)." >&2
   exit 1
 fi
 echo " driver      : $DRV (OK)"

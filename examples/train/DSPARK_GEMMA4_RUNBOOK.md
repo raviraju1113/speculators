@@ -43,8 +43,8 @@ A cu128 rebuild would need ≥570.26. Surveyed 2026-07-31:
 
 | Node | GPUs | Driver / CUDA | Verdict |
 |---|---|---|---|
-| **sc3-c98** | 4× A100-80 | **595.71.05 / 13.2** | ✅ **the only usable node** |
-| sc3-c81 | 4× A100-80 | **unknown** | ❓ probe it — same hw/family as c98 |
+| **sc3-c98** | 4× A100-80 | **595.71.05 / 13.2** | ✅ usable |
+| **sc3-c81** | 4× A100-80 | **595.71.05 / 13.2** | ✅ usable (probed 2026-07-31) |
 | sc3-c97 | 4× A100-80 | 565.57.01 / 12.7 | ✗ too old |
 | sc-c82 | 4× A100-80 | 565.57.01 / 12.7 | ✗ too old |
 | sc-c96 | 8× A100-80 | 565.57.01 / 12.7 | ✗ too old (chenw's box; his cuda-compat hack existed for this reason) |

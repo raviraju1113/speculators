@@ -43,9 +43,13 @@
 - Use online mode even here, to exercise the real pipeline
 
 ## Cluster gotchas (sc3-c98, learned 2026-07-31)
-- ONLY sc3-c98 has a usable driver (595.71.05 / CUDA 13.2). sc-c96, sc3-c97,
-  sc-c82, sc-c120 are all 565.57.01 / CUDA 12.7 -- too old for torch 2.11+cu130.
-  The 8x H200 nodes (sc3-c126..129) are reserved/maint. sc3-c81 unprobed.
+- Usable nodes: sc3-c98 AND sc3-c81, both 595.71.05 / CUDA 13.2, 4x A100-80 each.
+  To let SLURM pick EITHER, use `--exclude sc-c96,sc3-c97,sc-c82` (with
+  `--gputype a100m80`, which already rules out the H100/H200 boxes).
+  Do NOT use `--nodelist sc3-c98,sc3-c81`: --nodelist means "include ALL of
+  these", so it requests 2 nodes and multiplies the GPU ask per node.
+  sc-c96, sc3-c97, sc-c82, sc-c120 are all 565.57.01 / CUDA 12.7 -- too old for
+  torch 2.11+cu130. The 8x H200 nodes (sc3-c126..129) are reserved/maint.
 - NCCL segfaults on bare metal inside ncclNetPluginInit (plugin/net.cc:216) during
   ncclCommInitRank -- hits vLLM TP>=2 and any torchrun run. NCCL_NET_PLUGIN=none
   did not help. Colleague's TP=4 works INSIDE the NGC container, so the container

@@ -37,8 +37,44 @@ If the new machine has internet, only `train_regen.jsonl` really needs copying.
 
 ## 3. Environment (exact)
 
-Requires an NVIDIA driver **>= 580** (CUDA 13) for `torch 2.11+cu130`. A cu128
-build would need >= 570.26. Check first: `nvidia-smi`.
+### 3a. Driver requirement — check this FIRST
+
+`torch 2.11+cu130` needs a **CUDA 13** driver: **>= 580** (NVIDIA's floor for
+CUDA 13.0 is 580.65 on Linux). This has been the single most common blocker.
+
+```bash
+nvidia-smi --query-gpu=driver_version,name,memory.total --format=csv
+```
+
+| Driver | CUDA | Verdict |
+|---|---|---|
+| >= 580 | 13.x | ✅ current env works as-is |
+| 570.26–579 | 12.8 | rebuild env against a cu128 torch + matching vLLM |
+| < 570 (e.g. 565, 560) | <= 12.7 | ✗ torch aborts: *"driver is too old (found version 12070)"* |
+
+If the driver is too old, in order of preference:
+
+1. **Update the driver** to 580+. On a machine you control this is the clean fix
+   and takes ~15 min. Always try this first.
+2. **CUDA forward compatibility.** Datacenter GPUs (A100/H100) support running a
+   CUDA 13 stack on an older driver via NVIDIA's `cuda-compat` package:
+   ```bash
+   # install cuda-compat matching CUDA 13.0 for your distro, then:
+   export LD_LIBRARY_PATH=/usr/local/cuda/compat:$LD_LIBRARY_PATH
+   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   ```
+   **Known cost: NCCL breaks** under forward-compat (multi-GPU collectives
+   segfault). That is survivable here — use the no-NCCL layout in §5/§8: vLLM
+   TP=1 plus training launched as plain `python`. Single-GPU-per-role only.
+3. **Rebuild against older CUDA** — usually a dead end. torch 2.11 and vLLM 0.26
+   ship cu128/cu130 wheels only, so a cu126 stack means building vLLM from
+   source. Only worth it if 1 and 2 are both impossible.
+
+`examples/train/check_new_vm.sh` reports driver, per-GPU memory, filesystem
+visibility, /dev/shm, local disk speed and egress in one pass — run it on any
+new machine before building anything.
+
+### 3b. Build
 
 ```bash
 conda create -p <envdir>/dspark python=3.12 -y

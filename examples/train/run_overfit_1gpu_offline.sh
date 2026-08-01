@@ -56,7 +56,9 @@ source "$CONDA_SH"; conda activate "$CONDA_ENV"; cd "$REPO"
 
 DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | tr -d ' ')
 if [ "${DRV%%.*}" -lt 580 ] 2>/dev/null; then
-  echo "!! driver $DRV too old for torch 2.11+cu130; use --nodelist sc3-c98" >&2; exit 1
+  echo "!! driver $DRV too old for torch 2.11+cu130." >&2
+  echo "   Resubmit with --exclude sc-c96,sc3-c97,sc-c82 (leaves sc3-c98/sc3-c81, both 595)." >&2
+  exit 1
 fi
 
 echo "=========================================="
