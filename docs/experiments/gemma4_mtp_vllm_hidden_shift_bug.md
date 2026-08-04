@@ -81,8 +81,25 @@ Gemma4 assistant architecture — only the *training recipe* changed. New knobs 
 `training_step.py`/`train_online.py`: `--soft-ce-weight`, `--hard-ce-weight`,
 `--feature-l1-weight`. Result: warm-starting the accept-2.2 draft with the feature loss
 drove `feat_l1` 1.83 → ~0.89 and lifted **vLLM accept 2.217 → 2.512** (rate 0.41 → 0.50) —
-the ceiling was not a wall. Next: add soft-CE back on top (`soft_ce 1.0 + feature 0.9`) to
-sharpen target-argmax agreement (the accept metric) toward vanilla's 3.58.
+the ceiling was not a wall.
+
+## Loss-weight tuning
+Tune against **vLLM accept**, not training loss (loss dropped while accept stayed flat — the
+same trap as the original bug). Warm-starting the 2.512 feature checkpoint (step3200):
+
+| loss weights | vLLM accept (aime, k=3) |
+|---|---|
+| `hard 0.1 + feat 0.9` (feature-only) | **2.512** |
+| `soft 1.0 + feat 0.9` (no hard-CE) | 2.317 (degraded) |
+
+Adding a **heavy soft-CE hurt**: accept fell 2.512 → 2.317 and `feat_l1` rose 0.89 → 0.96.
+Key signal: **`feat_l1` rising = the recurrent hidden drifting off the target = worse tail =
+lower accept** — watch it as a proxy. Lesson: soft-CE (and hard-CE) must stay *small* so they
+don't erode the feature; keep the **feature term dominant**. Caveat: that run changed two
+things at once (added soft 1.0 AND dropped hard-CE), so the heavy soft-CE — not the missing
+hard-CE — is the likely culprit; hard-CE is cheap/proven so keep it (0.1). Current best bet:
+`soft 0.3 + hard 0.1 + feature 1.0`, else just train feature-only longer (2.512 was step3200,
+not converged). Toward vanilla's 3.58.
 
 ## Recommendations
 1. **[done]** Hidden shift is folded directly into `training_step.py` (draft step-0 consumes
