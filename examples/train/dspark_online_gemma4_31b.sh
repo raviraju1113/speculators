@@ -57,11 +57,30 @@ case "$MODE" in
     # 62.6 GB per GPU, ~17 GB KV -- fine for short prefill-only requests).
     # On an 8-GPU node use VLLM_TP=2 VLLM_DP=3 TRAIN_GPUS_N=2.
     DATA_PATH="${DATA_PATH:-$DATA_ROOT/gemma4_dspark}"
-    EPOCHS="${EPOCHS:-5}"; LR="${LR:-3e-4}"; MAX_ANCHORS="${MAX_ANCHORS:-3072}"
+    # MAX_ANCHORS 512, matching DeepSpec's own num_anchors, NOT upstream's 3072.
+    # 3072 OOMs the TRAINING process (not vLLM): the loss materializes logits of
+    # [1, anchors*block_size, draft_vocab] = [1, 24576, 32000], and with targets
+    # plus softmax/autograd copies that runs to tens of GB. Observed 2026-08-01 as
+    # torch.OutOfMemoryError inside the compiled backward. 512 -> 4096 positions,
+    # about twice the overfit gate's footprint. Note more training GPUs would NOT
+    # fix this: FSDP shards parameters and optimizer state, not activations.
+    EPOCHS="${EPOCHS:-2}"; LR="${LR:-3e-4}"; MAX_ANCHORS="${MAX_ANCHORS:-512}"
     VLLM_TP="${VLLM_TP:-2}"; VLLM_DP="${VLLM_DP:-1}"; TRAIN_GPUS_N="${TRAIN_GPUS_N:-2}"
     RUN_NAME="${RUN_NAME:-gemma4_31b_dspark}"
     ;;
-  *) echo "unknown MODE=$MODE (want: overfit|full)" >&2; exit 2 ;;
+  full_dp)
+    # Same as `full`, but scales hidden-state GENERATION with vLLM DATA
+    # parallelism instead of tensor parallelism: 3 independent single-GPU engines
+    # (no model-level collectives, so no NCCL) + 1 training rank = 4 GPUs.
+    # Generation is ~22 h/epoch at DP=1; DP=3 should bring that to ~7 h.
+    # Verify with examples/train/test_vllm_dp.sh before relying on it -- vLLM runs
+    # a DP coordinator and it is not certain that avoids torch.distributed.
+    DATA_PATH="${DATA_PATH:-$DATA_ROOT/gemma4_dspark}"
+    EPOCHS="${EPOCHS:-2}"; LR="${LR:-3e-4}"; MAX_ANCHORS="${MAX_ANCHORS:-512}"
+    VLLM_TP="${VLLM_TP:-1}"; VLLM_DP="${VLLM_DP:-3}"; TRAIN_GPUS_N="${TRAIN_GPUS_N:-1}"
+    RUN_NAME="${RUN_NAME:-gemma4_31b_dspark_dp}"
+    ;;
+  *) echo "unknown MODE=$MODE (want: overfit|full|full_dp)" >&2; exit 2 ;;
 esac
 
 # ---------------- DSpark / DFlash architecture ----------------
@@ -84,6 +103,23 @@ MARKOV_HEAD_TYPE="${MARKOV_HEAD_TYPE:-vanilla}"
 LOSS_FN="${LOSS_FN:-{\"ce\": 0.1, \"tv\": 0.9\}}"
 CONFIDENCE_HEAD_ALPHA="${CONFIDENCE_HEAD_ALPHA:-1.0}"
 TOTAL_SEQ_LEN="${TOTAL_SEQ_LEN:-8192}"   # must be a multiple of 128 for flex attention
+# An epoch on the full corpus is ~57,700 optimizer steps and >20 h, so
+# epoch-granular checkpointing would discard most of a day on a timeout or crash.
+# <1 enables sub-epoch saves; 0.25 caps the loss at about a quarter epoch.
+CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-0.25}"
+
+# ---------------- optimizer / schedule ----------------
+# Matched to DeepSpec's own gemma-4 DSpark recipe
+# (DeepSpec config/dspark/dspark_gemma4_12b.py): weight_decay 0.0,
+# warmup_ratio 0.04, max_grad_norm 1.0 (already hardcoded in trainer.py:470),
+# loss_decay_gamma 4.0 (our default -- their config confirms 4.0, NOT block_size,
+# despite how the paper writes w_k = exp(-(k-1)/gamma)).
+# NOT copied from them: lr 6.0e-4. That is tuned for global_batch_size=512 via
+# gradient accumulation, which this tree does not have (upstream PR #859 is still
+# open), so our effective batch is one packed sequence per rank per step.
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
+SCHEDULER_TYPE="${SCHEDULER_TYPE:-linear}"
+WARMUP_RATIO="${WARMUP_RATIO:-0.04}"
 
 # ---------------- runtime ----------------
 VLLM_PORT="${VLLM_PORT:-8000}"
@@ -91,23 +127,42 @@ VLLM_PORT="${VLLM_PORT:-8000}"
 # that and there is no room after 62.6 GB of weights. Even 8192 is too much at
 # TP=1: measured 2026-07-31, only 10.91 GiB is left for KV and 8192 needs
 # 11.89 GiB (vLLM's own estimate of the feasible max was 7504).
-# MUST be >= the --seq-length used by prepare_data.py (8192): that is where
-# samples get truncated, so a prepared sample can be up to 8192 tokens and the
-# server has to accept it. Do not size this from a sample of conversation
-# lengths -- 4096 was tried and 4114-token requests returned HTTP 400.
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+# MUST be STRICTLY GREATER than prepare_data.py's --seq-length (8192).
+# Two traps, both observed:
+#  1. Sizing it from sampled conversation lengths is wrong -- 4096 was tried and
+#     4114-token requests returned HTTP 400.
+#  2. Setting it EQUAL to --seq-length still drops the longest samples: vLLM
+#     counts prompt + output, so a sample truncated to exactly 8192 plus the 1
+#     requested output token is 8193 > 8192 -> HTTP 400. Those samples are
+#     silently skipped (data.py returns None) on EVERY epoch. Measured: 0.78% of
+#     the corpus sits exactly at the truncation ceiling (2,728 of 349,138) --
+#     precisely the longest conversations.
+# Hence seq_length + margin. KV cost is ~1.45 MiB/token, so 8448 needs ~12.3 GiB
+# of the 13.28 GiB available at util 0.95.
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8448}"
 # At TP=1 the 62.6 GB of weights leave ~10.9 GiB for KV at util 0.92, but an
 # 8192 context needs ~11.9 GiB. 0.95 buys roughly +2.4 GiB, which covers it.
 # If vLLM still reports insufficient KV: raise toward 0.96, add --enforce-eager
 # (frees CUDA-graph memory), or use TP>=2 so the weights split across GPUs.
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}"
-HS_PATH="${HS_PATH:-$OUT_ROOT/hidden_states_$RUN_NAME}"
+# 'delete' discards each sample's hidden states after use (~zero disk). 'cache'
+# reuses them from epoch 2 on, but costs ~74 MB/sample: fine for the 256-sample
+# gate (~6.6 GB), ~26 TB for the full 349k set. Do not flip this blindly.
+# Defined before HS_PATH because the path choice depends on it.
+ON_GENERATE="${ON_GENERATE:-delete}"
+
+# Hidden states stream at ~64.5 KB/token. At the measured ~6k tok/s that is
+# ~390 MB/s written and read back, per run -- NFS will not sustain that, and two
+# concurrent runs on one node would double it. With --on-generate delete the
+# states are transient, so put them on node-local scratch when available.
+# With cache they must survive the job, so keep those on shared storage.
+if [ "$ON_GENERATE" = "delete" ] && [ -n "${SLURM_TMPDIR:-}" ] && [ -d "${SLURM_TMPDIR:-}" ]; then
+  HS_PATH="${HS_PATH:-$SLURM_TMPDIR/hidden_states_$RUN_NAME}"
+else
+  HS_PATH="${HS_PATH:-$OUT_ROOT/hidden_states_$RUN_NAME}"
+fi
 SAVE_PATH="${SAVE_PATH:-$OUT_ROOT/$RUN_NAME/checkpoints}"
 LOG_DIR="${LOG_DIR:-$OUT_ROOT/$RUN_NAME/logs}"
-# 'delete' discards each sample's hidden states after use (~zero disk). 'cache'
-# reuses them from epoch 2 on, but costs ~64 KB/token: fine for the 256-sample
-# gate, ~10 TB for the full 349k-conversation set. Do not flip this blindly.
-ON_GENERATE="${ON_GENERATE:-delete}"
 
 # ---------------- metric logging ----------------
 # LOGGER: "" (stdout only), or wandb / tensorboard / mlflow / trackio, or a
@@ -135,8 +190,32 @@ if [ "$VISIBLE" -lt "$TOTAL_NEEDED" ]; then
   echo "!! need $TOTAL_NEEDED GPUs (vLLM $VLLM_GPUS_N + train $TRAIN_GPUS_N) but see $VISIBLE" >&2
   exit 1
 fi
-VLLM_GPUS=$(seq -s, 0 $(( VLLM_GPUS_N - 1 )))
-TRAIN_GPUS=$(seq -s, "$VLLM_GPUS_N" $(( TOTAL_NEEDED - 1 )))
+# Choose GPUs by what is ACTUALLY FREE, not by index.
+# This cluster does not isolate GPUs between jobs: two concurrent jobs on one node
+# both see all 4 cards and both get CUDA_VISIBLE_DEVICES starting at 0, so each
+# picked physical GPU 0 and the second died with
+#   "Free memory on device cuda:0 (18.68/79.25 GiB) ... less than desired"
+# (the other run's 62.6 GB verifier was already resident). Neither hardcoding
+# 0,1 nor trusting CUDA_VISIBLE_DEVICES is safe here.
+# Override with GPU_IDS="2,3" to pin explicitly.
+FREE_MIB="${FREE_MIB:-70000}"   # a card with this much free is considered idle
+if [ -n "${GPU_IDS:-}" ]; then
+  IFS=',' read -r -a _ALLOC <<< "$GPU_IDS"
+else
+  mapfile -t _ALLOC < <(
+    nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits |
+    awk -F', *' -v need="$FREE_MIB" '$2 >= need {print $1}'
+  )
+fi
+echo " free GPUs   : ${_ALLOC[*]:-none} (>= ${FREE_MIB} MiB free)"
+if [ "${#_ALLOC[@]}" -lt "$TOTAL_NEEDED" ]; then
+  echo "!! need $TOTAL_NEEDED idle GPUs but only found ${#_ALLOC[@]} (${_ALLOC[*]:-none})." >&2
+  echo "   Another job is probably using this node. nvidia-smi:" >&2
+  nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv >&2
+  exit 1
+fi
+VLLM_GPUS=$(IFS=,; echo "${_ALLOC[*]:0:VLLM_GPUS_N}")
+TRAIN_GPUS=$(IFS=,; echo "${_ALLOC[*]:VLLM_GPUS_N:TRAIN_GPUS_N}")
 
 # ---------------- driver guard ----------------
 # Only some nodes have a driver new enough for torch 2.11+cu130 (needs CUDA 13,
@@ -272,6 +351,10 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --total-seq-len "$TOTAL_SEQ_LEN" \
     --epochs "$EPOCHS" \
     --lr "$LR" \
+    --weight-decay "$WEIGHT_DECAY" \
+    --checkpoint-freq "$CHECKPOINT_FREQ" \
+    --scheduler-type "$SCHEDULER_TYPE" \
+    --scheduler-warmup-ratio "$WARMUP_RATIO" \
     --num-workers "$NUM_WORKERS" \
     --on-missing generate \
     --on-generate "$ON_GENERATE"

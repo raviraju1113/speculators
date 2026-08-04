@@ -42,7 +42,7 @@ EPOCHS="${EPOCHS:-200}"     # epochs are cheap offline; this is a real memorizat
 LR="${LR:-1e-3}"
 MAX_ANCHORS="${MAX_ANCHORS:-256}"
 VLLM_PORT="${VLLM_PORT:-8000}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"   # must be >= prepare_data --seq-length
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8448}"   # must be > prepare_data --seq-length (prompt+1 output)
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}"
 CONCURRENCY="${CONCURRENCY:-8}"
 

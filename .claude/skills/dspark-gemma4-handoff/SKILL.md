@@ -18,10 +18,15 @@ Train a **DSpark** draft (DFlash backbone + Markov head + confidence head) for
 `RedHatAI/gemma-4-31B-it-speculator.dspark` exists on HF for this exact target —
 use it as the config oracle and as the number to beat.
 
-Status as of handoff: environment built, data prepared (349,389 conversations),
-overfit gate partially run (22/50 epochs, `position_1_acc` 0.18 → 0.35 and still
-rising, i.e. step-starved rather than broken). Not yet: converged overfit, full
-run, eval.
+Status as of handoff: environment built, data prepared (349,138 conversations),
+**overfit gate PASSED** — 200 epochs on 256 samples reached train
+`position_0..7_acc` all **1.0000**, `accept_len` **8.43**, `accept_rate` 0.985,
+`ce_loss` 0.0001, while val stayed ~0.2. Perfect memorization with no
+generalization is exactly the intended result: layer ids, mask token, vocab
+mapping, Markov head and confidence head are all correct. Note 50 epochs was NOT
+enough and 200 was — because each epoch was only ~25 optimizer steps. Reason in
+STEPS, not epochs (one epoch of the full 349k corpus is ~57,700 steps). Not yet:
+full run, eval, STS.
 
 ## 2. Assets to bring to the new machine
 
@@ -128,20 +133,21 @@ params at AdamW fp32 master weights + frozen embeddings).
 
 **Online can never fit on 1 GPU** — 62.6 + 42 > 80 GB, regardless of dataset size.
 
-Hidden states cost **64.5 KB/token** (5 aux layers + last, bf16, hidden 5376),
-≈ 26 MB per conversation:
+Hidden states cost **64.5 KB/token** (5 aux layers + last, bf16, hidden 5376).
+MEASURED at **~74 MB per prepared sample** — prepared rows average ~1356 tokens,
+far more than raw conversations, so do not size this from conversation lengths:
 
-| Samples | Offline dump |
+| Samples | Offline dump (measured) |
 |---|---|
-| 32 | 0.8 GB |
-| 256 | 6.6 GB |
-| 30k | 774 GB |
-| 100k | 2.6 TB |
-| 349k (full) | ~9 TB |
+| 32 | 2.6 GB |
+| 256 | **21 GB** |
+| 30k | ~2.2 TB |
+| 100k | ~7.4 TB |
+| 349k (full) | **~26 TB** |
 
-So: **offline for overfit + tuning** (pays generation once, makes each rerun
-nearly free — online with `--on-generate delete` regenerates every epoch),
-**online for the final full-scale run** (storage).
+So: **offline for the gate and small ablations** (pays generation once, making
+each rerun nearly free — online with `--on-generate delete` regenerates every
+epoch), **online for anything at scale** (storage).
 
 ## 6. Running it
 
@@ -156,8 +162,10 @@ Minimal online invocation, if writing from scratch:
 # GPU 0: verifier + hidden-state streaming
 CUDA_VISIBLE_DEVICES=0 python scripts/launch_vllm.py <model> \
   --hidden-states-path <hs> --target-layer-ids 1 17 29 47 58 \
-  -- --tensor-parallel-size 1 --max-model-len 8192 \
+  -- --tensor-parallel-size 1 --max-model-len 8448 \
      --gpu-memory-utilization 0.95 --no-enable-prefix-caching --port 8000 &
+#      ^ STRICTLY > prepare_data --seq-length (8192). See gotchas: 0.95 can OOM
+#        on full-corpus prefills; TP>=2 or a shorter --seq-length fixes that.
 
 # GPU 1: training. plain `python` for ONE rank; torchrun only for >1 (see gotchas)
 CUDA_VISIBLE_DEVICES=1 python scripts/train.py \
@@ -225,6 +233,34 @@ Offline variant: dump first with `scripts/data_generation_offline.py
   or chat completions 400.
 - **Distributed test footgun:** call `torch.cuda.set_device(rank)` BEFORE
   `init_process_group`, else both ranks initialize NCCL on device 0 and segfault.
+- **`--max-model-len` must be STRICTLY greater than `--seq-length`**, not equal:
+  vLLM counts prompt + output, so a sample truncated to exactly `seq_length` plus
+  1 output token exceeds the limit and is silently dropped every epoch. 0.78% of
+  our corpus sat exactly at the ceiling.
+- **Verifier memory is tight on an 80 GB card.** 62.6 GB of weights leaves ~17 GB
+  for KV + activations, so `--gpu-memory-utilization 0.95` is required for an 8192+
+  context at TP=1. TP>=2 removes the squeeze entirely by splitting weights.
+- **`max_anchors` is the training-side memory driver, and upstream's default 3072
+  OOMs.** The loss materializes `[1, anchors*block_size, draft_vocab]` logits
+  (3072 -> `[1, 24576, 32000]`), which with targets and autograd copies reaches
+  tens of GB. Use **512** (DeepSpec's own `num_anchors`). Adding training GPUs does
+  NOT fix it: FSDP shards parameters and optimizer state, not activations.
+- **A bigger verifier argues FOR the reference's smaller settings.** Gemma-4-31B's
+  wider hidden (5376) and 60 layers make KV/token and per-anchor activations larger
+  than a 12B's, so DeepSpec's `max_length 4096` / `num_anchors 512` are more
+  necessary at 31B, not less.
+- **Use sub-epoch checkpointing on long runs** (`--checkpoint-freq 0.25`); an epoch
+  over a 349k corpus is ~57,700 steps and >20 h.
+- **Never edit a script while a job is running it.** bash reads scripts by byte
+  offset; an edit shifts them and the job exits silently with status 0. Have
+  wrappers `cp` the driver to node-local scratch and exec the copy.
+- **Do not assume GPU isolation between jobs.** On our cluster concurrent jobs all
+  see every card and all get `CUDA_VISIBLE_DEVICES` starting at 0, so two runs
+  land on the same GPU. Free-memory detection also races (a job holds a GPU it
+  will not touch until vLLM finishes loading). Pin explicitly per job.
+- **Training can cost more than generation.** Measured on 256 samples: generation
+  ~1 min/epoch vs training ~2.25 min/epoch at `max_anchors=256`; the default 3072
+  is heavier still. DeepSpec's own config uses 512. Measure before sizing a run.
 - **`mp.spawn` + heredoc** does not work: the child re-imports `__main__` and
   cannot reopen `<stdin>`. Put such tests in a real file.
 

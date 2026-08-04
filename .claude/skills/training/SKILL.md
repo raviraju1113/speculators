@@ -15,10 +15,10 @@
 - LR: his 1e-4 finding is for 1-layer Eagle3; DFlash tutorial default for 5-layer drafter is 3e-4 → sweep {1e-4, 3e-4}
 
 ## Online vs offline training: BOTH, by scale
-- Hidden states cost 64.5 KB/token (5 aux layers + last, bf16, hidden_size 5376).
-  Measured: 256 samples = 6.6 GB | 30k ≈ 774 GB | 100k = 2.6 TB | full 349k ≈ 9 TB.
-  /import/ml-sc-scratch1 has ~4 TB free (90% used), so offline is fine up to ~30k
-  and impossible at full scale.
+- Hidden states cost 64.5 KB/token, which is ~74 MB per PREPARED sample (prepared
+  rows average ~1356 tokens). MEASURED: 256 samples = 21 GB | 30k ≈ 2.2 TB |
+  100k ≈ 7.4 TB | full 349k ≈ 26 TB. /import/ml-sc-scratch1 has ~4 TB free (90%
+  used), so offline is practical only for the gate and small ablations -- NOT 30k.
 - Offline WINS for the overfit + tuning phase: online with --on-generate delete
   regenerates every hidden state every epoch (5 epochs = 5x the dominant cost),
   while offline pays once and makes each hyperparameter re-run nearly free.
@@ -57,10 +57,12 @@
 - No-NCCL workaround that does work: vLLM TP=1 + train launched as plain `python`
   (NOT torchrun -- torchrun sets LOCAL_RANK, and maybe_setup_distributed then calls
   init_process_group("nccl") even for world_size=1, distributed.py:143-154).
-- vLLM flags: --max-model-len MUST be >= prepare_data --seq-length (8192); sizing
-  it from sampled conversation lengths is wrong. At TP=1 that needs
-  --gpu-memory-utilization ~0.95 (weights 62.6 GB leave only ~10.9 GiB KV at 0.92,
-  and 8192 context needs ~11.9 GiB). Also --no-enable-prefix-caching.
+- vLLM flags: --max-model-len must be STRICTLY GREATER than prepare_data
+  --seq-length (vLLM counts prompt + output; equal drops every sample sitting at
+  the truncation ceiling). Sizing it from sampled conversation lengths is wrong.
+  At TP=1, 8192 of context needs ~11.9 GiB of KV and util 0.92 leaves only
+  ~10.9 GiB, so 0.95 is required. (The full-run OOM was NOT this -- it was
+  training-side, see max_anchors below.) Also --no-enable-prefix-caching.
 - /dev/shm on bare metal is 504 GB, so the docker --shm-size workaround is a
   container-only problem, not a cluster one.
 - sngpu forwards the job command to `sbatch --wrap`, which accepts only
@@ -82,3 +84,79 @@
   fiction, and multi-GPU requests starve because freed GPUs get absorbed one at a
   time. Ask for shorter declared --time (enables backfill) and for sc3-c98 to be
   left clear.
+
+## Verified results (2026-08-01)
+
+### Overfit gate -- PASSED in substance (job 58640223, 50 epochs, 256 samples)
+- train: position_1_acc 0.79-0.88, position_7_acc 0.685, accept_len 2.96-4.2, accept_rate 0.655
+- val:   position_1_acc 0.277, accept_len 1.535, accept_rate 0.215
+- The train/val gap IS the result: the draft memorizes its 256 samples, so layer
+  ids / mask token / vocab mapping / Markov head / confidence head are all correct.
+- position_7_acc (0.685) barely below position_1 (0.788): accuracy is FLAT across
+  the block, which is exactly what the Markov head exists to produce.
+- 50 epochs did NOT reach the >0.95 bar; the extension to epoch 200 (1 GPU, cached
+  states, no vLLM) DID, conclusively: **train position_0..7_acc all 1.0000,
+  accept_len 8.43, accept_rate 0.985, ce_loss 0.0001**, val unchanged (~0.2).
+  So it was step-starvation, not a defect. Think in OPTIMIZER STEPS, not epochs:
+  the gate needed ~5,000 steps total (25/epoch x 200); ONE epoch of the full 349k
+  corpus is ~57,700 steps. The gate therefore implies nothing about needing more
+  epochs at scale -- decide that from the val curve during the real run.
+- Confidence head: unbiased in-distribution (pred 0.643 vs actual 0.655) but badly
+  overconfident on val (0.771 vs 0.215). Recheck at scale; if it persists, STS
+  calibration moves from optional to necessary.
+
+### Measured throughput / sizing
+- Hidden-state generation at TP=1: ~6k tok/s.
+- Hidden states: ~74 MB per PREPARED sample (not 26 MB -- prepared rows average
+  ~1356 tokens, far more than raw conversations). 256 -> 21 GB, 349k -> ~26 TB.
+- Per-epoch on 256 samples: 3.2 min with --on-generate delete, 2.25 min with cache
+  => generation ~1 min, training ~2.25 min. TRAINING, not generation, was the
+  larger term even at max_anchors=256; the full run uses 3072, which is heavier
+  still. Do not assume generation dominates.
+- Full corpus: 349,138 samples, ~473M tokens/epoch.
+
+## DeepSpec's own gemma-4 recipe (config/dspark/dspark_gemma4_12b.py)
+Authoritative, better than the paper table:
+- block_size 7, num_draft_layers 5, num_anchors **512** (we use 3072), mask_token_id 4
+- markov_rank 256 vanilla, confidence_head_alpha 1.0, confidence_head_with_markov True
+- **loss_decay_gamma 4.0** -- confirms 4.0, NOT block_size, despite the paper writing
+  w_k = exp(-(k-1)/gamma). Our default was already right; that ablation is closed.
+- ce/l1 alpha 0.1/0.9, max_grad_norm 1.0 (ours hardcoded in trainer.py:470)
+- lr **6.0e-4**, warmup_ratio 0.04, weight_decay 0.0, 10 epochs, max_length 4096
+- global_batch_size **512** via gradient accumulation from local 1.
+  DO NOT copy their lr: this tree has NO gradient accumulation (upstream PR #859
+  still open), so our effective batch is one packed sequence per rank per step.
+  Keep the {1e-4, 3e-4} sweep.
+
+## Cluster gotchas learned the hard way (all cost real time)
+- **Never edit a script while a job is executing it.** bash reads scripts by byte
+  offset; an edit shifts the offsets and the job exits silently with status 0
+  (observed: job 58650593 stopped right after "vLLM ready", no error). All
+  wrappers now `cp` the driver to $SLURM_TMPDIR and exec the copy.
+- **GPUs are NOT isolated between jobs here.** Two concurrent jobs both see all 4
+  cards and both get CUDA_VISIBLE_DEVICES starting at 0. Neither hardcoding 0,1
+  nor trusting CUDA_VISIBLE_DEVICES works. Free-memory detection also races (a job
+  reserves its training GPU but does not touch it for ~7 min while vLLM loads, so
+  the other job sees it idle). Use explicit GPU_IDS=... per job.
+- **--max-model-len must be STRICTLY > prepare_data --seq-length.** Equal still
+  drops the longest samples: vLLM counts prompt + output, so an 8192-token sample
+  plus 1 output token is 8193 > 8192 -> HTTP 400 -> silently skipped every epoch.
+  0.78% of the corpus (2,728 of 349,138) sits exactly at the ceiling.
+- **Failed hidden-state fetches are silent** (data.py returns None + a warning).
+  Always run: grep -c "Failed to load/cache hidden states" <log>
+- **max_anchors=3072 OOMs the TRAINING process** (not vLLM -- the traceback is in
+  torch._inductor / _aot_autograd, i.e. the compiled draft backward). The loss
+  materializes logits of [1, anchors*block_size, draft_vocab] = [1, 24576, 32000];
+  with targets plus softmax/autograd copies that reaches tens of GB. The overfit
+  gate survived only because it used max_anchors=256.
+  FIX: max_anchors 512 (DeepSpec's own num_anchors) -> 4096 positions, ~2x the
+  gate's footprint. More training GPUs do NOT help: FSDP shards parameters and
+  optimizer state, not activations.
+- Model size pushes us TOWARD DeepSpec's smaller values, not away: gemma-4-31B has
+  hidden 5376 over 60 layers, so KV/token (~1.45 MiB) and per-anchor activation are
+  both larger than their 12B. Their max_length 4096 / num_anchors 512 are more
+  necessary for us, not less.
+- **Use sub-epoch checkpointing at scale.** An epoch on the full corpus is ~57,700
+  steps and >20 h; --checkpoint-freq 0.25 caps what a timeout throws away.
+- Use `--exclude sc-c96,sc3-c97,sc-c82` to let SLURM pick either good node;
+  `--nodelist a,b` means "include BOTH" and requests 2 nodes.

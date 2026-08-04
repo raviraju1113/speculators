@@ -37,4 +37,11 @@ export TRAIN_GPUS_N=1
 # Do NOT copy this to the full run: 100k samples would be ~2.6 TB.
 export ON_GENERATE=cache
 
-exec bash /import/ml-sc-scratch1/mengmengj/speculators/examples/train/dspark_online_gemma4_31b.sh
+# Run a SNAPSHOT of the driver script, not the file itself.
+# bash reads scripts incrementally by byte offset, so editing the file while a job
+# is executing it makes bash resume at a stale offset -- observed 2026-08-01 as a
+# silent exit 0 right after "vLLM ready" (job 58650593), with no error at all.
+_SRC=/import/ml-sc-scratch1/mengmengj/speculators/examples/train/dspark_online_gemma4_31b.sh
+_RUN="${SLURM_TMPDIR:-/tmp}/dspark_driver_$$.sh"
+cp "$_SRC" "$_RUN"
+exec bash "$_RUN"
