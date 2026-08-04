@@ -51,40 +51,65 @@ Same broken recipe (random-init, lr 6e-4, 4-GPU), only the alignment corrected
 | checkpoint | vLLM accept_len (aime, k=3) |
 |---|---|
 | old broken rinit (any # steps) | 1.07 |
-| shift-fixed, 500 steps | **2.175** |
-| shift-fixed, ~1500 steps | 2.10 |
+| shift-fixed, 500 steps | 2.175 |
+| shift-fixed, full epoch (10k steps, pure logit-distill) | 2.217 |
+| **+ feature-distillation (step3200)** | **2.512** |
 | vanilla (reference) | 3.58 |
 
-`soft_ce` fell 11.9 → 1.15 by step 500; the draft is now servable and improves with training.
+`soft_ce` fell 11.9 → 1.15 by step 500; the draft is servable and improves with training.
+The shift fix (1.07 → ~2.2) is now folded directly into `training_step.py` (not a monkeypatch).
 
-## Residual (open) — the ~2.1 plateau
-The shift fix is the dominant fix, but accept plateaus ~2.1, below vanilla's 3.58. Diagnosis:
-a **second, training-side mismatch in the multi-step recurrence** — the trainer is
-**teacher-forced** (feeds ground-truth tokens through the TTT steps), while vLLM decoding is
-**free-running** (feeds the draft's own predicted tokens). Confirmed from the vLLM dumps:
-spec step j consumes the token the draft itself produced at step j-1, at a constant position.
-This exposure-bias gap caps steps 2–3 acceptance for a weak draft.
+## The ~2.2 plateau — cause and fix (feature distillation)
+After the shift fix, accept plateaued ~2.2 across a full epoch even as `soft_ce` kept
+dropping — so it was a **ceiling, not under-training**. Root cause: the trainer used
+**pure logit-distillation (soft-CE only)** — it never trained the draft's *hidden feature*.
+Evidence: even the accept-2.2 draft has **`feat_l1 ≈ 1.83` (= random init)** — its
+`backbone_hidden` (the recurrent state it feeds forward in TTT) does not resemble the
+target's hidden at all. Since the multi-token tail depends entirely on that recurrent
+hidden, steps 2–3 accept poorly → accept caps ~2.2.
 
-Caveat: our hand-rolled HF spec-decode eval also free-runs yet reads ~2.95 vs vLLM's 2.10, so
-part of that gap may be HF-eval optimism; the reliable number is vLLM (2.10). A fresh dump
-saving the recurrent `backbone_hidden` would separate "training-recurrence mismatch" from
-"HF-eval optimism" definitively.
+NB: this is *not* a teacher-forcing / free-running bug. The trainer is standard **EAGLE-3
+TTT** — recurrent hidden (the draft's own) + teacher-forced tokens — which is correct
+(acceptance requires draft==target, so the accepted-path token == ground-truth token; only
+the *hidden* has no ground-truth twin, hence it is recurred). An earlier "teacher-forcing"
+hypothesis was walked back.
 
-**To reach ~3.5:** implement free-running / scheduled-sampling in the TTT recurrence
-(feed the draft's own sampled tokens during training) — a real `training_step.py` change,
-not a monkeypatch — plus more training. Not the original bug; ordinary draft-quality work.
+**Fix — EAGLE/DSpark feature distillation:** add a **smooth-L1 loss between the draft's
+`backbone_hidden` and the target's UNSHIFTED hidden** at the aligned position `t+k`, plus
+DSpark's recipe (loss `0.1 hard-CE + 0.9 feature-L1`, global batch 512, TTT depth 7). Same
+Gemma4 assistant architecture — only the *training recipe* changed. New knobs in
+`training_step.py`/`train_online.py`: `--soft-ce-weight`, `--hard-ce-weight`,
+`--feature-l1-weight`. Result: warm-starting the accept-2.2 draft with the feature loss
+drove `feat_l1` 1.83 → ~0.89 and lifted **vLLM accept 2.217 → 2.512** (rate 0.41 → 0.50) —
+the ceiling was not a wall. Next: add soft-CE back on top (`soft_ce 1.0 + feature 0.9`) to
+sharpen target-argmax agreement (the accept metric) toward vanilla's 3.58.
 
 ## Recommendations
-1. Fold the hidden shift into `build_target_signals` (`src/.../gemma4_mtp/training_step.py`)
-   so **every** training path (online + offline cache) is correct, not just the monkeypatched
-   online path.
-2. Put a **vLLM accept-length eval in the training loop** — loss and HF are blind to this
-   class of bug; only a vLLM eval exposed it.
-3. (Optional) free-running TTT training to close the 2.1 → 3.5 gap.
+1. **[done]** Hidden shift is folded directly into `training_step.py` (draft step-0 consumes
+   the shifted `h_{t-1}`; feature labels use the unshifted hidden). The old `patch_hidden_shift`
+   monkeypatch is now a no-op. Apply the same to the offline cache path
+   (`training_step_from_cache`) if it is used.
+2. **Feature distillation is essential for the tail** — pure logit-distillation caps accept
+   ~2.2. Use `--feature-l1-weight 0.9` (+ soft- and/or hard-CE) to train the recurrent hidden.
+3. Put a **vLLM accept-length eval in the training loop** — loss and HF are blind to the
+   original shift bug; only a vLLM eval exposed it.
+4. TTT (recurrent hidden + teacher-forced token) is correct EAGLE-3 — do NOT "fix" it with
+   free-running tokens (that was a wrong lead). The tail is fixed by feature distillation +
+   bigger batch + more steps, not by changing the token feed.
+
+## Code changes (landed)
+- `src/speculators/models/gemma4_mtp/training_step.py`: hidden shift folded in
+  (`_shift_right`), EAGLE feature-distillation loss (`_feature_l1`, smooth-L1 of
+  `backbone_hidden` vs the target's unshifted hidden), `MTPLossConfig.feature_l1_weight`,
+  and a guard that skips the vocab-softmax when `soft_ce_weight == 0`.
+- `scripts/gemma4_mtp/train_online.py`: `--soft-ce-weight`/`--hard-ce-weight`/
+  `--feature-l1-weight` args; `patch_hidden_shift` is now a no-op; windowed (mean/N) loss log.
 
 ## Reproduction
 Diagnostic scripts in the session scratchpad: `forward_parity_probe.py`, `aime_overfit_probe.py`,
 `localize_forward.py`, `magnitude_probe.py`, `hidden_sensitivity.py`, `kv_sensitivity.py`,
 `hf_specdecode.py` (dual convention), `dump_run.sh` + `analyze_dump.py`/`compare_hidden*.py`
 (vLLM instrumentation; the vLLM patch was reverted after use), `shift_test.py`, `analyze_recurrence.py`.
+Best-result checkpoints: `output/gemma4_26b_mtp_rinit_shiftfix_4gpu` (shift-fixed, 2.22),
+`output/gemma4_26b_mtp_assistant_featdistill` (+ feature loss, 2.51).
 Env: vLLM 0.24.0+cu129, torch 2.11.0+cu129, conda `speculator`.
