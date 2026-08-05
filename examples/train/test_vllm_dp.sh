@@ -70,7 +70,7 @@ else
   echo ">>> vLLM DP=$DP FAILED to come up."
 fi
 echo "-- was NCCL involved at all? --"
-n=$(grep -c "ncclCommInitRank\|ncclNetPluginInit" "$LOG" 2>/dev/null || echo 0)
+n=$(grep -cE "ncclCommInitRank|ncclNetPluginInit" "$LOG" 2>/dev/null); n=${n:-0}
 echo "NCCL init mentions in the vLLM log: $n"
 if [ "${n:-0}" -gt 0 ]; then
   echo "   -> DP does touch NCCL here; expect the same segfault as TP>=2."

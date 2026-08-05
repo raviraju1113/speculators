@@ -1,0 +1,78 @@
+# DSpark (ours, lr 3e-4, epoch 0) vs the published drafts, on gemma-4-31B-it.
+# `baseline` is first and is the speedup denominator.
+#
+# Layout: TP=1 on a single A100-80. TP>=2 is NOT usable outside the NGC container
+# on this cluster (NCCL segfaults in ncclNetPluginInit), and eval is short enough
+# that one GPU is fine.
+#
+# Memory: the 62.6 GB verifier plus a draft leaves little room, so max_model_len is
+# 4096 (eval prompts + 2048 output tokens fit) and --enforce-eager frees the
+# CUDA-graph pool. Raise max_model_len only if a benchmark prompt gets rejected.
+#
+# Gemma-4 ships its chat template as a separate chat_template.jinja rather than in
+# tokenizer_config.json, so vLLM needs it passed explicitly or chat completions 400.
+#
+# Run:
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark.yaml            # all of it
+#   python run_experiments.py --config gemma4-31b-dspark.yaml --dry-run  # print cmds
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa_diamond, livecodebench]
+  num_samples: 30          # aime.jsonl has 30 rows; gpqa/lcb are sampled to this
+  max_tokens: 2048
+  temperature: 0.0         # greedy -> canonical, reproducible acceptance
+
+output_dir: ./results/gemma4-31b-dspark
+
+experiments:
+  # Speedup denominator: backbone alone, no draft.
+  - name: baseline
+
+  # Ours. num_speculative_tokens 8 matches the checkpoint's own
+  # proposal_methods[0].speculative_tokens (block_size 8 with
+  # sample_from_anchor=True, so the anchor predicts too).
+  # `method: dspark` is required -- vLLM will not infer it from the config.
+  - name: ours_dspark_lr3e4_ep0_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_full_lr3e4/checkpoints/0
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # Same checkpoint at k=3, for apples-to-apples with the k=3 EAGLE-3 numbers
+  # Ravi reported (accept_len 2.4-2.8, speedup 1.47-1.8x).
+  - name: ours_dspark_lr3e4_ep0_k3
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_full_lr3e4/checkpoints/0
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  # RedHat's published DSpark for this exact target -- the number to beat.
+  - name: redhat_dspark_k8
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # Google's native MTP assistant: measured 2026-07-06 at AR 0.87 / accept_len 3.6.
+  - name: google_assistant_k3
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-assistant
+    num_speculative_tokens: 3

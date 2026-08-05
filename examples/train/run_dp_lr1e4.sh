@@ -11,12 +11,22 @@ set -euo pipefail
 
 export MODE=full_dp
 export LR=1e-4
-export EPOCHS=2
+export EPOCHS=10
 export RUN_NAME=gemma4_31b_dspark_dp_lr1e4
 export WANDB_PROJECT="${WANDB_PROJECT:-gemma4-dspark}"
-export VLLM_PORT=8010
+# With DP=N, vLLM opens a TCPStore per engine on ports derived from the API port
+# (API+1, API+2, ...). Reserve headroom and pick a range nothing else uses:
+# 8010 collided with something on sc3-c98 and every engine died with
+#   DistNetworkError: ... port: 8011 ... EADDRINUSE
+# Note DP does use torch.distributed (a TCP/gloo store) even though it avoids NCCL
+# collectives -- which is why the DP probe saw 0 NCCL mentions yet still needs ports.
 export GPU_IDS=0,1,2,3
 export ON_GENERATE=delete
+
+# 10 epochs x 13 GB checkpoints would fill a 97%-full volume, so save every half
+# epoch (a DP epoch is ~8 h, capping lost work at ~4 h) and prune to the best.
+export CHECKPOINT_FREQ=0.5
+export SAVE_BEST=1
 
 # Snapshot the driver: editing a script while a job runs it makes bash resume at a
 # stale byte offset and exit silently with status 0.

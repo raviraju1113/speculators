@@ -107,6 +107,12 @@ TOTAL_SEQ_LEN="${TOTAL_SEQ_LEN:-8192}"   # must be a multiple of 128 for flex at
 # epoch-granular checkpointing would discard most of a day on a timeout or crash.
 # <1 enables sub-epoch saves; 0.25 caps the loss at about a quarter epoch.
 CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-0.25}"
+# Checkpoints are ~13 GB each (2.4B trainable params + optimizer state), and
+# /import/ml-sc-scratch1 sits at 97% with ~1.5 TB free. Without pruning, a
+# 10-epoch run at freq 0.25 would leave 40 x 13 GB = 520 GB behind.
+# SAVE_BEST=1 passes --save-best, which calls cleanup_keep_only_best() on every
+# new best val loss and deletes the other epoch dirs, bounding the footprint.
+SAVE_BEST="${SAVE_BEST:-0}"
 
 # ---------------- optimizer / schedule ----------------
 # Matched to DeepSpec's own gemma-4 DSpark recipe
@@ -117,12 +123,71 @@ CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-0.25}"
 # NOT copied from them: lr 6.0e-4. That is tuned for global_batch_size=512 via
 # gradient accumulation, which this tree does not have (upstream PR #859 is still
 # open), so our effective batch is one packed sequence per rank per step.
+# Gradient accumulation via scripts/train_accum.py (a runtime monkey-patch, so
+# scripts/train.py stays untouched and upstream-mergeable).
+# ACCUM_STEPS is PER RANK. Sizing: the measured epoch is 45,531 steps over a
+# 314,224-sample train split => ~6.9 conversations per rank-step. With N ranks one
+# global step carries 6.9*N conversations, so to match DeepSpec's 512:
+#     ACCUM_STEPS ~= 512 / (6.9 * TRAIN_GPUS_N)
+# e.g. 2 ranks -> 37, 3 ranks -> 25, 1 rank -> 74.
+# Do NOT set 512 literally: our batching unit is a multipacked sequence, not one
+# conversation, so that would overshoot by ~7x.
+# NOTE: accumulation buys gradient QUALITY, not throughput -- wall-clock per epoch
+# is unchanged.
+# CRITICAL: train.py sizes the LR schedule in MICRO-batches, but train_accum.py
+# advances the scheduler once per ACCUM_STEPS micro-batches. Without rescaling,
+# warmup is stretched by ACCUM_STEPS and the run never leaves it -- observed
+# 2026-08-05: lr 6e-4 requested, 1.88e-06 applied (34 of 9,106 warmup steps after
+# an hour), position_1_acc pinned at 0.0001. So compute the OPTIMIZER-step budget
+# and pass it explicitly via --scheduler-total-steps.
+#   steps/epoch = 45,531 / TRAIN_GPUS_N   (measured epoch length at 1 rank)
+#   total       = steps/epoch * EPOCHS / ACCUM_STEPS
+ACCUM_STEPS="${ACCUM_STEPS:-0}"
+if [ "${ACCUM_STEPS:-0}" -gt 1 ] 2>/dev/null; then
+  TRAIN_SCRIPT="scripts/train_accum.py"
+  _steps_per_epoch=$(( 45531 / TRAIN_GPUS_N ))
+  SCHED_TOTAL="${SCHED_TOTAL:-$(( _steps_per_epoch * EPOCHS / ACCUM_STEPS ))}"
+  ACCUM_ARGS=(--accumulation-steps "$ACCUM_STEPS"
+              --scheduler-total-steps "$SCHED_TOTAL")
+  echo " accum       : $ACCUM_STEPS micro-batches/step -> scheduler-total-steps $SCHED_TOTAL"
+else
+  TRAIN_SCRIPT="scripts/train.py"
+  ACCUM_ARGS=()
+fi
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 SCHEDULER_TYPE="${SCHEDULER_TYPE:-linear}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.04}"
 
 # ---------------- runtime ----------------
-VLLM_PORT="${VLLM_PORT:-8000}"
+# Port selection is a real failure mode with DP: vLLM opens a TCPStore per engine
+# on API_PORT+1.., and if ANY of them is taken every engine dies at once with
+#   DistNetworkError: ... EADDRINUSE
+# Worse, orphaned engine processes from a previous failed run keep holding those
+# ports (our cleanup killed the parent, not the children), so a "known free" port
+# is not reliable. Probe for a free contiguous block on THIS node instead.
+if [ -n "${VLLM_PORT:-}" ]; then
+  :
+else
+  VLLM_PORT=$(python - "$(( VLLM_TP * VLLM_DP + 2 ))" <<'PYPORT'
+import socket, sys
+need = int(sys.argv[1])
+for base in range(8600, 9600, 16):
+    socks = []
+    try:
+        for p in range(base, base + need):
+            s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            s.bind(("0.0.0.0", p)); socks.append(s)
+        print(base); break
+    except OSError:
+        continue
+    finally:
+        for s in socks: s.close()
+else:
+    print(8000)
+PYPORT
+)
+fi
+echo " vLLM port   : $VLLM_PORT (engines $((VLLM_PORT+1))..$((VLLM_PORT+VLLM_TP*VLLM_DP)))"
 # Gemma-4 advertises a 262144 context; left unset, vLLM sizes the KV cache for
 # that and there is no room after 62.6 GB of weights. Even 8192 is too much at
 # TP=1: measured 2026-07-31, only 10.91 GiB is left for KV and 8192 needs
@@ -273,7 +338,7 @@ export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-lo}"
 
 # ---------------- 1. verifier server ----------------
 echo "=== launching vLLM (verifier + hidden-state streaming) ==="
-CUDA_VISIBLE_DEVICES="$VLLM_GPUS" python scripts/launch_vllm.py "$MODEL" \
+CUDA_VISIBLE_DEVICES="$VLLM_GPUS" setsid python scripts/launch_vllm.py "$MODEL" \
     --hidden-states-path "$HS_PATH" \
     --target-layer-ids $TARGET_LAYER_IDS \
     -- --tensor-parallel-size "$VLLM_TP" \
@@ -287,7 +352,12 @@ VLLM_PID=$!
 
 cleanup() {
     echo "=== stopping vLLM (pid $VLLM_PID) ==="
-    kill "$VLLM_PID" 2>/dev/null || true
+    # Kill the PROCESS GROUP, not just the parent: DP engine children otherwise
+    # survive as orphans and keep holding their TCPStore ports, which makes the
+    # next run fail with EADDRINUSE on a port that looks free.
+    kill -TERM -"$VLLM_PID" 2>/dev/null || kill "$VLLM_PID" 2>/dev/null || true
+    sleep 5
+    kill -KILL -"$VLLM_PID" 2>/dev/null || true
     wait "$VLLM_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -326,7 +396,7 @@ else
 fi
 
 CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
-    scripts/train.py \
+    "$TRAIN_SCRIPT" "${ACCUM_ARGS[@]+"${ACCUM_ARGS[@]}"}" \
     --verifier-name-or-path "$MODEL" \
     --data-path "$DATA_PATH" \
     --hidden-states-path "$HS_PATH" \
@@ -353,6 +423,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --lr "$LR" \
     --weight-decay "$WEIGHT_DECAY" \
     --checkpoint-freq "$CHECKPOINT_FREQ" \
+    $( [ "$SAVE_BEST" = "1" ] && echo --save-best ) \
     --scheduler-type "$SCHEDULER_TYPE" \
     --scheduler-warmup-ratio "$WARMUP_RATIO" \
     --num-workers "$NUM_WORKERS" \

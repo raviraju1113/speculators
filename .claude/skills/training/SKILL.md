@@ -160,3 +160,19 @@ Authoritative, better than the paper table:
   steps and >20 h; --checkpoint-freq 0.25 caps what a timeout throws away.
 - Use `--exclude sc-c96,sc3-c97,sc-c82` to let SLURM pick either good node;
   `--nodelist a,b` means "include BOTH" and requests 2 nodes.
+
+## Disk: checkpoints are 13 GB each -- pair high epoch counts with --save-best
+- MEASURED: one checkpoint of the 5-layer / 2.4B-param DSpark draft (weights +
+  optimizer state) is **13 GB**.
+- The 200-epoch overfit extension therefore wrote **2.5 TB** (200 x 13 GB) and took
+  /import/ml-sc-scratch1 from 4 TB free to 1.5 TB (97% full) in two days. Recovered
+  by keeping only the best + last epoch.
+- There is NO automatic pruning unless you pass `--save-best`, which calls
+  Checkpointer.cleanup_keep_only_best() on each new best val loss (trainer.py:636)
+  and deletes the other epoch dirs, keeping the footprint flat.
+- Rule: EPOCHS x (1/CHECKPOINT_FREQ) x 13 GB is what you will consume without it.
+  freq 0.5 over 10 epochs = 20 saves = 260 GB; freq 0.25 = 520 GB.
+- Deleting epoch dirs leaves dangling `epochN_end` symlinks; clean with
+  `find <ckpt-dir> -xtype l -delete`.
+- rm -rf over many 13 GB dirs on NFS is silent and slow -- it looks hung when it is
+  not, and `df` reclaims lazily.

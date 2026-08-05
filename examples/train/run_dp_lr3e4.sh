@@ -14,7 +14,6 @@ export LR=3e-4
 export EPOCHS=2
 export RUN_NAME=gemma4_31b_dspark_dp_lr3e4
 export WANDB_PROJECT="${WANDB_PROJECT:-gemma4-dspark}"
-export VLLM_PORT=8000
 export GPU_IDS=0,1,2,3
 export ON_GENERATE=delete
 
