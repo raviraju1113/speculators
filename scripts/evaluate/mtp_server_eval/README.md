@@ -129,7 +129,7 @@ BENCHMARKS=aime,gpqa,livecodebench    ./run_eval.sh   # default three
 # extra sets (generate once via prepare_data.py, then):
 BENCHMARKS=gsm8k,math500,humaneval,mbpp                    ./run_eval.sh
 BENCHMARKS=aime,gpqa,livecodebench,gsm8k,math500,humaneval,mbpp ./run_eval.sh
-# Inferact/Kimi-K3-DSpark acceptance suite (see §H):
+# Full multi-benchmark suite (prefer YAML — see §H / parent README):
 BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
   NUM_SAMPLES=0 ./run_eval.sh
 ```
@@ -206,20 +206,28 @@ SPEEDBENCH_DIR=../speedbench_data python prepare_data.py --only \
   speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy
 ```
 
-### H. Kimi-K3-DSpark acceptance suite
+### H. Full multi-benchmark suite (YAML preferred)
 
-Same 14 workloads as the acceptance table on
-[Inferact/Kimi-K3-DSpark](https://huggingface.co/Inferact/Kimi-K3-DSpark). Card →
-eval name mapping is in the [parent README](../README.md#kimi-k3-dspark-acceptance-suite).
+For a complete acceptance + throughput sweep, use the YAML runner — see the
+parent guide:
+[How to run a full evaluation](../README.md#how-to-run-a-full-evaluation).
 
 ```bash
-# after §G preparation:
-BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
-  NUM_SAMPLES=0 TEMPERATURE=0.0 BASE_URL=http://127.0.0.1:8000 \
-  RESULT_DIR=./results/kimi_suite ./run_eval.sh
+cd ../experiments
+# edit full-eval.yaml (backbone / draft / GPUs / benchmarks)
+./run_full_eval.sh --dry-run
+./run_full_eval.sh
 ```
 
-In a YAML experiment, set:
+**Lower-level** (server already running; same benchmark list as `full-eval.yaml`):
+
+```bash
+BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
+  NUM_SAMPLES=0 TEMPERATURE=0.0 BASE_URL=http://127.0.0.1:8000 \
+  RESULT_DIR=./results/full_eval ./run_eval.sh
+```
+
+`full-eval.yaml` `eval:` block:
 
 ```yaml
 eval:

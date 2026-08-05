@@ -6,7 +6,7 @@
 #   BACKEND=vllm   BASE_URL=http://127.0.0.1:8000 ./run_eval.sh
 #   NUM_SAMPLES=50 MAX_TOKENS=8192 ./run_eval.sh
 #   BENCHMARKS=aime,gpqa ./run_eval.sh          # subset
-#   # Inferact/Kimi-K3-DSpark acceptance suite:
+#   # Full suite (prefer experiments/full-eval.yaml + run_full_eval.sh):
 #   BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 NUM_SAMPLES=0 ./run_eval.sh
 #
 # BACKEND selects how acceptance is read (SGLang windowed gauges vs vLLM

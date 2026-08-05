@@ -29,16 +29,20 @@ Each `*.jsonl` file stores one benchmark, one row per example, in the format:
 | `alpaca.jsonl` | `tatsu-lab/alpaca` |
 | `arena-hard-v2.jsonl` | (shipped) |
 | `swe-bench.jsonl` | `princeton-nlp/SWE-bench_Lite` |
-| `swe-bench-pro.jsonl` | `ScaleAI/SWE-bench_Pro` |
-| `swe-rebench.jsonl` | `nebius/SWE-rebench` |
+| `swe-bench-pro.jsonl` | `ScaleAI/SWE-bench_Pro` (large — prefer scratch `turns/`; `mtp_server_eval/data/` copy may be shipped) |
+| `swe-rebench.jsonl` | `nebius/SWE-rebench` (large — scratch only) |
 
-**Kimi-K3-DSpark suite extras** (generate locally; large / license-restricted —
-not committed):
+**Kimi-K3-DSpark suite extras** (large — **not committed**; live under
+`/import/ml-sc-scratch5/chenw/datasets/eval/`):
 
-| File | How to build |
-|------|----------------|
-| `aa-lcr.jsonl` | [`../prepare_aa_lcr.py`](../prepare_aa_lcr.py) ← `ArtificialAnalysis/AA-LCR` |
-| SPEED-Bench slices | [`../prepare_speedbench.py`](../prepare_speedbench.py) ← `nvidia/SPEED-Bench` (then map into `mtp_server_eval` as `speed-*`) |
+| File | How to build | Scratch path |
+|------|----------------|--------------|
+| `aa-lcr.jsonl` | [`../prepare_aa_lcr.py`](../prepare_aa_lcr.py) ← `ArtificialAnalysis/AA-LCR` | `…/eval/turns/aa-lcr.jsonl` |
+| `swe-bench-pro.jsonl` / `swe-rebench.jsonl` | converter below | `…/eval/turns/` |
+| SPEED-Bench slices | [`../prepare_speedbench.py`](../prepare_speedbench.py) ← `nvidia/SPEED-Bench` (then map into `mtp_server_eval` as `speed-*`) | `…/eval/turns/throughput_16k_low_entropy.jsonl` (+ small slices may stay in-repo) |
+
+`mtp_server_eval` prompt-format copies live in `…/eval/mtp/`. Symlink into
+`eval_datasets/` / `mtp_server_eval/data/` as needed (paths are gitignored).
 
 See the parent [`README.md`](../README.md#kimi-k3-dspark-acceptance-suite) for the
 full card → eval-name mapping.

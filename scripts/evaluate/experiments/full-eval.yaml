@@ -1,0 +1,63 @@
+# Full speculative-decoding evaluation (YAML).
+#
+# This is the recommended config for a complete acceptance + throughput
+# comparison: baseline backbone vs one or more drafts.
+#
+# Quick start:
+#   cd scripts/evaluate/experiments
+#   # 1) edit this file: backbone, draft, gpus, tensor_parallel_size
+#   # 2) prepare datasets once (see ../README.md "How to run a full evaluation")
+#   ./run_full_eval.sh --dry-run
+#   ./run_full_eval.sh
+#
+# Or:  python run_experiments.py --config full-eval.yaml
+#
+# Benchmark list below covers the common multi-domain suite (math, code,
+# chat, SWE, SPEED-Bench, long-context). Drop or add names as needed —
+# anything supported by mtp_server_eval is valid. aa-lcr needs a large
+# max_model_len; remove it for a shorter / smaller-GPU run.
+
+engine: vllm
+backbone: REPLACE_WITH_BACKBONE_PATH_OR_HF_ID
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  # Raise for aa-lcr (~tens of k tokens); 8192 is enough if you drop aa-lcr.
+  max_model_len: 131072
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  benchmarks:
+    - gsm8k
+    - humaneval
+    - mbpp
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - math500
+    - speed-low-entropy
+    - swe-bench-pro
+    - aa-lcr
+    - mt-bench
+    - speed-qa
+    - speed-writing
+    - aime26
+  num_samples: 0          # 0 = all prompts; use 20–50 for a smoke run
+  max_tokens: 4096
+  temperature: 0.0        # greedy = canonical acceptance
+
+output_dir: ./results/full-eval
+
+experiments:
+  # First entry is the baseline (backbone alone) — the speedup denominator.
+  - name: baseline
+
+  - name: draft_k5
+    draft: REPLACE_WITH_DRAFT_PATH_OR_HF_ID
+    num_speculative_tokens: 5

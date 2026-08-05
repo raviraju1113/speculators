@@ -56,6 +56,7 @@ _ALL_CONFIGS = [
     "throughput_1k",
     "throughput_2k",
     "throughput_8k",
+    "throughput_16k",
     "throughput_32k",
 ]
 
@@ -111,7 +112,9 @@ def split_config(flat_file: Path, out_dir: Path, config: str) -> int:
         out_path = out_dir / f"{config}_{key}.jsonl"
         with out_path.open("w") as f:
             for t in texts:
-                f.write(json.dumps({"turns": t}) + "\n")
+                # evaluate.py / to_guidellm expect turns as a list of strings.
+                turns = t if isinstance(t, list) else [t]
+                f.write(json.dumps({"turns": turns}) + "\n")
         logger.info("  wrote %s (%d rows)", out_path.name, len(texts))
         written += 1
 
