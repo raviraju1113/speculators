@@ -2,19 +2,20 @@
 """Prepare eval datasets for the server MTP/EAGLE acceptance eval.
 
 Writes normalized, ready-to-send prompt files to this dir's ``data/``:
-    aime.jsonl, gpqa_diamond.jsonl, livecodebench.jsonl
 each line = {"benchmark", "id", "prompt"}.
 
-Prepared copies of all three ship in ``data/`` already, so you only need this
-to refresh/regenerate them. Sources:
-  * AIME 2024     — a local parquet (set AIME_PARQUET, or use the shipped file)
+Core shipped sets (refresh as needed):
+  * AIME 2024     — local parquet (set AIME_PARQUET, or use the shipped file)
   * LiveCodeBench — livecodebench/code_generation_lite (plain test*.jsonl shards)
-  * GPQA-Diamond  — Idavidrein/gpqa (GATED: run `hf auth login` first, after
-                    accepting terms at https://huggingface.co/datasets/Idavidrein/gpqa)
+  * GPQA-Diamond  — Idavidrein/gpqa (GATED: ``hf auth login`` after accepting terms)
+
+Also derives Inferact/Kimi-K3-DSpark suite prompts from sibling
+``eval_datasets/`` turns files and from SPEED-Bench / AA-LCR preparers
+(``../prepare_speedbench.py``, ``../prepare_aa_lcr.py``).
 
 Run once on a machine with internet:
-    python prepare_data.py                      # all three
-    python prepare_data.py --only aime,livecodebench
+    python prepare_data.py                      # aime,gpqa,livecodebench
+    python prepare_data.py --only gsm8k,aime26,speed-coding,aa-lcr
 """
 
 import argparse
@@ -39,6 +40,32 @@ TURNS_BENCHMARKS = {
     "math500": "math500.jsonl",
     "humaneval": "humaneval.jsonl",
     "mbpp": "mbpp.jsonl",
+    "mt-bench": "mt-bench.jsonl",
+    "aime26": "aime26.jsonl",
+    "swe-bench-pro": "swe-bench-pro.jsonl",
+    "swe-rebench": "swe-rebench.jsonl",
+    "aa-lcr": "aa-lcr.jsonl",
+}
+
+# SPEED-Bench materialised splits (see ../prepare_speedbench.py). Env override
+# points at the directory that contains qualitative_*.jsonl /
+# throughput_16k_*.jsonl files.
+SPEEDBENCH_DIR = Path(
+    os.getenv(
+        "SPEEDBENCH_DIR",
+        str(Path(__file__).resolve().parent.parent / "speedbench_data"),
+    )
+)
+# Inferact/Kimi-K3-DSpark acceptance-suite SPEED-Bench slices.
+SPEEDBENCH_BENCHMARKS = {
+    "speed-coding": "qualitative_coding.jsonl",
+    "speed-multilingual": "qualitative_multilingual.jsonl",
+    "speed-rag": "qualitative_rag.jsonl",
+    "speed-qa": "qualitative_qa.jsonl",
+    "speed-writing": "qualitative_writing.jsonl",
+    # Card lists "low-entropy, 10k input" (512 prompts); closest public split is
+    # throughput_16k low_entropy (512). Override via SPEEDBENCH_DIR contents.
+    "speed-low-entropy": "throughput_16k_low_entropy.jsonl",
 }
 
 # Prompt templates mirror benchmark/math_reason conventions.
@@ -242,18 +269,57 @@ def prep_from_turns(name):
             )
             if not isinstance(prompt, str) or not prompt:
                 continue
+            recs.append(
+                {
+                    "benchmark": name,
+                    "id": str(row.get("id", i)),
+                    "prompt": prompt,
+                }
+            )
+    _write(f"{name}.jsonl", recs)
+
+
+def prep_from_speedbench(name):
+    """Convert a SPEED-Bench split file into mtp_server_eval data/<name>.jsonl."""
+    src = SPEEDBENCH_DIR / SPEEDBENCH_BENCHMARKS[name]
+    if not src.exists():
+        print(
+            f"[{name}] source missing at {src}; run "
+            f"`python ../prepare_speedbench.py --data-dir {SPEEDBENCH_DIR} "
+            f"--download --configs qualitative,throughput_16k` first"
+        )
+        return
+    recs = []
+    with src.open(encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            turns = row.get("turns")
+            if isinstance(turns, list) and turns and isinstance(turns[0], str):
+                prompt = turns[0]
+            elif isinstance(turns, str) and turns:
+                prompt = turns
+            else:
+                prompt = row.get("prompt")
+            if not isinstance(prompt, str) or not prompt:
+                continue
             recs.append({"benchmark": name, "id": str(row.get("id", i)), "prompt": prompt})
     _write(f"{name}.jsonl", recs)
 
 
 def main():
     ap = argparse.ArgumentParser()
+    all_named = (
+        ["aime", "gpqa", "livecodebench"]
+        + list(TURNS_BENCHMARKS)
+        + list(SPEEDBENCH_BENCHMARKS)
+    )
     ap.add_argument(
         "--only",
         default="aime,gpqa,livecodebench",
-        help="comma-separated subset to prepare (also: "
-        + ",".join(TURNS_BENCHMARKS)
-        + ")",
+        help="comma-separated subset to prepare (also: " + ",".join(all_named) + ")",
     )
     ap.add_argument("--lcb-version", default="release_v6")
     args = ap.parse_args()
@@ -273,6 +339,10 @@ def main():
         if name in todo:
             print(f"[{name}]")
             prep_from_turns(name)
+    for name in SPEEDBENCH_BENCHMARKS:
+        if name in todo:
+            print(f"[{name}]")
+            prep_from_speedbench(name)
     print("done.")
 
 

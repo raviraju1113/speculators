@@ -178,6 +178,17 @@ cython_debug/
 # Generated GuideLLM prompt files (see scripts/evaluate/eval_datasets/to_guidellm.py)
 scripts/evaluate/eval_datasets/guidellm/
 
+# Large generated eval dumps — keep on scratch, not in git.
+# Canonical copies: /import/ml-sc-scratch5/chenw/datasets/eval/{turns,mtp}/
+# Local symlinks into these paths are fine and also ignored.
+scripts/evaluate/eval_datasets/aa-lcr.jsonl
+scripts/evaluate/eval_datasets/swe-rebench.jsonl
+scripts/evaluate/eval_datasets/swe-bench-pro.jsonl
+scripts/evaluate/mtp_server_eval/data/aa-lcr.jsonl
+scripts/evaluate/mtp_server_eval/data/swe-rebench.jsonl
+scripts/evaluate/mtp_server_eval/data/speed-low-entropy.jsonl
+scripts/evaluate/speedbench_data/throughput_16k_low_entropy.jsonl
+
 # Generated server-eval results
 scripts/evaluate/mtp_server_eval/results/
 

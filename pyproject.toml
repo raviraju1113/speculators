@@ -2,6 +2,12 @@
 requires = ["setuptools >= 82.0.1", "setuptools-git-versioning>=2.0,<3"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv.workspace]
+members = ["hs_connectors"]
+
+[tool.uv.sources]
+hs-connectors = { workspace = true }
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["*"]
@@ -38,6 +44,7 @@ keywords = [
 dependencies = [
     "click",
     "datasets>=4.0.0,<=5.0.0",
+    "hs-connectors",
     "huggingface-hub",
     "loguru>=0.7.2,<=0.7.3",
     "numpy>=2.0.0,<=2.4.6",
@@ -48,11 +55,11 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "rich",
     "safetensors",
-    "torch>=2.9.0,<=2.12.1",
+    "torch>=2.9.0,<=2.13.0",
     "torchaudio",
     "torchvision",
-    "tqdm>=4.66.3,<=4.68.3",
-    "transformers>=4.56.1,<5.13.0",
+    "tqdm>=4.66.3,<=4.70.0",
+    "transformers>=4.56.1,<5.15.0",
     "typer>=0.12.0",
 ]
 
@@ -68,12 +75,12 @@ dev = [
     "mkdocs~=1.6.1",
     "mkdocs-material[imaging]~=9.7.6",
     "markdown~=3.10.2",
-    "pymdown-extensions~=10.21.3",
+    "pymdown-extensions~=11.0.0",
     "mkdocs-section-index~=0.3.12",
     "mkdocs-minify-plugin~=0.8.0",
     "mkdocs-api-autonav~=0.4.0",
     "mkdocs-awesome-nav~=3.3",
-    "mkdocstrings-python~=2.0.3",
+    "mkdocstrings-python~=2.0.5",
     "mkdocs-gen-files~=0.6.1",
     "mkdocs-nav-weight~=0.3.0",
     "pygments<2.20.0",
@@ -82,20 +89,20 @@ dev = [
     "sphinx~=8.1.3",
 
     # testing
-    "pytest~=9.0.3",
-    "pytest-asyncio~=1.3.0",
+    "pytest~=9.1.1",
+    "pytest-asyncio~=1.4.0",
     "pytest-cov~=7.1.0",
     "pytest-mock~=3.15.1",
-    "pytest-rerunfailures~=16.2",
+    "pytest-rerunfailures~=16.4",
 
     # code quality
     "mypy~=2.1.0",
-    "ruff~=0.15.13",
+    "ruff~=0.15.20",
 
     # docs quality
     "mdformat~=1.0.0",
     "mdformat-footnote~=0.1.3",
-    "mdformat-frontmatter~=2.0.10",
+    "mdformat-frontmatter~=2.1.2",
     "mdformat-gfm~=1.0.0",
     "mdformat-admon~=2.1.1",
     "mdformat-gfm-alerts~=2.0.0",
@@ -137,7 +144,7 @@ exclude = ["venv", "build", "dist"]
 follow_imports = 'silent'
 
 [[tool.mypy.overrides]]
-module = ["datasets.*", "transformers.*", "setuptools.*", "setuptools_git_versioning.*", "vllm.*"]
+module = ["datasets.*", "transformers.*", "setuptools.*", "setuptools_git_versioning.*", "vllm.*", "triton.*"]
 ignore_missing_imports=true
 
 [tool.ruff]
@@ -309,6 +316,11 @@ select = [
 
 "examples/**/*.py" = [
     "INP001", # allow implicit namespace packages in examples
+]
+
+"hs_connectors/**/*.py" = [
+    "INP001", # separate package
+    "PTH", # os.path acceptable
 ]
 
 [tool.ruff.lint.isort]

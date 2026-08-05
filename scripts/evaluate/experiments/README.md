@@ -36,22 +36,26 @@ export HF_HOME=$HOME/.cache/huggingface     # optional: where weights cache
 # export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 ```
 
-### 3. Run the experiments
+### 3. Run a full evaluation
 
 ```bash
 cd scripts/evaluate/experiments
 
-# Edit example.yaml first: set `backbone:` and each `draft:` to YOUR models,
-# and `tensor_parallel_size` / `gpus` to your machine (e.g. 8 for 8xA100).
-
-python run_experiments.py --config example.yaml --dry-run    # sanity: prints serve+eval commands, launches nothing
-python run_experiments.py --config example.yaml              # real run
-python run_experiments.py --config example.yaml --only baseline,eagle3_k5   # subset
+# Edit full-eval.yaml: backbone, draft, gpus, tensor_parallel_size, benchmarks.
+./run_full_eval.sh --dry-run
+./run_full_eval.sh
+./run_full_eval.sh --only baseline,draft_k5
 ```
+
+Same as `python run_experiments.py --config full-eval.yaml`. For a smaller
+smoke config, use `example.yaml` instead.
+
+Step-by-step (env, data prep, fair-comparison tips):
+[parent README → How to run a full evaluation](../README.md#how-to-run-a-full-evaluation).
 
 Per experiment the runner sets `CUDA_VISIBLE_DEVICES` from `gpus:`, launches
 `vllm serve <backbone> [--speculative-config ...]`, waits for `/health`, runs the
-eval into `results/experiments/<name>/`, stops the server, then prints the
+eval into `results/<output_dir>/<name>/`, stops the server, then prints the
 speedup table.
 
 ### Practical notes
@@ -91,7 +95,11 @@ server:
 
 eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
-  benchmarks: [aime, gpqa, livecodebench]   # + gsm8k, math500, humaneval, mbpp (generate via prepare_data.py)
+  # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
+  # math500, humaneval, mbpp, mt-bench, aime26, swe-bench-pro, swe-rebench, aa-lcr,
+  # speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
+  # speed-low-entropy). Generate extras via prepare_data.py / parent README.
+  benchmarks: [aime, gpqa, livecodebench]
   num_samples: 50                           # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                          # greedy = canonical acceptance

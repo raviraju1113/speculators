@@ -38,6 +38,13 @@ python scripts/prepare_data.py \
 
   The input conversation should be provided in the `conversations` column. Tool-calling datasets that include separate columns for tools are also supported, as demonstrated in [llamafactory/reason-tool-use-demo-1500](https://huggingface.co/datasets/llamafactory/reason-tool-use-demo-1500) and [interstellarninja/hermes_reasoning_tool_use](https://huggingface.co/datasets/interstellarninja/hermes_reasoning_tool_use).
 
+  For the recent Gemma-4 regeneration workflow, the local training data sources we used included:
+  - OpenCodeInstruct: `/import/ml-sc-scratch5/chenw/datasets/OpenCodeInstruct/data`
+  - Aya dataset: `/import/ml-sc-scratch5/chenw/datasets/aya_dataset`
+  - The prepared JSONL input for regeneration: `/import/ml-sc-scratch5/chenw/datasets/OpenCodeInstruct/open_code_instruct_conversations.jsonl`
+
+  These can be passed directly to the regeneration and training scripts as local paths when you want to work from the downloaded parquet or JSONL files instead of a built-in Hugging Face shortcut.
+
 - **`--seq-length`** (int, default: `8192`) Maximum sequence length for each sample. Longer samples will be truncated.
 
 - **`--max-samples`** (int, default: `None`) Maximum number of samples to process. If `None`, processes all samples.
@@ -45,8 +52,6 @@ python scripts/prepare_data.py \
 - **`--token-freq-path`** (str, default: `{output}/token_freq.pt`) Path to save token frequency distribution. Defaults to `token_freq.pt` in the output directory.
 
 - **`--assistant-pattern`** (str, default: `None`) Custom regex pattern for matching assistant responses. If not provided, auto-detected from chat template.
-
-- **`--turn-dropout`** (flag) Enable turn dropout: randomly keeps first N consecutive turns per conversation for data augmentation.
 
 - **`--minimum-valid-tokens`** (int, default: `None`) Drop samples whose loss mask contains fewer than this many trainable tokens.
 
@@ -72,6 +77,5 @@ python scripts/prepare_data.py \
   --output ./prepared_data \
   --seq-length 4096 \
   --max-samples 10000 \
-  --turn-dropout \
   --num-preprocessing-workers 16
 ```

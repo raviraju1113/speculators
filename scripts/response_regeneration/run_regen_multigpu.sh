@@ -75,7 +75,7 @@ for i in $(seq 0 $((NUM_GPUS - 1))); do
     ENDPOINTS+=("http://127.0.0.1:$((PORT_BASE + i))/v1/chat/completions")
 done
 
-CLIENT=(python "$REPO/scripts/response_regeneration/script.py"
+CLIENT=(python "$REPO/scripts/response_regeneration/script_multiendpoint.py"
     --input-jsonl "$INPUT_JSONL" --outfile "$OUTFILE" --model "$MODEL"
     --endpoint "${ENDPOINTS[@]}" --concurrency "$CONCURRENCY"
     --max-tokens "$MAX_TOKENS" --resume)
