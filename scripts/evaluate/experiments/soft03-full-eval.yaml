@@ -1,0 +1,46 @@
+# Full multi-domain eval: 26B target (baseline) vs our feature-distilled draft
+# (soft-0.3 step1400). ~100 prompts/benchmark, greedy, k=3.
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-26B-A4B-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768        # enough for swe-bench-pro; aa-lcr dropped
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  benchmarks:
+    - gsm8k
+    - math500
+    - aime
+    - aime26
+    - gpqa
+    - livecodebench
+    - humaneval
+    - mbpp
+    - mt-bench
+    - swe-bench-pro
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - speed-qa
+    - speed-writing
+  num_samples: 100            # ~100 prompts/benchmark (0 = all)
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/full-eval-soft03-step1400
+
+experiments:
+  # baseline = backbone alone (speedup denominator)
+  - name: baseline
+
+  - name: featdistill_soft03_k3
+    draft: /nvmedata/chenw/speculators/output/gemma4_26b_mtp_assistant_featdistill_soft03/checkpoints/step1400
+    num_speculative_tokens: 3

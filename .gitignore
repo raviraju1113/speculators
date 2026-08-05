@@ -197,3 +197,4 @@ scripts/evaluate/mtp_server_eval/.agentx/
 slurm-*.out
 logs/
 output/
+scripts/evaluate/experiments/results/
