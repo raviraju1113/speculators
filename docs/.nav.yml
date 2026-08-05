@@ -4,10 +4,12 @@ nav:
           - user_guide/index.md
           - Getting Started: user_guide/getting_started.md
           - Features: user_guide/features.md
+          - Loss Functions: user_guide/loss_functions.md
           - Algorithms:
                 - user_guide/algorithms/index.md
                 - Eagle3: user_guide/algorithms/eagle3.md
                 - Dflash: user_guide/algorithms/dflash.md
+                - DSpark: user_guide/algorithms/dspark.md
                 - P-Eagle: user_guide/algorithms/peagle.md
                 - MTP: user_guide/algorithms/mtp.md
                 - Decision Guide: user_guide/algorithms/decision_guide.md
@@ -20,6 +22,7 @@ nav:
                 - Train MTP Model Online: user_guide/tutorials/train_mtp_online.md
                 - Response Regeneration: user_guide/tutorials/response_regeneration.md
                 - Evaluating Model Performance: user_guide/tutorials/evaluating_performance.md
+                - GLM-5.2 MTP Evaluation Results: user_guide/tutorials/glm52_mtp_results.md
                 - Serve in vLLM: user_guide/tutorials/serve_vllm.md
     - Developer Guide:
           - developer/index.md

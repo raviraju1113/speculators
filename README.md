@@ -26,7 +26,7 @@ Speculators standardizes this process by providing a productionized end-to-end f
 
 ______________________________________________________________________
 
-💬 Join us on the [vLLM Community Slack](https://communityinviter.com/apps/vllm-dev/join-vllm-developers-slack) and share your questions, thoughts, or ideas in:
+💬 Join us on the [vLLM Community Slack](https://inviter.co/vllm-slack) and share your questions, thoughts, or ideas in:
 
 - `#speculators`
 - `#feat-spec-decode`
@@ -41,11 +41,11 @@ Big updates have landed in Speculators! To get a more in-depth look, check out t
 
 Some of the exciting new features include:
 
+- **Evaluation harness (YAML full eval)**: [`scripts/evaluate/`](./scripts/evaluate/) now has an end-to-end guide for running a full speculative-decoding acceptance + throughput comparison. Edit [`experiments/full-eval.yaml`](./scripts/evaluate/experiments/full-eval.yaml) and run [`experiments/run_full_eval.sh`](./scripts/evaluate/experiments/run_full_eval.sh) (serve → eval → compare). New benchmarks wired in include AIME 2026, SWE-bench Pro / SWE-Rebench, AA-LCR, and NVIDIA SPEED-Bench slices. Start at [How to run a full evaluation](./scripts/evaluate/README.md#how-to-run-a-full-evaluation); recent eval changes are listed under [Recent changes](./scripts/evaluate/README.md#recent-changes).
+- **DSpark Training Algorithm**: Added support for the DSpark training algorithm, which extends DFlash's anchored-block drafting with a Markov head that conditions each draft position on the previous token within the block, plus a confidence head that predicts per-position acceptance probability. DSpark checkpoints can warm-start from existing DFlash checkpoints.
 - **P-EAGLE Training Support**: Added support for the [P-EAGLE training algorithm](https://docs.vllm.ai/projects/speculators/en/latest/user_guide/algorithms/peagle), which extends EAGLE-3's architecture with parallel multi-token prediction via Conditional-On-Distribution (COD) sampling. Rather than generating draft tokens sequentially, P-EAGLE predicts multiple tokens in a single forward pass, reducing drafting latency. The Red Hat team published a [P-EAGLE speculator for Qwen3-8B](https://huggingface.co/RedHatAI/Qwen3-8B-speculator.peagle).
 - **MTP Finetuning Support**: Added support for finetuning the native Multi-Token Prediction (MTP) heads of models like Qwen3-Next on domain-specific data, following the [FastMTP](https://arxiv.org/abs/2509.18362) approach. Because the MTP head is small (~100M–400M params), it can be trained on pre-extracted hidden states without loading the full verifier
-- **Sliding Window Attention for DFlash**: Added sliding window attention support to DFlash speculators via `--sliding-window`, `--sliding-window-indices`, and `--sliding-window-non-causal` training flags. Sliding window attention reduces KV cache allocation for long-context sequences and can improve per-position acceptance rates compared to full attention.
-- **Qwen3-8B DFlash Speculator**: The RedHat team published a [DFlash speculator for Qwen3-8B](https://huggingface.co/RedHatAI/Qwen3-8B-speculator.dflash), achieving average speculative token acceptance lengths of up to 3.74 on `math_reasoning`.
-- **Gemma 4 Speculators**: The RedHat team published speculators for Gemma 4 31B-it, including both [DFlash](https://huggingface.co/RedHatAI/gemma-4-31B-it-speculator.dflash) and [EAGLE-3](https://huggingface.co/RedHatAI/gemma-4-31B-it-speculator.eagle3) checkpoints, enabling production-grade speculative decoding for Gemma 4 models.
+- **Sliding Window Attention for DFlash and DSpark**: DFlash and DSpark speculators use sliding window attention on all draft layers by default. Use `--sliding-window` to set the window size and `--full-attention-indices` to opt specific layers into full attention. Sliding window attention reduces KV cache allocation for long-context sequences and can improve per-position acceptance rates compared to full attention.
 - **DFlash Training Algorithm**: Added support for the DFlash training algorithm with anchored-block drafting, using auxiliary hidden states from multiple verifier layers. Includes CLI options for block size and max anchors, plus DFlash metrics, utilities, and draft model. DFlash models trained through Speculators can now run seamlessly in vLLM as of [vLLM PR #38300](https://github.com/vllm-project/vllm/pull/38300).
 - **Online Training Support**: Added support for online training using the new [vLLM hidden extraction system](https://github.com/vllm-project/vllm/pull/33736), enabling real-time hidden state generation during training without requiring separate offline data generation steps.
 
@@ -118,11 +118,16 @@ The following table summarizes the models that have been trained end-to-end by o
 <td>✅</td>
 </tr>
 <tr>
-  <td rowspan="3">Qwen3 MoE</td>
+  <td rowspan="4">Qwen3 MoE</td>
   <td>30B-Instruct</td>
   <td><a href="https://huggingface.co/RedHatAI/Qwen3-30B-A3B-Instruct-2507-speculator.eagle3">
       EAGLE-3
-    </a> ✅</td>
+    </a> ✅<br/><a href="https://huggingface.co/RedHatAI/Qwen3-30B-A3B-Instruct-2507-speculator.dflash">DFlash</a> ✅</td>
+  <td>✅</td>
+</tr>
+<tr>
+  <td>30B</td>
+  <td><a href="https://huggingface.co/RedHatAI/Qwen3-30B-A3B-speculator.dflash">DFlash</a> ✅</td>
   <td>✅</td>
 </tr>
 <tr>
@@ -149,10 +154,10 @@ The following table summarizes the models that have been trained end-to-end by o
 <td>✅</td>
 </tr>
 <tr>
-<td>Mistral 3 Large</td>
-<td>675B-Instruct</td>
-<td>EAGLE-3 ⏳</td>
-<td>⏳</td>
+<td>Mistral Small 4</td>
+<td>119B</td>
+<td><a href="https://huggingface.co/RedHatAI/Mistral-Small-4-119B-2603.dflash">DFlash</a> ✅</td>
+<td>✅</td>
 </tr>
 <tr>
 <td>Gemma 4</td>
@@ -164,6 +169,18 @@ The following table summarizes the models that have been trained end-to-end by o
 <td>Gemma 4 MoE</td>
 <td>26B-A4B-it</td>
 <td><a href="https://huggingface.co/RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3">EAGLE-3</a> ✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>NVIDIA Nemotron 3 Ultra</td>
+<td>550B-A55B</td>
+<td><a href="https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-speculator.dflash">DFlash</a> ✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>NVIDIA Nemotron 3 Super</td>
+<td>120B-A12B</td>
+<td><a href="https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3-Super-120B-A12B-speculator.dflash">DFlash</a> ✅</td>
 <td>✅</td>
 </tr>
 </tbody>
@@ -191,6 +208,9 @@ Served models can then be benchmarked using [GuideLLM](https://github.com/vllm-p
 ## Additional Utility Scripts
 
 - [Regenerate responses to enhance your training data](https://github.com/vllm-project/speculators/tree/main/scripts/response_regeneration)
+- For a concrete example of preparing downloaded OpenCodeInstruct parquet data and regenerating it with Gemma-4 on a multi-GPU cluster, see [scripts/response_regeneration/submit_regen_opencodeinstruct_sc-c96.sh](scripts/response_regeneration/submit_regen_opencodeinstruct_sc-c96.sh).
+- The same response-regeneration workflow is also available for Aya via [scripts/response_regeneration/submit_regen_aya_sc-c96.sh](scripts/response_regeneration/submit_regen_aya_sc-c96.sh), which converts the Aya parquet shards into a conversation JSONL and then regenerates them with the same Gemma-4 multi-GPU pipeline.
+- The local workflow used in this repo’s response-regeneration examples relies on the downloaded OpenCodeInstruct parquet shards and Aya parquet files under /import/ml-sc-scratch5/chenw/datasets/, with the prepared OpenCodeInstruct JSONL passed into the regeneration pipeline.
 
 ## Getting Started
 

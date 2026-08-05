@@ -58,6 +58,30 @@ MM_MODEL = "Qwen/Qwen3-VL-2B-Instruct"
             ],
             None,
         ),  # P-EAGLE with parallel multi-token prediction
+        (
+            TEXT_MODEL,
+            "sharegpt",
+            "dspark",
+            [
+                "--block-size",
+                "8",
+                "--max-anchors",
+                "256",
+                "--num-layers",
+                "3",
+                "--markov-rank",
+                "256",
+                "--markov-head-type",
+                "vanilla",
+                "--enable-confidence-head",
+                "--confidence-head-with-markov",
+                "--confidence-head-alpha",
+                "1.0",
+                "--loss-fn",
+                '{"ce": 0.1, "tv": 0.9}',
+            ],
+            [1, 13, 25],
+        ),  # DSpark with Markov + confidence heads
     ],
 )
 def test_offline_smoke(
@@ -165,6 +189,7 @@ def run_offline_e2e(
     # Step 4: Validate trained checkpoint with vLLM inference
     if prompts is not None:
         checkpoint_path = str(save_path / "checkpoint_best")
+        inference_kwargs = {**(vllm_kwargs or {}), "gpu_memory_utilization": 0.8}
         run_vllm_engine(
             model_path=checkpoint_path,
             tmp_path=tmp_path,
@@ -173,5 +198,5 @@ def run_offline_e2e(
             max_tokens=max_tokens,
             ignore_eos=ignore_eos,
             acceptance_thresholds=acceptance_thresholds,
-            **(vllm_kwargs or {}),
+            **inference_kwargs,
         )

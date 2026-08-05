@@ -35,12 +35,12 @@ export CUDA_COMPAT="${CUDA_COMPAT:-/import/ml-sc-scratch1/chenw/cuda-compat-13.0
 # tokens and uses sliding-window attention (KV grows slowly), so a large context
 # is cheap. 16384 gives ~12k tokens of input budget (with max_tokens=4096) — big
 # enough for essentially every conversation. Raise further if any still overflow.
-export COMPAT_MAX_MODEL_LEN="${COMPAT_MAX_MODEL_LEN:-16384}"
+export COMPAT_MAX_MODEL_LEN="${COMPAT_MAX_MODEL_LEN:-32768}"
 export MAX_TOKENS="${MAX_TOKENS:-4096}"
 
-# Halve concurrency vs the 8192 run so the ~2x-larger KV cache still fits on one
-# 80GB GPU under single-GPU forward-compat (16 in-flight per server).
-export CONCURRENCY="${CONCURRENCY:-128}"
+# Lower concurrency as the context grows so the larger KV cache stays within one
+# 80GB GPU under single-GPU forward-compat (8 in-flight per server at 32768).
+export CONCURRENCY="${CONCURRENCY:-64}"
 
 # Absolute repo path — a Slurm/sngpu batch job copies this wrapper to a spool dir
 # (/var/spool/slurmd/...), so a $(dirname "$BASH_SOURCE") relative reference would

@@ -42,6 +42,18 @@ DATA_FILES = {
     "math500": "math500.jsonl",
     "humaneval": "humaneval.jsonl",
     "mbpp": "mbpp.jsonl",
+    # Inferact/Kimi-K3-DSpark acceptance-suite additions
+    "mt-bench": "mt-bench.jsonl",
+    "aime26": "aime26.jsonl",
+    "swe-bench-pro": "swe-bench-pro.jsonl",
+    "swe-rebench": "swe-rebench.jsonl",
+    "aa-lcr": "aa-lcr.jsonl",
+    "speed-coding": "speed-coding.jsonl",
+    "speed-multilingual": "speed-multilingual.jsonl",
+    "speed-rag": "speed-rag.jsonl",
+    "speed-qa": "speed-qa.jsonl",
+    "speed-writing": "speed-writing.jsonl",
+    "speed-low-entropy": "speed-low-entropy.jsonl",
 }
 
 
@@ -144,8 +156,13 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
             choices = obj.get("choices") or []
             if choices:
                 delta = choices[0].get("delta") or {}
-                if first_tok_t is None and (
-                    delta.get("content") or delta.get("reasoning_content")
+                # First token = first chunk carrying any non-empty textual field
+                # (content, reasoning_content, or any parser-specific field), except
+                # the leading role-only chunk. Checking just content/reasoning_content
+                # misses reasoning tokens under some reasoning parsers (e.g. glm45),
+                # which left long reasoning outputs with ttft=None -> bogus decode rate.
+                if first_tok_t is None and any(
+                    k != "role" and isinstance(v, str) and v for k, v in delta.items()
                 ):
                     first_tok_t = time.perf_counter()
     t_end = time.perf_counter()
@@ -180,7 +197,12 @@ def main():
     ap.add_argument(
         "--benchmarks",
         default="aime,gpqa,livecodebench",
-        help="comma-separated subset of: aime,gpqa,livecodebench",
+        help=(
+            "comma-separated subset of: aime,gpqa,livecodebench,gsm8k,math500,"
+            "humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,"
+            "speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,"
+            "speed-low-entropy"
+        ),
     )
     ap.add_argument(
         "--num-samples", type=int, default=20, help="per benchmark (0 = all)"
