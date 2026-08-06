@@ -90,6 +90,22 @@ esac
 # launch_vllm.py appends the last layer itself (--include-last-layer, default on)
 # to supply verifier_last_hidden_states -- do not add it here.
 TARGET_LAYER_IDS="${TARGET_LAYER_IDS:-1 17 29 47 58}"
+# MUST be 0. speculators defaults sample_from_anchor=True for dspark
+# (dflash/core.py:194), but vLLM's speculators-format loader hardcodes
+# `dspark_bonus_anchor = True` (algos.py:152) -> sample_from_anchor=False at
+# serving, ALWAYS, with no config knob to override it. Training with the default
+# True produces a draft whose slot k predicts token k, while vLLM decodes it as
+# slot k predicts token k+1: every prediction off by one slot. Measured
+# 2026-08-05: our True checkpoint got accept_len 1.838 on aime where RedHat's
+# False checkpoint got 4.562 on the identical harness.
+# Note this also changes speculative_tokens: block_size if True else block_size-1,
+# so BLOCK_SIZE 8 -> k=7 at eval (RedHat ships 7).
+SAMPLE_FROM_ANCHOR="${SAMPLE_FROM_ANCHOR:-0}"
+if [ "$SAMPLE_FROM_ANCHOR" = "1" ]; then
+  SAMPLE_ANCHOR_FLAG="--sample-from-anchor"
+else
+  SAMPLE_ANCHOR_FLAG="--no-sample-from-anchor"
+fi
 BLOCK_SIZE="${BLOCK_SIZE:-8}"
 NUM_LAYERS="${NUM_LAYERS:-5}"
 DRAFT_VOCAB_SIZE="${DRAFT_VOCAB_SIZE:-32000}"
@@ -412,6 +428,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --run-name "$RUN_NAME" \
     --logger "$LOGGER" \
     --speculator-type dspark \
+    $SAMPLE_ANCHOR_FLAG \
     --block-size "$BLOCK_SIZE" \
     --num-layers "$NUM_LAYERS" \
     --draft-vocab-size "$DRAFT_VOCAB_SIZE" \

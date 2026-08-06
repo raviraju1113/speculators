@@ -93,6 +93,10 @@ if [ "${SMOKE:-0}" != "1" ]; then
   printf 'export VLLM_DP=%q\n'         "${VLLM_DP:-1}"
   printf 'export TRAIN_GPUS_N=%q\n'    "${TRAIN_GPUS_N:-3}"
   printf 'export MAX_ANCHORS=%q\n'     "${MAX_ANCHORS:-512}"
+  # MUST stay 0 -- see the long note in the driver. speculators trains dspark
+  # with sample_from_anchor=True by default, but vLLM's speculators-format
+  # serving path hardcodes False, so the default silently costs ~2.7 accept_len.
+  printf 'export SAMPLE_FROM_ANCHOR=%q\n' "${SAMPLE_FROM_ANCHOR:-0}"
   printf 'export ON_GENERATE=%q\n'     "${ON_GENERATE:-delete}"
   printf 'export CHECKPOINT_FREQ=%q\n' "${CHECKPOINT_FREQ:-0.25}"
   # SAVE_BEST MUST default to 0. With --save-best, trainer.py:517 disables
