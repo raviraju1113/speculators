@@ -1,0 +1,70 @@
+# Ours only: the lr 1e-4 / no-accumulation DP run, interrupted at 99.3% of epoch 0
+# (55,521 steps, ~44 h). No baseline experiment here -- run_experiments.py only
+# needs one for the speedup COLUMN, and acceptance metrics (accept_length,
+# accept_rate, decode_tok_s) are measured per-experiment and stand on their own.
+#
+# For a speedup number, compare decode_tok_s against the already-measured backbone
+# baseline in results/gemma4-31b-3bench/baseline/mtp_eval_summary.json:
+#     aime 55.1 | gpqa 55.1 | livecodebench 54.9  decode tok/s
+# Those were run at the same TP=1 / single-A100 layout, so the rates are comparable
+# (n differs -- 50 vs 30 for gpqa/lcb -- but tok/s is a rate, not a total).
+#
+# NOTE: with two experiments the runner still prints a "speedup comparison" using
+# the FIRST one (k=8) as denominator. That column is meaningless here -- it is
+# k=3-vs-k=8, not vs the backbone. Read accept_length and decode_tok_s instead.
+#
+# Layout: TP=1 on one A100-80. TP>=2 segfaults in ncclNetPluginInit outside the
+# NGC container. Node MUST have driver 595.x -- a 565 node fails every server with
+# "driver is too old (found version 12070)".
+#
+# Gemma-4 ships its chat template as a separate chat_template.jinja rather than in
+# tokenizer_config.json, so vLLM needs it passed explicitly or chat completions 400.
+#
+# Run:
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark-interrupted.yaml
+#   python run_experiments.py --config gemma4-31b-dspark-interrupted.yaml --dry-run
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [gpqa]
+  num_samples: 30          # aime.jsonl has 30 rows; gpqa/lcb are sampled to this
+  max_tokens: 2048
+  temperature: 0.0         # greedy -> canonical, reproducible acceptance
+
+output_dir: ./results/gemma4-31b-dspark-interrupted
+
+experiments:
+  # k=8 matches the checkpoint's own proposal_methods[0].speculative_tokens
+  # (block_size 8 with sample_from_anchor=True, so the anchor predicts too).
+  # `method: dspark` is required -- vLLM will not infer it from the config.
+  - name: ours_dp_lr1e4_ep0_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # k=3, for apples-to-apples with the k=3 EAGLE-3 numbers Ravi reported
+  # (accept_len 2.4-2.8, speedup 1.47-1.8x) and Google's MTP assistant (~3.6).
+  - name: ours_dp_lr1e4_ep0_k3
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

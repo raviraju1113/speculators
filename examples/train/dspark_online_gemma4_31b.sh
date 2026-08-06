@@ -113,6 +113,9 @@ CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-0.25}"
 # SAVE_BEST=1 passes --save-best, which calls cleanup_keep_only_best() on every
 # new best val loss and deletes the other epoch dirs, bounding the footprint.
 SAVE_BEST="${SAVE_BEST:-0}"
+# Fraction of the corpus used for training; the rest is validation, and validation
+# REGENERATES hidden states, so a 10% split costs ~14 h/epoch at 2,451 seq/h.
+TRAIN_DATA_RATIO="${TRAIN_DATA_RATIO:-0.9}"
 
 # ---------------- optimizer / schedule ----------------
 # Matched to DeepSpec's own gemma-4 DSpark recipe
@@ -145,7 +148,10 @@ SAVE_BEST="${SAVE_BEST:-0}"
 ACCUM_STEPS="${ACCUM_STEPS:-0}"
 if [ "${ACCUM_STEPS:-0}" -gt 1 ] 2>/dev/null; then
   TRAIN_SCRIPT="scripts/train_accum.py"
-  _steps_per_epoch=$(( 45531 / TRAIN_GPUS_N ))
+  # MEASURED epoch length at 1 rank. The earlier 45,531 was a 75% sub-epoch
+  # checkpoint marker misread as an epoch end; the real epoch is 27,946 steps
+  # at 2 ranks (progress bar, 2026-08-06) => 55,892 at 1 rank.
+  _steps_per_epoch=$(( 55892 / TRAIN_GPUS_N ))
   SCHED_TOTAL="${SCHED_TOTAL:-$(( _steps_per_epoch * EPOCHS / ACCUM_STEPS ))}"
   ACCUM_ARGS=(--accumulation-steps "$ACCUM_STEPS"
               --scheduler-total-steps "$SCHED_TOTAL")
@@ -423,6 +429,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --lr "$LR" \
     --weight-decay "$WEIGHT_DECAY" \
     --checkpoint-freq "$CHECKPOINT_FREQ" \
+    --train-data-ratio "$TRAIN_DATA_RATIO" \
     $( [ "$SAVE_BEST" = "1" ] && echo --save-best ) \
     --scheduler-type "$SCHEDULER_TYPE" \
     --scheduler-warmup-ratio "$WARMUP_RATIO" \

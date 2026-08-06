@@ -94,10 +94,17 @@ if [ "${SMOKE:-0}" != "1" ]; then
   printf 'export TRAIN_GPUS_N=%q\n'    "${TRAIN_GPUS_N:-3}"
   printf 'export MAX_ANCHORS=%q\n'     "${MAX_ANCHORS:-512}"
   printf 'export ON_GENERATE=%q\n'     "${ON_GENERATE:-delete}"
-  printf 'export CHECKPOINT_FREQ=%q\n' "${CHECKPOINT_FREQ:-0.5}"
-  printf 'export SAVE_BEST=%q\n'       "${SAVE_BEST:-1}"
+  printf 'export CHECKPOINT_FREQ=%q\n' "${CHECKPOINT_FREQ:-0.25}"
+  # SAVE_BEST MUST default to 0. With --save-best, trainer.py:517 disables
+  # sub-epoch saving outright and maybe_save_checkpoint() bails at line 583, so the
+  # ONLY save is after epoch-end validation beats the best val loss. That cost a
+  # 25 h run on 2026-08-06: nothing was ever written to disk.
+  printf 'export SAVE_BEST=%q\n'       "${SAVE_BEST:-0}"
   # 0/unset -> scripts/train.py; >1 -> scripts/train_accum.py --accumulation-steps N
   printf 'export ACCUM_STEPS=%q\n'     "${ACCUM_STEPS:-0}"
+  # 0.9 default means validation regenerates hidden states for 34,914 samples
+  # (~14 h/epoch at 2,451 seq/h). 0.98 cuts that to ~2.8 h.
+  printf 'export TRAIN_DATA_RATIO=%q\n' "${TRAIN_DATA_RATIO:-0.9}"
   printf 'export GPU_IDS=%q\n'         "${GPU_IDS:-0,1,2,3}"
   # NCCL inside the container: the host plugin is not visible here, which is the
   # whole point. Keep the loopback pinning that Ravi has working regardless.
