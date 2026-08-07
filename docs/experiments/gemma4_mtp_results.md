@@ -1,8 +1,9 @@
 # Gemma-4 MTP / speculative-decoding experiments
 
 Consolidated results for Gemma-4 speculative-decoding drafts (MTP assistant &
-EAGLE3), the acceptance/throughput evals, and the training-time **shared-KV
-attention leak** discovered and fixed here.
+EAGLE3), the acceptance/throughput evals, and two training-time bugs found & fixed
+here: the **shared-KV attention leak** (§3) and a **hidden-state off-by-one** (§5),
+plus the **feature-distillation** quality push and a full multi-domain eval (§5).
 
 All evals: single-stream (batch=1), greedy (`temperature=0`), vLLM 0.24.0+cu129,
 via `scripts/evaluate/mtp_server_eval/run_vllm_eval.py`. Metrics:
@@ -32,6 +33,8 @@ compared against the same target, sweeping speculative depth k.
 | | DFlash, **k=5** | 4.277 | 65.5% | 257.3 | 255.8 | **2.02×** |
 | | DFlash, k=7 | 4.789 | 54.1% | 273.9 | 271.8 | **2.15×** |
 | | DFlash, **k=15** | 5.531 | 30.2% | 283.3 | 278.0 | **2.23×** |
+| | featdistill (ours), k=3 | 2.536 | 51.2% | 141.7 | 141.3 | 1.12× |
+| | featdistill (ours), **k=5** | 2.918 | 38.4% | 156.4 | 155.8 | 1.23× |
 | **gpqa** | baseline | — | — | 127.2 | 126.4 | 1.00× |
 | | vanilla MTP, k=3 | 3.338 | 77.9% | 190.8 | 188.6 | 1.50× |
 | | vanilla MTP, **k=5** | 4.528 | 70.6% | 241.9 | 239.2 | **1.90×** |
@@ -42,6 +45,8 @@ compared against the same target, sweeping speculative depth k.
 | | DFlash, **k=5** | 3.568 | 51.4% | 218.2 | 216.1 | **1.72×** |
 | | DFlash, k=7 | 3.806 | 40.1% | 221.0 | 218.6 | **1.74×** |
 | | DFlash, **k=15** | 4.163 | 21.1% | 218.0 | 214.4 | 1.71× |
+| | featdistill (ours), k=3 | 1.963 | 32.1% | 111.9 | 111.4 | 0.88× |
+| | featdistill (ours), **k=5** | 2.203 | 24.1% | 119.9 | 119.3 | 0.94× |
 | **livecodebench** | baseline | — | — | 126.2 | 125.4 | 1.00× |
 | | vanilla MTP, k=3 | 3.418 | 80.6% | 186.7 | 184.9 | 1.48× |
 | | vanilla MTP, **k=5** | 4.513 | 70.3% | 232.2 | 229.1 | 1.84× |
@@ -52,6 +57,12 @@ compared against the same target, sweeping speculative depth k.
 | | DFlash, **k=5** | 3.581 | 51.6% | 208.3 | 205.9 | 1.65× |
 | | DFlash, k=7 | 3.987 | 42.7% | 219.7 | 217.1 | **1.74×** |
 | | DFlash, **k=15** | 4.142 | 20.9% | 201.9 | 199.6 | 1.60× |
+| | featdistill (ours), k=3 | 2.188 | 39.6% | 119.4 | 118.6 | 0.95× |
+| | featdistill (ours), **k=5** | 2.439 | 28.8% | 126.0 | 125.0 | 1.00× |
+
+`featdistill (ours)` = our from-scratch feature-distilled draft
+(`assistant_featdistill/step3200`, §5); its own matched baseline (aime 126.9, gpqa 127.5,
+lcb 125.5 tok/s) matches the row above, so speedups are directly comparable.
 
 **Takeaways** (k-sweep now covers k = 3 / 5 / 7 (/15 for DFlash))
 - **Most of the gain is realized by k≈5 — deeper speculation has diminishing (or
@@ -70,6 +81,11 @@ compared against the same target, sweeping speculative depth k.
   (batch=1) caveats, **k≈5 is the pragmatic operating point** for MTP/DFlash.
 - k is the method's speculative depth; each method's natural config differs, so
   compare achieved speedup across the k-sweep, not raw k.
+- **Our from-scratch feature-distilled draft (`featdistill`, §5)** is now in the table
+  for comparison — markedly weaker than the stock drafts: aime **1.12× (k3) / 1.23× (k5)**
+  vs vanilla MTP's 1.56–2.03×, and *net-negative* on gpqa/lcb at k=3 (0.88–0.95×, because
+  accept < the ~2.0 break-even), reaching only break-even by k=5. Deeper k still helps it
+  (aime accept 2.54→2.92). See §5 for the full multi-domain picture and why (data coverage).
 
 ---
 
@@ -189,12 +205,53 @@ Representative repro command for the post-fix trainer run (with soft-CE enabled)
   collapse — accept_len 3.15 vs 3.57, ~1.2–1.4× speedup). The small gap to vanilla
   is ordinary fine-tuning drift on the regen data, not a correctness issue. **The
   mask-fixed `train_online.py` is sound.**
-- **Random-init from scratch** stays undertrained on this data volume
-  (step-10k checkpoint ≈ 1% accept) — not a fix problem, just far too little data
-  to train a draft from zero.
-- **Takeaway:** the trainer is now *correct* (matches vLLM causal inference), but
-  producing a *better* draft needs sane fine-tuning hyperparameters, not just the
-  mask fix. The stock assistant / DFlash (§1) remain the drafts to deploy.
+- **Random-init from scratch** first looked "undertrained" (~1% accept) — but that
+  was a **second, separate bug** (§5), not data volume: a hidden-state off-by-one
+  (train fed `h_t`, vLLM feeds `h_{t-1}`). After that fix, from-scratch reaches
+  accept **~2.2**, and feature distillation lifts it to **~2.5** (§5).
+- **Takeaway:** the trainer is now *correct* on both counts (mask fix **and** the
+  hidden shift, §5). A *deployable general* draft is now a **training-data-coverage**
+  problem (§5), not a correctness one. The stock assistant / DFlash (§1) remain the
+  drafts to deploy today.
 
 _Raw results: `scripts/evaluate/mtp_server_eval/results/26b_compare/results_table.{md,csv}`
 and `scripts/evaluate/experiments/results/gemma4-31b/results_table.{md,csv}`._
+
+---
+
+## 5. Second bug + quality push: hidden-state off-by-one → feature distillation
+
+Full write-up: `gemma4_mtp_vllm_hidden_shift_bug.md`.
+
+**Bug (distinct from §3's mask leak).** Even with the mask fix, *from-scratch* drafts
+collapsed to **accept_len ~1.07 in vLLM** while scoring ~0.94 next-token agreement in HF.
+Cause: a **hidden-state off-by-one** — the trainer fed the draft `hidden[t]`
+(`build_target_signals`), but vLLM (EAGLE/MTP convention) feeds `hidden[t-1]` + `embed(x_t)`.
+One-position shift → **1.07 → ~2.2**. Folded into `training_step.py` (`_shift_right`; the
+`patch_hidden_shift` monkeypatch is now a no-op).
+
+**Feature distillation.** Pure logit-distillation then caps accept ~2.2 — the recurrent
+`backbone_hidden` never learns to match the target (`feat_l1` ≈ random). Adding an
+EAGLE/DSpark smooth-L1 feature loss (`_feature_l1`, `--feature-l1-weight`) lifts **2.2 → 2.5**.
+Adding soft-CE on top *hurt* (erodes the feature) — **feature-only (0.1 hard-CE + 0.9 feat)
+is the best recipe**; watch `feat_l1` rising as a "getting worse" proxy.
+
+**Checkpoint comparison** (26B target, k=3, ~100 prompts; accept_len / accept_rate):
+
+| checkpoint | aime | livecodebench | gpqa |
+|---|--:|--:|--:|
+| `assistant_featdistill/step3200` (feature-distill, **best**) | **2.51 / 0.50** | **2.18 / 0.39** | **2.01 / 0.34** |
+| `assistant_featdistill_soft03/step1400` (soft0.3 + feat) | 2.40 | 2.04 | 1.88 |
+| `rinit_shiftfix_4gpu/step10000` (pure soft-CE) | 2.22 / 0.41 | 1.88 / 0.29 | 1.75 / 0.25 |
+
+**Full 15-benchmark eval** (soft03/step1400 vs 26B baseline, k=3, ~100 prompts): **mean
+1.04×, 8/15 positive** — a **math/code specialist**: gsm8k 1.41×, math500 1.38×, humaneval
+1.28×, aime 1.20×, mbpp 1.14×; but **net-slower** on gpqa 0.96×, mt-bench 0.87×,
+swe-bench-pro 0.84×, speed-qa 0.79×, **speed-writing 0.68×**. Speedup tracks accept vs the
+**~2.0 break-even** at k=3. This is a **training-data-coverage** limit (kimi-regen =
+math/reasoning only), not a method bug — a general draft needs diverse data; the stock
+assistant / DFlash (§1) remain the deploy-today drafts. (NB: full eval ran on the weaker
+soft03 ckpt; `step3200` clears break-even on lcb/gpqa and would be net-positive on more.)
+
+_Results: `scripts/evaluate/experiments/results/full-eval-soft03-step1400/`;
+`scripts/evaluate/mtp_server_eval/results/eval3_*`._

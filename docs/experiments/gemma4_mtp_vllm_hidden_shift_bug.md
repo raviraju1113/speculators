@@ -101,6 +101,55 @@ hard-CE — is the likely culprit; hard-CE is cheap/proven so keep it (0.1). Cur
 `soft 0.3 + hard 0.1 + feature 1.0`, else just train feature-only longer (2.512 was step3200,
 not converged). Toward vanilla's 3.58.
 
+## Checkpoint comparison (aime / livecodebench / gpqa, k=3, ~100 prompts)
+Head-to-head of the three trained checkpoints (accept_length / accept_rate):
+
+| checkpoint | recipe | aime | livecodebench | gpqa |
+|---|---|---|---|---|
+| **`assistant_featdistill/step3200`** | **feature-distill** (0.1 hard-CE + 0.9 feat) — **BEST** | **2.51 / 0.50** | **2.18 / 0.39** | **2.01 / 0.34** |
+| `assistant_featdistill_soft03/step1400` | soft 0.3 + hard 0.1 + feat 1.0 | 2.40 | 2.04 | 1.88 |
+| `rinit_shiftfix_4gpu/step10000` | from-scratch, pure soft-CE (no feature) | 2.22 / 0.41 | 1.88 / 0.29 | 1.75 / 0.25 |
+
+**`step3200` wins on all three.** Feature distillation helps *every* domain (step10000→step3200:
+lcb 1.88→2.18, gpqa 1.75→2.01 = below→at break-even). Adding soft-CE (soft03) *hurt* everywhere —
+feature-only is the best recipe. NOTE: the full 15-benchmark eval below was run on the *weaker*
+soft03 checkpoint; `step3200` (lcb/gpqa at-or-above the ~2.0 break-even) would be net-positive on
+more of the suite.
+
+## Full multi-domain evaluation (the draft is a math/code specialist)
+Full-suite eval (`experiments/soft03-full-eval.yaml` → `run_experiments.py`): 26B target
+baseline vs the feature-distilled draft (`assistant_featdistill_soft03/step1400`), k=3,
+~100 prompts/benchmark, greedy, vLLM TP=4. Speedup = draft tok/s ÷ baseline tok/s.
+
+| benchmark | accept_len | speedup |
+|---|---|---|
+| gsm8k | 2.44 | **1.41×** |
+| math500 | 2.57 | **1.38×** |
+| humaneval | 2.32 | **1.28×** |
+| aime26 | 2.43 | 1.21× |
+| aime | 2.40 | 1.20× |
+| mbpp | 2.03 | 1.14× |
+| speed-coding | 1.97 | 1.07× |
+| livecodebench | 2.04 | 1.01× |
+| gpqa | 1.88 | 0.96× ❌ |
+| speed-multilingual | 1.66 | 0.94× ❌ |
+| mt-bench | 1.55 | 0.87× ❌ |
+| swe-bench-pro | 1.71 | 0.84× ❌ |
+| speed-rag | 1.60 | 0.82× ❌ |
+| speed-qa | 1.36 | 0.79× ❌ |
+| speed-writing | 1.37 | **0.68×** ❌ |
+
+**Mean 1.04×, 8/15 positive.** Sharp domain split: it **wins on math/code** (its
+kimi-regen training distribution) and is **net *slower* than baseline on
+chat/QA/writing/RAG/multilingual/SWE** — because there accept_length falls below the
+**~2.0 break-even for k=3**, so the extra draft-forward cost outweighs accepted tokens.
+This is a **data-coverage** limit, not a method bug: the draft only saw math/reasoning
+data. Even in-domain (accept ~2.4 / 1.4×) it trails vanilla's ~3.5. Takeaways: (1) as a
+math/code draft it works; (2) for a *general* draft, broaden the training data
+(chat/QA/writing/diverse code) — that's what lifts accept above break-even everywhere; or
+route spec-decoding by domain (enable only where accept clears ~2.0). Results:
+`scripts/evaluate/experiments/results/full-eval-soft03-step1400/`.
+
 ## Recommendations
 1. **[done]** Hidden shift is folded directly into `training_step.py` (draft step-0 consumes
    the shifted `h_{t-1}`; feature labels use the unshifted hidden). The old `patch_hidden_shift`
@@ -113,6 +162,11 @@ not converged). Toward vanilla's 3.58.
 4. TTT (recurrent hidden + teacher-forced token) is correct EAGLE-3 — do NOT "fix" it with
    free-running tokens (that was a wrong lead). The tail is fixed by feature distillation +
    bigger batch + more steps, not by changing the token feed.
+5. **Training-data coverage decides generality.** The math/reasoning-only draft is
+   net-negative on chat/QA/writing (full-eval above). For a general-purpose draft, train on a
+   diverse mix (chat/QA/writing/code + math), not more math-only steps — that's what lifts
+   accept above the ~2.0 (k=3) break-even everywhere. Otherwise use vanilla, or route
+   spec-decoding on per-domain accept.
 
 ## Code changes (landed)
 - `src/speculators/models/gemma4_mtp/training_step.py`: hidden shift folded in
