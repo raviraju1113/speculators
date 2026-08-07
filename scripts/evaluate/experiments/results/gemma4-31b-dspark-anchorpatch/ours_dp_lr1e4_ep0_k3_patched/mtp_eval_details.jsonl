@@ -26,3 +26,5 @@
 {"benchmark": "gpqa", "id": "166", "prompt_tokens": 174, "completion_tokens": 683, "ttft_s": 0.146447217091918, "decode_time_s": 11.65584937017411, "e2e_s": 11.802296587266028}
 {"benchmark": "gpqa", "id": "186", "prompt_tokens": 158, "completion_tokens": 690, "ttft_s": 0.14471838995814323, "decode_time_s": 11.308407397940755, "e2e_s": 11.453125787898898}
 {"benchmark": "gpqa", "id": "107", "prompt_tokens": 316, "completion_tokens": 558, "ttft_s": 0.18346788547933102, "decode_time_s": 12.993876921012998, "e2e_s": 13.177344806492329}
+{"benchmark": "gpqa", "id": "56", "prompt_tokens": 216, "completion_tokens": 500, "ttft_s": 0.15091631095856428, "decode_time_s": 12.016572892665863, "e2e_s": 12.167489203624427}
+{"benchmark": "gpqa", "id": "114", "prompt_tokens": 216, "completion_tokens": 1040, "ttft_s": 0.1505496148020029, "decode_time_s": 25.0936586195603, "e2e_s": 25.244208234362304}

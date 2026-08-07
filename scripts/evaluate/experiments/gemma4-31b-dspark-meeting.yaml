@@ -1,0 +1,132 @@
+# SINGLE SOURCE OF TRUTH for the 2026-08-06 meeting.
+#
+# Everything in one run so every cell of the table comes from identical
+# conditions: same server settings, same 30 samples, same greedy decoding, one
+# baseline measured alongside the drafts as the speedup denominator.
+#
+# WHY THIS EXISTS: earlier partial runs left the results dirs inconsistent --
+# ours had gpqa only (aime/lcb overwritten by a later edit), RedHat had aime+lcb
+# but no gpqa. Nothing lined up. Do not hand-merge those; re-measure.
+#
+# REQUIRES the local vLLM patch (algos.py: dspark_bonus_anchor honours the
+# checkpoint's sample_from_anchor). Our draft below was trained with
+# sample_from_anchor=True; unpatched vLLM decodes it one slot off and reports
+# ~1.8 instead of ~3.5, with NO error. Original at algos.py.orig.
+#
+# k PER CHECKPOINT -- each draft runs at its own native block layout:
+#   ours   sample_from_anchor=True  -> speculative_tokens = block_size     = 8
+#   RedHat sample_from_anchor=False -> speculative_tokens = block_size - 1 = 7
+# redhat_k8 is ALSO included because the 4.562 figure quoted so far was measured
+# at k=8 (out of spec for that checkpoint). Keeping both makes the earlier number
+# reproducible and shows what RedHat does when run correctly.
+#
+# --enforce-eager is KEPT here, deliberately: it matches how every number so far
+# was measured, and it is known to fit in memory. The graphs-on question is a
+# separate run (gemma4-31b-dspark-speed.yaml) -- do not mix the two in one table.
+#
+# Node MUST have driver 595.x. Runtime ~90 min (4 servers x ~7 min load + 4 x 90
+# generations).
+#
+# Run:
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark-meeting.yaml
+#   cat results/gemma4-31b-dspark-meeting/results_table.md
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-meeting
+
+experiments:
+  # FIRST = speedup denominator. Backbone alone, no draft, same server settings.
+  - name: baseline
+
+  # Ours: DP lr1e-4 run, interrupted at 99.3% of epoch 0 (~44 h, 55,521 steps).
+  # Chat-only training data. k=8 is this checkpoint's native block layout.
+  - name: ours_ep0_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # RedHat at its NATIVE k=7. This is the honest reference point.
+  - name: redhat_k7
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  # RedHat at k=8, reproducing the 4.562 aime / 3.876 lcb figure quoted earlier.
+  # ALSO the same-k control against ours_ep0_k8: same draft budget, so the only
+  # variable left is checkpoint quality (training budget + data mix).
+  - name: redhat_k8
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # k=3 pair. Ravi's EAGLE-3 numbers for this same verifier were reported at k=3
+  # (accept_len 2.4-2.8, speedup 1.47-1.8x), so this is the only k where all
+  # three drafts -- ours, RedHat's, and EAGLE-3 -- sit on one axis.
+  - name: ours_ep0_k3
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  - name: redhat_k3
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  # The anchorfix run's first checkpoint: epoch0_step7742 = 7,742 / 27,946 steps
+  # = 0.28 epoch, lr 6e-4, accum 37, trained with --no-sample-from-anchor.
+  # NOT a like-for-like comparison against ours_ep0_k8 (0.99 epoch, lr 1e-4, no
+  # accumulation) -- different training budget AND different hyperparameters.
+  # What it IS: the first checkpoint that decodes correctly on STOCK vLLM with
+  # no local patch, i.e. the portable convention, plus an early read on whether
+  # lr 6e-4 + gradient accumulation is learning at all.
+  # Three k values, mirroring what RedHat got, so every comparison is same-k:
+  #   k=7  native   (sample_from_anchor=False -> 1+7 = 8 slots = block_size)
+  #   k=8  vs redhat_k8 AND vs ours_ep0_k8 -- out of spec (9 slots > block 8),
+  #        same caveat as redhat_k8, which ran fine
+  #   k=3  vs redhat_k3, ours_ep0_k3, and Ravi's EAGLE-3 numbers
+  - name: ours_anchorfix_k7
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_accum37_anchorfix/checkpoints/0
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: ours_anchorfix_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_accum37_anchorfix/checkpoints/0
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: ours_anchorfix_k3
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_accum37_anchorfix/checkpoints/0
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

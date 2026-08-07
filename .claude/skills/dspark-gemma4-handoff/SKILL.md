@@ -205,6 +205,17 @@ Offline variant: dump first with `scripts/data_generation_offline.py
 
 ## 8. Gotchas already paid for (all portable)
 
+- **`sample_from_anchor` MUST be False for speculators-format checkpoints.**
+  speculators defaults DSpark to True; vLLM's serving path hardcodes the
+  opposite, so the DEFAULT config trains a draft that decodes one slot off,
+  loads with no error, and reports ~half its real acceptance (measured:
+  accept_len 1.838 vs 3.569 on identical weights). Always pass
+  `--no-sample-from-anchor` (driver: `SAMPLE_FROM_ANCHOR=0`, already the
+  default). Before any long run, diff your exported config.json against a
+  published checkpoint for the same verifier — that 2-minute check is the whole
+  bug. **See the `dspark-train-serve-parity` skill** for the mechanism, the
+  vLLM patch for already-trained True checkpoints, dead ends not to re-walk,
+  and reference numbers.
 - **`--max-model-len` must be >= `prepare_data --seq-length` (8192).** Sizing it
   from sampled conversation lengths is wrong: 4096 was tried and 4114-token
   requests returned HTTP 400.
