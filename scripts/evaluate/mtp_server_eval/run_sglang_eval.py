@@ -57,6 +57,16 @@ DATA_FILES = {
     "speed-qa": "speed-qa.jsonl",
     "speed-writing": "speed-writing.jsonl",
     "speed-low-entropy": "speed-low-entropy.jsonl",
+    # RedHatAI/speculator_benchmarks (former evaluate.py defaults)
+    "HumanEval": "HumanEval.jsonl",
+    "math_reasoning": "math_reasoning.jsonl",
+    "qa": "qa.jsonl",
+    "question": "question.jsonl",
+    "rag": "rag.jsonl",
+    "summarization": "summarization.jsonl",
+    "tool_call": "tool_call.jsonl",
+    "translation": "translation.jsonl",
+    "writing": "writing.jsonl",
 }
 
 

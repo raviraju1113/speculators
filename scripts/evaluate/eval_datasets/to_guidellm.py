@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """Convert DeepSpec-style ``{"turns": [...]}`` eval datasets to GuideLLM prompts.
 
-``evaluate.py`` drives GuideLLM, which reads a single text column (``prompt`` by
-default, see ``DEFAULT_DATA_COLUMN_MAPPER``) via
-``--data-args '{"data_files": "<subset>.jsonl"}'``. The benchmark files in this
-directory instead store a ``turns`` list (one entry per user turn), so this
-utility emits GuideLLM-ready ``{"prompt": ...}`` JSONL, using the first user turn
-as the prompt (the standard single-prompt acceptance-rate setup).
+``run_eval.sh MODE=throughput`` drives GuideLLM, which reads a single text
+column (``prompt`` by default) via ``--data-args '{"data_files": "<subset>.jsonl"}'``.
+The benchmark files in this directory instead store a ``turns`` list (one entry
+per user turn), so this utility emits GuideLLM-ready ``{"prompt": ...}`` JSONL,
+using the first user turn as the prompt (the standard single-prompt
+acceptance-rate setup).
 
 Usage:
     # Convert every *.jsonl in this dir into ./guidellm/<name>.jsonl
     python scripts/evaluate/eval_datasets/to_guidellm.py
 
     # Then benchmark against the converted prompts:
-    python scripts/evaluate/evaluate.py \
-        --target http://localhost:8000/v1 \
-        --dataset scripts/evaluate/eval_datasets/guidellm \
-        throughput --subsets "gsm8k,humaneval,math500"
+    MODE=throughput BASE_URL=http://localhost:8000 \\
+      DATASET=scripts/evaluate/eval_datasets/guidellm \\
+      SUBSETS=gsm8k,humaneval,math500 \\
+      ./scripts/evaluate/mtp_server_eval/run_eval.sh
 """
 
 from __future__ import annotations

@@ -1,23 +1,10 @@
 #!/usr/bin/env python3
-"""Unified evaluation CLI for speculative decoding benchmarking.
+"""GuideLLM throughput / sweep engine used by ``run_eval.sh``.
 
-Modes:
-    throughput   Max throughput run for acceptance rates
-    sweep        Full pipeline (gen-len, sweep, CSV)
+Call via the shell entrypoint, not this file::
 
-Examples:
-    python evaluate.py --target http://localhost:8000/v1 throughput
-    python evaluate.py --target http://localhost:8000/v1 sweep
-    python evaluate.py --target http://localhost:8000/v1 sweep \\
-        --subsets "HumanEval,qa" --gen-kwargs '{"temperature":0.6}'
-
-    # SPEED-Bench (run prepare_speedbench.py once first to split data):
-    python evaluate.py --target http://localhost:8000/v1 throughput \\
-        --dataset speedbench/qualitative \\
-        --speedbench-data-dir ./speedbench_data
-    python evaluate.py --target http://localhost:8000/v1 throughput \\
-        --dataset speedbench/qualitative/coding \\
-        --speedbench-data-dir ./speedbench_data
+    MODE=throughput BASE_URL=http://127.0.0.1:8000 ./run_eval.sh
+    MODE=sweep SUBSETS=HumanEval,qa ./run_eval.sh
 """
 
 from __future__ import annotations
@@ -31,7 +18,11 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from perf_utils import (
+_EVAL_ROOT = Path(__file__).resolve().parent.parent
+if str(_EVAL_ROOT) not in sys.path:
+    sys.path.insert(0, str(_EVAL_ROOT))
+
+from perf_utils import (  # noqa: E402
     BASE_CSV_COLUMNS,
     CsvWriter,
     acceptance_csv_columns,
@@ -169,7 +160,7 @@ def _run_subset(
 
     logger.info("[%s] Starting", subset)
     safe = subset.replace("/", "_").replace(" ", "_")
-    max_tokens = 4096
+    max_tokens = args.max_tokens
 
     # For local JSONL files (SPEED-Bench) the dataset path IS the file —
     # no --data-args needed.  For HF datasets subset name doubles as the filter.
@@ -186,7 +177,7 @@ def _run_subset(
             rate=args.gen_len_rate,
             max_requests=None,
             output_path=gen_len_output,
-            max_tokens=4096,
+            max_tokens=args.max_tokens,
             gen_kwargs=parse_gen_kwargs(args.gen_kwargs),
         )
         mapping = parse_gen_len_results(
@@ -335,15 +326,13 @@ def main() -> None:
     )
 
     parser = argparse.ArgumentParser(
-        prog="evaluate",
-        description="Speculative decoding performance evaluation toolkit.",
+        prog="run_guidellm_eval",
+        description="GuideLLM engine for run_eval.sh MODE=throughput|sweep.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "examples:\n"
-            "  python evaluate.py --target http://localhost:8000/v1 throughput\n"
-            "  python evaluate.py --target http://localhost:8000/v1 sweep\n"
-            "  python evaluate.py --target http://localhost:8000/v1 sweep "
-            '--subsets "HumanEval,qa"\n'
+            "Use run_eval.sh instead:\n"
+            "  MODE=throughput BASE_URL=http://127.0.0.1:8000 ./run_eval.sh\n"
+            "  MODE=sweep SUBSETS=HumanEval,qa ./run_eval.sh\n"
         ),
     )
     parser.add_argument(
@@ -385,6 +374,12 @@ def main() -> None:
         type=int,
         default=DEFAULT_MAX_REQUESTS,
         help=f"Max requests per sweep point (default: {DEFAULT_MAX_REQUESTS})",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help="Max generation tokens (sweep overrides this via gen-len estimation)",
     )
     parser.add_argument(
         "--gen-len-rate",
