@@ -1,4 +1,5 @@
 import bisect
+import io
 import json
 import re
 from collections.abc import Callable
@@ -7,9 +8,12 @@ from pathlib import Path
 from re import Pattern
 from typing import cast
 
+import pyarrow as pa
+import pyarrow.json as paj
 import torch
 from datasets import Dataset as HFDataset
 from datasets import concatenate_datasets, load_dataset
+from datasets.exceptions import DatasetGenerationError
 from packaging.version import Version
 from transformers import (
     AutoProcessor,
@@ -693,54 +697,84 @@ def build_eagle3_dataset(
     return dataset
 
 
-def _load_hf_dataset(spec: str) -> tuple[HFDataset, None]:
-    """Load an arbitrary HuggingFace dataset from an ``hf:`` spec.
+# Top-level columns consumed downstream by _preprocess_batch. Everything else in a
+# local JSON/JSONL record is dropped by build_eagle3_dataset anyway.
+_JSON_KEEP_COLUMNS = ("conversations", "tools")
 
-    Args:
-        spec: ``hf:<dataset_id>[:<subset>:<split>]``. The split defaults to
-            ``train``. A single suffix (``hf:<id>:<split>``) selects a split
-            without a subset; both can be given as ``hf:<id>:<subset>:<split>``.
 
-    Returns:
-        Tuple of (raw_dataset, None). No normalize_fn is applied: the dataset
-        must already be in conversations format.
+def _sniff_json_schema(
+    path: str,
+    keep_columns: tuple[str, ...],
+    sample_bytes: int = 8 << 20,
+    num_samples: int = 3,
+) -> pa.Schema:
+    """Infer an Arrow schema for `keep_columns` by sampling several file offsets.
 
-    Raises:
-        ValueError: If the spec is malformed or the loaded dataset has no
-            ``conversations`` column.
+    Samples are taken from the start, middle and end of the file so that records
+    whose shape only appears in one region (e.g. appended data carrying extra
+    fields) still contribute to the inferred types.
     """
-    subset: str | None
-    match spec.removeprefix("hf:").split(":"):
-        case [hf_id]:
-            subset, split = None, "train"
-        case [hf_id, split]:
-            subset = None
-        case [hf_id, subset, split]:
-            pass
-        case _:
-            raise ValueError(
-                f"Invalid hf: spec '{spec}'. "
-                f"Expected hf:<dataset_id>[:<subset>:<split>]."
-            )
+    file_size = Path(path).stat().st_size
+    offsets = [
+        (file_size // num_samples) * i for i in range(num_samples) if file_size > 0
+    ]
 
-    if not hf_id:
-        raise ValueError(f"Invalid hf: spec '{spec}': missing dataset id.")
-    if subset == "":
-        raise ValueError(f"Invalid hf: spec '{spec}': empty subset.")
-    if not split:
-        raise ValueError(f"Invalid hf: spec '{spec}': empty split.")
+    schemas: list[pa.Schema] = []
+    with Path(path).open("rb") as f:
+        for offset in offsets:
+            f.seek(offset)
+            if offset:
+                f.readline()  # discard the partial line we landed in
+            block = f.read(sample_bytes)
+            newline = block.rfind(b"\n")
+            if newline == -1:
+                continue
+            try:
+                table = paj.read_json(io.BytesIO(block[: newline + 1]))
+            except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+                continue
+            fields = [fld for fld in table.schema if fld.name in keep_columns]
+            if fields:
+                schemas.append(pa.schema(fields))
 
-    raw_dataset = load_dataset(hf_id, name=subset, split=split)
-
-    if "conversations" not in raw_dataset.column_names:
+    if not schemas:
         raise ValueError(
-            f"HuggingFace dataset '{hf_id}' (split '{split}') is not in "
-            f"conversations format: expected a 'conversations' column but found "
-            f"{raw_dataset.column_names}. Pass a dataset already in conversations "
-            f"format, or add a preset to DATASET_CONFIGS with a normalize_fn."
+            f"Could not infer a schema for columns {list(keep_columns)} from {path}. "
+            "Expected JSON Lines records containing a 'conversations' field."
         )
 
-    return raw_dataset, None
+    return pa.unify_schemas(schemas, promote_options="permissive")
+
+
+def _load_local_json_dataset(train_data_path: str) -> HFDataset:
+    """Load a local JSON/JSONL dataset, tolerating per-record schema drift.
+
+    The HuggingFace JSON loader infers one Arrow schema from the first ~10MB block
+    and casts every later block to it, so a file whose records do not all carry the
+    same top-level fields (for example data concatenated from several generation
+    runs, where only some records have a 'metadata' field) fails to load. On that
+    failure, re-read the file with an explicit schema limited to the columns we
+    actually use, ignoring any unexpected fields.
+    """
+    try:
+        return load_dataset("json", data_files=train_data_path, split="train")
+    except DatasetGenerationError:
+        log.warning(
+            f"Inconsistent record schema in {train_data_path}; reloading with only "
+            f"{list(_JSON_KEEP_COLUMNS)} and ignoring extra fields."
+        )
+
+    schema = _sniff_json_schema(train_data_path, _JSON_KEEP_COLUMNS)
+    table = paj.read_json(
+        train_data_path,
+        parse_options=paj.ParseOptions(
+            explicit_schema=schema,
+            unexpected_field_behavior="ignore",
+        ),
+    )
+    log.info(f"Loaded {table.num_rows} records with columns {table.schema.names}")
+
+    return HFDataset(table)
 
 
 def load_raw_dataset(
@@ -768,7 +802,7 @@ def load_raw_dataset(
     """
     # 1. Local file
     if train_data_path.endswith((".jsonl", ".json")):
-        return load_dataset("json", data_files=train_data_path, split="train"), None
+        return _load_local_json_dataset(train_data_path), None
 
     # 2. Local directory
     path = Path(train_data_path)
