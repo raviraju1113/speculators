@@ -63,6 +63,7 @@ DEFAULT_EVAL = {
     "max_tokens": 4096,
     "temperature": 0.0,
 }
+EVAL_MODES = ("acceptance", "throughput", "sweep")
 
 
 def deep_merge(base: dict, override: dict | None) -> dict:
@@ -125,6 +126,10 @@ def _as_csv(value) -> str:
 
 def build_eval_command(evalcfg: dict, base_url: str, out_dir: Path) -> list[str]:
     mode = str(evalcfg.get("mode", "acceptance")).lower()
+    if mode not in EVAL_MODES:
+        sys.exit(
+            f"eval.mode must be acceptance|throughput|sweep (got {evalcfg.get('mode')!r})"
+        )
     if mode in ("throughput", "sweep"):
         target = base_url.rstrip("/")
         if not target.endswith("/v1"):
