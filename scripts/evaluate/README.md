@@ -11,7 +11,7 @@ contributors can see what landed without digging through git alone.
 
 | When | Change |
 |------|--------|
-| 2026-08-14 | **YAML GuideLLM modes honor `eval.benchmarks`.** `mode: throughput`/`sweep` reuse the same names as local `mtp_server_eval/data/<name>.jsonl` unless `eval.subsets` / `eval.dataset` are set. |
+| 2026-08-14 | **YAML GuideLLM modes honor `eval.benchmarks`.** `mode: throughput`/`sweep` reuse the same names as local `mtp_server_eval/data/<name>.jsonl` unless `eval.dataset` is set. |
 | 2026-08-14 | **Removed `evaluate.py`.** GuideLLM throughput/sweep lives in `mtp_server_eval/run_guidellm_eval.py` and is reached only via `run_eval.sh` (`MODE=throughput`/`sweep`) or YAML `eval.mode`. |
 | 2026-08-14 | **YAML full-eval entrypoint** — [`experiments/full-eval.yaml`](./experiments/full-eval.yaml) + [`run_full_eval.sh`](./experiments/run_full_eval.sh); guide: [How to run a full evaluation](#how-to-run-a-full-evaluation). |
 | 2026-08-14 | **Docs: SPEED-Bench is in the suite** — six slices documented and listed in `full-eval.yaml` (`speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing`, `speed-low-entropy`). GuideLLM can also use `DATASET=speedbench/…`. |
@@ -143,9 +143,9 @@ entrypoint. `MODE` selects the load driver:
 | Python | `run_vllm_eval.py` / `run_sglang_eval.py` | `run_guidellm_eval.py` |
 
 The **YAML full eval** defaults to `MODE=acceptance` (`mtp_server_eval`). Set
-`eval.mode: throughput` or `sweep` in the YAML to use GuideLLM instead;
-`eval.benchmarks` is reused as GuideLLM subsets (local `data/<name>.jsonl`)
-unless you set `eval.subsets` / `eval.dataset`.
+`eval.mode: throughput` or `sweep` in the YAML to use GuideLLM instead.
+Subsets come from `eval.subsets` if set, otherwise `eval.benchmarks`. Dataset
+is `mtp_server_eval/data` unless `eval.dataset` is set.
 
 ## Datasets / benchmark names
 

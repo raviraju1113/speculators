@@ -154,7 +154,7 @@ def build_eval_command(evalcfg: dict, base_url: str, out_dir: Path) -> list[str]
         explicit_dataset = evalcfg.get("dataset")
         if explicit_dataset:
             cmd += ["--dataset", str(explicit_dataset)]
-        elif explicit_subsets is None and subsets:
+        else:
             cmd += ["--dataset", str(MTP_EVAL_DIR / "data")]
         if subsets:
             cmd += ["--subsets", _as_csv(subsets)]
