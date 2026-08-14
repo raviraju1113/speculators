@@ -137,6 +137,48 @@ def _resolve_speedbench(
     return results
 
 
+def _split_subsets(value: str) -> list[str]:
+    return [s.strip() for s in value.split(",") if s.strip()]
+
+
+def _guidellm_common(args: argparse.Namespace, dataset: str) -> dict:
+    return {
+        "target": args.target,
+        "dataset": dataset,
+        "data_column_mapper": args.data_column_mapper,
+        "max_concurrency": args.max_concurrency,
+    }
+
+
+def _local_jsonl_runs(
+    args: argparse.Namespace, dataset_dir: Path, subsets: list[str]
+) -> list[tuple[str, dict]]:
+    """Map subset names to ``dataset_dir/<name>.jsonl`` (same files as acceptance)."""
+    items: list[tuple[str, dict]] = []
+    missing: list[str] = []
+    for subset in subsets:
+        path = dataset_dir / f"{subset}.jsonl"
+        if not path.is_file():
+            missing.append(subset)
+            logger.error(
+                "[%s] %s not found; run prepare_data.py first. skipping",
+                subset,
+                path,
+            )
+            continue
+        items.append((subset, _guidellm_common(args, str(path))))
+    if not items:
+        logger.error(
+            "No local JSONL files found in %s for subsets: %s",
+            dataset_dir,
+            ",".join(subsets) or "(none)",
+        )
+        sys.exit(1)
+    if missing:
+        logger.warning("Skipped %d missing subset(s): %s", len(missing), ",".join(missing))
+    return items
+
+
 def _run_subset(
     subset: str,
     args: argparse.Namespace,
@@ -258,6 +300,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
     dataset_spec = args.dataset
     run_items: list[tuple[str, dict]] = []
 
+    subsets = _split_subsets(args.subsets)
+    dataset_path = Path(dataset_spec)
+
     if dataset_spec.startswith("speedbench/"):
         if not getattr(args, "speedbench_data_dir", None):
             logger.error(
@@ -279,14 +324,11 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     },
                 )
             )
+    elif dataset_path.is_dir():
+        run_items.extend(_local_jsonl_runs(args, dataset_path, subsets))
     else:
-        guidellm_common = {
-            "target": args.target,
-            "dataset": dataset_spec,
-            "data_column_mapper": args.data_column_mapper,
-            "max_concurrency": args.max_concurrency,
-        }
-        for subset in [s.strip() for s in args.subsets.split(",") if s.strip()]:
+        guidellm_common = _guidellm_common(args, dataset_spec)
+        for subset in subsets:
             run_items.append((subset, guidellm_common))
 
     logger.info(
@@ -351,7 +393,10 @@ def main() -> None:
     parser.add_argument(
         "--dataset",
         default=DEFAULT_DATASET,
-        help=f"HF dataset ID or local directory (default: {DEFAULT_DATASET})",
+        help=(
+            "HF dataset ID, local directory of <subset>.jsonl files, "
+            f"or speedbench/<config> (default: {DEFAULT_DATASET})"
+        ),
     )
     parser.add_argument(
         "--subsets",

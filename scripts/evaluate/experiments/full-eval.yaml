@@ -34,6 +34,8 @@ server:
 eval:
   backend: vllm
   mode: acceptance    # or throughput / sweep for GuideLLM (see experiments/README.md)
+  # Same names in both modes. GuideLLM uses this list as subsets against
+  # mtp_server_eval/data/<name>.jsonl unless you set eval.dataset / eval.subsets.
   benchmarks:
     - gsm8k
     - humaneval

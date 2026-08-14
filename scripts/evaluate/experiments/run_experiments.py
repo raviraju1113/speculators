@@ -143,10 +143,21 @@ def build_eval_command(evalcfg: dict, base_url: str, out_dir: Path) -> list[str]
             "--output-dir",
             str(out_dir),
         ]
-        if evalcfg.get("dataset"):
-            cmd += ["--dataset", str(evalcfg["dataset"])]
-        if evalcfg.get("subsets"):
-            cmd += ["--subsets", _as_csv(evalcfg["subsets"])]
+        # subsets wins when set; otherwise reuse eval.benchmarks so flipping
+        # mode: throughput/sweep in full-eval.yaml keeps the same suite.
+        explicit_subsets = evalcfg.get("subsets")
+        subsets = (
+            explicit_subsets
+            if explicit_subsets is not None
+            else evalcfg.get("benchmarks")
+        )
+        explicit_dataset = evalcfg.get("dataset")
+        if explicit_dataset:
+            cmd += ["--dataset", str(explicit_dataset)]
+        elif explicit_subsets is None and subsets:
+            cmd += ["--dataset", str(MTP_EVAL_DIR / "data")]
+        if subsets:
+            cmd += ["--subsets", _as_csv(subsets)]
         if evalcfg.get("max_concurrency") is not None:
             cmd += ["--max-concurrency", str(evalcfg["max_concurrency"])]
         if evalcfg.get("max_requests") is not None:

@@ -102,13 +102,13 @@ eval:
   # speed-low-entropy, HumanEval, math_reasoning, qa, question, rag,
   # summarization, tool_call, translation, writing). Generate extras via
   # prepare_data.py / parent README.
-  benchmarks: [aime, gpqa, livecodebench]
+  benchmarks: [aime, gpqa, livecodebench]  # also GuideLLM subsets when `subsets` is unset
   num_samples: 50                           # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                          # greedy = canonical acceptance
   # GuideLLM-only (when mode is throughput or sweep):
-  # dataset: RedHatAI/speculator_benchmarks
-  # subsets: [HumanEval, qa]
+  # dataset: RedHatAI/speculator_benchmarks   # default: mtp_server_eval/data
+  # subsets: [HumanEval, qa]                  # default: eval.benchmarks
   # max_concurrency: 128
   # max_requests: 200
   # sweep_rate: 10
