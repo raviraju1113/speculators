@@ -220,3 +220,13 @@ scripts/evaluate/mtp_server_eval/results/
 
 # AgentX trace-replay client checkout (cloned on first run)
 scripts/evaluate/mtp_server_eval/.agentx/
+slurm-*.out
+logs/
+
+# Local-dir alias for the verifier: ./google/gemma-4-31B-it -> the local checkout.
+# Lets --verifier-name-or-path google/gemma-4-31B-it resolve off-disk (so train.py
+# does not re-download 50GB from the hub) while still matching vLLM's
+# --served-model-name, which the hidden-states requests address.
+google/
+*.json
+*.yaml
