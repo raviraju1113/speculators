@@ -12,8 +12,10 @@ Lower-level server recipes: [`mtp_server_eval/README.md`](./mtp_server_eval/READ
 
 ## Suite / data gaps
 
+- [x] SPEED-Bench slices in `full-eval.yaml` / `run_eval.sh` (`speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing`, `speed-low-entropy`)
 - [ ] Confirm SPEED-Bench low-entropy ISL matches published “10k input” cards (currently `throughput_16k`)
 - [ ] Full SPEED-Bench fills after `huggingface-cli login` (NVIDIA prepare needs gated sources like `cais/hle`)
+- [x] `RedHatAI/speculator_benchmarks` nine subsets in acceptance mode + YAML
 - [x] SWE-Rebench (`swe-rebench` ← `nebius/SWE-rebench`) — wired; generate JSONL then `prepare_data.py`
 - [x] YAML full-eval template (`experiments/full-eval.yaml` + `run_full_eval.sh`) + guide / [Recent changes](./README.md#recent-changes) in [`README.md`](./README.md)
 - [ ] Optional: temperature=1.0 column (`draft_sample_method=probabilistic` as on some published cards)

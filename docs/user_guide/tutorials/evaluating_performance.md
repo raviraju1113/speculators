@@ -142,39 +142,39 @@ native MTP enabled:
 
 ### Manual: against a server you already run
 
-If you already have a vLLM server up, run the GuideLLM evaluator directly. Full
+If you already have a vLLM server up, run GuideLLM through `run_eval.sh`. Full
 benchmark pipeline (output-length estimation → performance sweep → CSV):
 
 ```bash
-python evaluate.py sweep --target http://localhost:8000/v1
+cd scripts/evaluate/mtp_server_eval
+MODE=sweep BASE_URL=http://localhost:8000 ./run_eval.sh
 ```
 
-This runs all 9 subsets from `RedHatAI/speculator_benchmarks` and produces `perf_results_<timestamp>/perf_results.csv`.
+This runs all 9 subsets from `RedHatAI/speculator_benchmarks` and produces `perf_results.csv` under `RESULT_DIR` (default `./results`).
 
 For acceptance rates only (skips the sweep):
 
 ```bash
-python evaluate.py throughput --target http://localhost:8000/v1
+MODE=throughput BASE_URL=http://localhost:8000 ./run_eval.sh
 ```
 
 See [`examples/evaluate/`](https://github.com/vllm-project/speculators/tree/main/examples/evaluate) for end-to-end examples that launch a vLLM server and run the pipeline.
 
 ## Options
 
-Both `throughput` and `sweep` share the same options:
+`MODE=throughput` and `MODE=sweep` share these env vars (see `run_eval.sh`):
 
 ```
-  --target URL               vLLM server endpoint (required)
-  --dataset DATASET          HF dataset ID or local dir (default: RedHatAI/speculator_benchmarks)
-  --subsets LIST             Comma-separated subset names (default: all 9)
-  --output-dir DIR           Output directory (default: perf_results_TIMESTAMP)
-  --max-concurrency N        Max concurrent requests (default: 128)
-  --max-requests N           Max requests per sweep point (default: 200)
-  --gen-len-rate N           Request rate for gen-len estimation (default: 128)
-  --sweep-rate N             Number of sweep rate points (default: 10)
-  --gen-kwargs JSON          Generation kwargs, e.g. '{"temperature":0.6}'
-  --data-column-mapper TEXT  Column mapping for guidellm in typed key=value format
-                             (default: kind=generative_column_mapper,column_mappings.text_column=prompt)
+  BASE_URL                 server root (script appends /v1)
+  DATASET                  HF dataset ID or local dir (default: RedHatAI/speculator_benchmarks)
+  SUBSETS                  comma-separated subset names (default: all 9)
+  RESULT_DIR               output directory
+  MAX_CONCURRENCY          max concurrent requests (default: 128)
+  MAX_REQUESTS             max requests per sweep point (default: 200)
+  GEN_LEN_RATE             request rate for gen-len estimation (default: 128)
+  SWEEP_RATE               number of sweep rate points (default: 10)
+  GEN_KWARGS / TEMPERATURE generation kwargs
+  SPEEDBENCH_DATA_DIR      required when DATASET=speedbench/...
 ```
 
 ## SPEED-Bench
@@ -201,32 +201,18 @@ python scripts/evaluate/prepare_speedbench.py --data-dir ./speedbench_data
 
 ### Running evaluations
 
-Pass a `speedbench/<config>` spec to `--dataset` together with `--speedbench-data-dir`:
+Pass a `speedbench/<config>` spec via `DATASET` together with `SPEEDBENCH_DATA_DIR`:
 
 ```bash
+cd scripts/evaluate/mtp_server_eval
+
 # All 11 qualitative categories
-python evaluate.py throughput \
-    --target http://localhost:8000/v1 \
-    --dataset speedbench/qualitative \
-    --speedbench-data-dir ./speedbench_data
+MODE=throughput BASE_URL=http://localhost:8000 \
+  DATASET=speedbench/qualitative SPEEDBENCH_DATA_DIR=../speedbench_data ./run_eval.sh
 
 # Single category
-python evaluate.py throughput \
-    --target http://localhost:8000/v1 \
-    --dataset speedbench/qualitative/coding \
-    --speedbench-data-dir ./speedbench_data
-
-# All throughput_1k subcategories
-python evaluate.py throughput \
-    --target http://localhost:8000/v1 \
-    --dataset speedbench/throughput_1k \
-    --speedbench-data-dir ./speedbench_data
-
-# One entropy tier only
-python evaluate.py throughput \
-    --target http://localhost:8000/v1 \
-    --dataset speedbench/throughput_1k/high_entropy \
-    --speedbench-data-dir ./speedbench_data
+MODE=throughput BASE_URL=http://localhost:8000 \
+  DATASET=speedbench/qualitative/coding SPEEDBENCH_DATA_DIR=../speedbench_data ./run_eval.sh
 ```
 
 Available configs: `qualitative`, `throughput_1k`, `throughput_2k`, `throughput_8k`, `throughput_32k`.
@@ -251,15 +237,13 @@ python plot.py speedup \
 
 Both accept CSVs or raw GuideLLM sweep JSONs. Available metrics: `latency`, `itl`, `ttft`, `output_tps`.
 
-## Alternative: direct server eval (SGLang or vLLM)
+## Sequential acceptance (SGLang or vLLM)
 
-`evaluate.py` drives GuideLLM against **vLLM**. For a lighter-weight evaluator
-that works against **both SGLang and vLLM** — sending prompts directly to the
-server's OpenAI-compatible streaming API and reading speculative-decoding metrics
-off Prometheus (only `requests` needed) — use
-[`scripts/evaluate/mtp_server_eval/`](https://github.com/vllm-project/speculators/tree/main/scripts/evaluate/mtp_server_eval).
-It reports per-benchmark **acceptance length/rate** and **decode tok/s**, and
-`compare_speedup.py` prints the speedup vs. a baseline.
+`MODE=acceptance` (the `run_eval.sh` default) sends prompts directly to the
+server and reads speculative-decoding metrics off Prometheus. It works against
+**both SGLang and vLLM**, only needs `requests`, and reports per-benchmark
+**acceptance length/rate** and **decode tok/s**. `compare_speedup.py` prints
+speedup vs. a baseline.
 
 ```bash
 cd scripts/evaluate/mtp_server_eval

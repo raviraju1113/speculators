@@ -11,9 +11,13 @@ contributors can see what landed without digging through git alone.
 
 | When | Change |
 |------|--------|
-| 2026-08 | **Full-eval guide + YAML entrypoint** — [How to run a full evaluation](#how-to-run-a-full-evaluation); [`experiments/full-eval.yaml`](./experiments/full-eval.yaml) + [`run_full_eval.sh`](./experiments/run_full_eval.sh) (serve → `mtp_server_eval` → speedup table). |
+| 2026-08-14 | **Removed `evaluate.py`.** GuideLLM throughput/sweep lives in `mtp_server_eval/run_guidellm_eval.py` and is reached only via `run_eval.sh` (`MODE=throughput`/`sweep`) or YAML `eval.mode`. |
+| 2026-08-14 | **YAML full-eval entrypoint** — [`experiments/full-eval.yaml`](./experiments/full-eval.yaml) + [`run_full_eval.sh`](./experiments/run_full_eval.sh); guide: [How to run a full evaluation](#how-to-run-a-full-evaluation). |
+| 2026-08-14 | **Docs: SPEED-Bench is in the suite** — six slices documented and listed in `full-eval.yaml` (`speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing`, `speed-low-entropy`). GuideLLM can also use `DATASET=speedbench/…`. |
+| 2026-08-14 | **`RedHatAI/speculator_benchmarks`** — nine subsets (`HumanEval`, `math_reasoning`, `qa`, `question`, `rag`, `summarization`, `tool_call`, `translation`, `writing`) in acceptance mode via `prepare_data.py` and in `full-eval.yaml`. |
+| 2026-08-14 | Merged **upstream `vllm-project/speculators` main** into this eval branch (D-PACE defaults, Inkling, fused losses, Mooncake, NaN hidden-state skip). |
 | 2026-08 | **Large generated JSONLs off-git** — `aa-lcr`, `swe-rebench`, `speed-low-entropy` / `throughput_16k_low_entropy` (and turns-format `swe-bench-pro`) live under scratch (`…/datasets/eval/{turns,mtp}/`); repo paths are gitignored symlinks. See [`eval_datasets/README.md`](./eval_datasets/README.md). |
-| 2026-08 | **New / extended benchmarks** — `aime26`, `swe-bench-pro`, `swe-rebench`, `aa-lcr`, SPEED-Bench slices (`speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing`, `speed-low-entropy`) wired through converters, `prepare_data.py`, and `run_eval.sh`. |
+| 2026-08 | **New / extended benchmarks** — `aime26`, `swe-bench-pro`, `swe-rebench`, `aa-lcr`, SPEED-Bench slices wired through converters, `prepare_data.py`, and `run_eval.sh`. |
 | 2026-08 | **Preparers** — [`prepare_aa_lcr.py`](./prepare_aa_lcr.py); [`prepare_speedbench.py`](./prepare_speedbench.py) gains `throughput_16k` / list-shaped `turns`. |
 | 2026-08 | **Docs / TODO** — `mtp_server_eval` §H points at YAML full eval; [`TODO.md`](./TODO.md) tracks remaining harness gaps (quality check, position-wise accept, YAML resume, etc.). |
 
@@ -64,9 +68,9 @@ python eval_datasets/convert_eval_datasets_to_jsonl.py openai/gsm8k
 python prepare_aa_lcr.py
 python prepare_speedbench.py --download --configs qualitative,throughput_16k
 
-# convert turns → mtp prompt files:
+# convert turns → mtp prompt files (includes SPEED-Bench + speculator_benchmarks):
 cd mtp_server_eval
-python prepare_data.py --only gsm8k,humaneval,mbpp,math500,mt-bench,aime26,swe-bench-pro,aa-lcr,speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy
+python prepare_data.py --only gsm8k,humaneval,mbpp,math500,mt-bench,aime26,swe-bench-pro,aa-lcr,speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy,HumanEval,math_reasoning,qa,question,rag,summarization,tool_call,translation,writing
 ```
 
 Details: [`eval_datasets/README.md`](./eval_datasets/README.md),
@@ -102,9 +106,17 @@ python tabulate_results.py --dir ./results/full-eval --baseline baseline \
 
 More detail on the YAML schema: [`experiments/README.md`](./experiments/README.md).
 
-If a server is **already running**, you can skip the YAML runner and hit it with
-[`mtp_server_eval/run_eval.sh`](./mtp_server_eval/run_eval.sh) — see that README.
-GuideLLM rate sweeps use [`evaluate.py`](./evaluate.py) instead (different path).
+If a server is **already running**, hit it with
+[`mtp_server_eval/run_eval.sh`](./mtp_server_eval/run_eval.sh):
+
+```bash
+cd mtp_server_eval
+# sequential per-benchmark acceptance (default)
+BACKEND=vllm BASE_URL=http://localhost:8000 ./run_eval.sh
+# GuideLLM max-rate / SLA sweep
+MODE=throughput BASE_URL=http://localhost:8000 SUBSETS=HumanEval ./run_eval.sh
+MODE=sweep BASE_URL=http://localhost:8000 ./run_eval.sh
+```
 
 ## What gets measured
 
@@ -117,36 +129,71 @@ GuideLLM rate sweeps use [`evaluate.py`](./evaluate.py) instead (different path)
 
 ## The two evaluators
 
-| | [`evaluate.py`](./evaluate.py) (GuideLLM) | [`mtp_server_eval/`](./mtp_server_eval) (direct) |
-|---|---|---|
-| Engine | vLLM | vLLM **or** SGLang |
-| Load driver | GuideLLM (rate/sweep control) | direct streaming requests |
-| Deps | `guidellm`, `vllm` (see [requirements.txt](./requirements.txt)) | just `requests` |
-| Best for | SLA-style rate sweeps, standardized perf runs | acceptance + decode-tok/s per benchmark; used by the YAML runner |
-| Extras | `sweep` mode, [`plot.py`](./plot.py) | `compare_speedup.py`, AgentX trace-replay |
+[`mtp_server_eval/run_eval.sh`](./mtp_server_eval/run_eval.sh) is the single
+entrypoint. `MODE` selects the load driver:
 
-The **YAML full eval** always uses `mtp_server_eval` under the hood.
+| | `MODE=acceptance` (default) | `MODE=throughput` / `MODE=sweep` |
+|---|---|---|
+| Engine | vLLM **or** SGLang | vLLM (GuideLLM) |
+| Load driver | direct streaming requests | GuideLLM rate/sweep control |
+| Deps | `requests` | `guidellm`, `vllm` (see [requirements.txt](./requirements.txt)) |
+| Best for | acceptance + decode-tok/s per benchmark; used by the YAML runner | SLA-style rate sweeps, HF `RedHatAI/speculator_benchmarks`, SPEED-Bench |
+| Output | `mtp_eval_summary.json` | `acceptance.csv` / `perf_results.csv` (for [`plot.py`](./plot.py)) |
+| Python | `run_vllm_eval.py` / `run_sglang_eval.py` | `run_guidellm_eval.py` |
+
+The **YAML full eval** defaults to `MODE=acceptance` (`mtp_server_eval`). Set
+`eval.mode: throughput` or `sweep` in the YAML to use GuideLLM instead.
 
 ## Datasets / benchmark names
+
+Names below are valid in `eval.benchmarks` / `BENCHMARKS=` (`MODE=acceptance`)
+and ship (or prepare) as `mtp_server_eval/data/<name>.jsonl`.
 
 | Eval name | Notes |
 |-----------|--------|
 | `aime`, `gpqa`, `livecodebench` | Default smoke trio in `run_eval.sh` |
 | `gsm8k`, `math500`, `humaneval`, `mbpp`, `mt-bench`, `aime26` | From `eval_datasets/` |
 | `swe-bench-pro`, `swe-rebench` | SWE-style; large — often kept off-git |
-| `speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing`, `speed-low-entropy` | NVIDIA SPEED-Bench |
 | `aa-lcr` | Long-context (~tens of k tokens) |
 
-Optional alignment with published cards (e.g.
-[Inferact/Kimi-K3-DSpark](https://huggingface.co/Inferact/Kimi-K3-DSpark)): see
-[`full-eval.yaml`](./experiments/full-eval.yaml) and
-[`TODO.md`](./TODO.md).
+### SPEED-Bench (included)
+
+NVIDIA [SPEED-Bench](https://huggingface.co/datasets/nvidia/SPEED-Bench) is in
+[`full-eval.yaml`](./experiments/full-eval.yaml). Prepare once with
+[`prepare_speedbench.py`](./prepare_speedbench.py), then `prepare_data.py`.
+
+| Eval name | SPEED-Bench split |
+|-----------|-------------------|
+| `speed-coding` | qualitative / coding |
+| `speed-multilingual` | qualitative / multilingual |
+| `speed-rag` | qualitative / RAG |
+| `speed-qa` | qualitative / QA |
+| `speed-writing` | qualitative / writing |
+| `speed-low-entropy` | `throughput_16k` / `low_entropy` (card wording: “10k input”) |
+
+GuideLLM (`MODE=throughput`/`sweep`) can also run the full NVIDIA tree:
+
+```bash
+MODE=throughput DATASET=speedbench/qualitative ./run_eval.sh
+MODE=throughput DATASET=speedbench/throughput_16k/low_entropy ./run_eval.sh
+```
+
+(`SPEEDBENCH_DATA_DIR` defaults to `scripts/evaluate/speedbench_data`.)
+
+### `RedHatAI/speculator_benchmarks`
+
+Nine subsets (also the GuideLLM default `SUBSETS`): `HumanEval`,
+`math_reasoning`, `qa`, `question`, `rag`, `summarization`, `tool_call`,
+`translation`, `writing`. Distinct from DeepSpec `humaneval`. Prepare with
+`python prepare_data.py --only HumanEval,math_reasoning,qa,...`.
+
+The template list is [`experiments/full-eval.yaml`](./experiments/full-eval.yaml).
+Follow-ups: [`TODO.md`](./TODO.md).
 
 ## Layout
 
 ```
 README.md              ← you are here (start with “How to run a full evaluation”)
-evaluate.py            GuideLLM-based acceptance/throughput/sweep eval
 perf_utils.py          metric parsing + GuideLLM helpers
 plot.py                plots from sweep output
 requirements.txt
@@ -154,7 +201,7 @@ TODO.md
 eval_datasets/         turns JSONL + converter + GuideLLM bridge
 prepare_speedbench.py  NVIDIA SPEED-Bench → turns JSONL
 prepare_aa_lcr.py      AA-LCR → turns JSONL
-mtp_server_eval/       direct sglang/vllm eval + compare_speedup + AgentX
+mtp_server_eval/       run_eval.sh (acceptance + GuideLLM) + AgentX
 experiments/           YAML runner (serve → eval → compare)
   full-eval.yaml       recommended full-suite template
   run_full_eval.sh     thin wrapper around run_experiments.py

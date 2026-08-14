@@ -54,6 +54,16 @@ DATA_FILES = {
     "speed-qa": "speed-qa.jsonl",
     "speed-writing": "speed-writing.jsonl",
     "speed-low-entropy": "speed-low-entropy.jsonl",
+    # RedHatAI/speculator_benchmarks (former evaluate.py defaults)
+    "HumanEval": "HumanEval.jsonl",
+    "math_reasoning": "math_reasoning.jsonl",
+    "qa": "qa.jsonl",
+    "question": "question.jsonl",
+    "rag": "rag.jsonl",
+    "summarization": "summarization.jsonl",
+    "tool_call": "tool_call.jsonl",
+    "translation": "translation.jsonl",
+    "writing": "writing.jsonl",
 }
 
 
@@ -201,7 +211,8 @@ def main():
             "comma-separated subset of: aime,gpqa,livecodebench,gsm8k,math500,"
             "humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,"
             "speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,"
-            "speed-low-entropy"
+            "speed-low-entropy,HumanEval,math_reasoning,qa,question,rag,"
+            "summarization,tool_call,translation,writing"
         ),
     )
     ap.add_argument(

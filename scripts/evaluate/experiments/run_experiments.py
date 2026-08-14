@@ -40,6 +40,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 MTP_EVAL_DIR = HERE.parent / "mtp_server_eval"
+GUIDELLM_EVAL = MTP_EVAL_DIR / "run_guidellm_eval.py"
 
 # Need at least a baseline + one draft config to compute a speedup.
 MIN_EXPERIMENTS_FOR_COMPARISON = 2
@@ -55,6 +56,8 @@ DEFAULT_SERVER = {
 }
 DEFAULT_EVAL = {
     "backend": "vllm",  # which mtp_server_eval evaluator: vllm | sglang
+    # acceptance = sequential mtp_server_eval; throughput/sweep = GuideLLM
+    "mode": "acceptance",
     "benchmarks": ["aime", "gpqa", "livecodebench"],
     "num_samples": 50,
     "max_tokens": 4096,
@@ -114,7 +117,57 @@ def build_serve_command(cfg: dict, exp: dict, server: dict) -> list[str]:
     return cmd
 
 
+def _as_csv(value) -> str:
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(x) for x in value)
+    return str(value)
+
+
 def build_eval_command(evalcfg: dict, base_url: str, out_dir: Path) -> list[str]:
+    mode = str(evalcfg.get("mode", "acceptance")).lower()
+    if mode in ("throughput", "sweep"):
+        target = base_url.rstrip("/")
+        if not target.endswith("/v1"):
+            target = f"{target}/v1"
+        cmd = [
+            sys.executable,
+            str(GUIDELLM_EVAL),
+            mode,
+            "--target",
+            target,
+            "--output-dir",
+            str(out_dir),
+        ]
+        if evalcfg.get("dataset"):
+            cmd += ["--dataset", str(evalcfg["dataset"])]
+        if evalcfg.get("subsets"):
+            cmd += ["--subsets", _as_csv(evalcfg["subsets"])]
+        if evalcfg.get("max_concurrency") is not None:
+            cmd += ["--max-concurrency", str(evalcfg["max_concurrency"])]
+        if evalcfg.get("max_requests") is not None:
+            cmd += ["--max-requests", str(evalcfg["max_requests"])]
+        if evalcfg.get("max_tokens") is not None:
+            cmd += ["--max-tokens", str(evalcfg["max_tokens"])]
+        if evalcfg.get("gen_len_rate") is not None:
+            cmd += ["--gen-len-rate", str(evalcfg["gen_len_rate"])]
+        if evalcfg.get("sweep_rate") is not None:
+            cmd += ["--sweep-rate", str(evalcfg["sweep_rate"])]
+        gen_kwargs = evalcfg.get("gen_kwargs")
+        if gen_kwargs is None and evalcfg.get("temperature") is not None:
+            gen_kwargs = {"temperature": evalcfg["temperature"]}
+        if gen_kwargs is not None:
+            if not isinstance(gen_kwargs, str):
+                gen_kwargs = json.dumps(gen_kwargs)
+            cmd += ["--gen-kwargs", gen_kwargs]
+        if evalcfg.get("data_column_mapper"):
+            cmd += ["--data-column-mapper", str(evalcfg["data_column_mapper"])]
+        if evalcfg.get("speedbench_data_dir"):
+            cmd += ["--speedbench-data-dir", str(evalcfg["speedbench_data_dir"])]
+        elif str(evalcfg.get("dataset", "")).startswith("speedbench/"):
+            default_sb = HERE.parent / "speedbench_data"
+            cmd += ["--speedbench-data-dir", str(default_sb)]
+        return cmd
+
     script = {
         "vllm": "run_vllm_eval.py",
         "sglang": "run_sglang_eval.py",

@@ -20,7 +20,7 @@ original sources (fetched at runtime due to redistribution restrictions)::
     the materialised JSONL files.
 
 **Step 2** — run this script to split the flat files into per-category files
-that evaluate.py can consume directly::
+that ``run_eval.sh`` ``MODE=throughput`` can consume directly::
 
     python prepare_speedbench.py --data-dir ./speedbench_data
 
@@ -112,7 +112,7 @@ def split_config(flat_file: Path, out_dir: Path, config: str) -> int:
         out_path = out_dir / f"{config}_{key}.jsonl"
         with out_path.open("w") as f:
             for t in texts:
-                # evaluate.py / to_guidellm expect turns as a list of strings.
+                # run_eval.sh MODE=throughput / to_guidellm expect turns as a list of strings.
                 turns = t if isinstance(t, list) else [t]
                 f.write(json.dumps({"turns": turns}) + "\n")
         logger.info("  wrote %s (%d rows)", out_path.name, len(texts))

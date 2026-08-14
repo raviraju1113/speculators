@@ -1,14 +1,18 @@
 # Server MTP / EAGLE acceptance eval (SGLang & vLLM)
 
 A lightweight, self-contained acceptance-rate + throughput evaluator for a
-running speculative-decoding server. Unlike [`../evaluate.py`](../evaluate.py)
-(which drives GuideLLM), this sends prompts directly to the server's
-OpenAI-compatible streaming API and reads speculative-decoding metrics from the
-server's Prometheus endpoint — no GuideLLM dependency, and it supports **both
-SGLang and vLLM** backends.
+running speculative-decoding server. [`run_eval.sh`](./run_eval.sh) is the
+unified entrypoint:
 
-Only dependency beyond the stdlib is `requests` (plus `pandas` /
-`huggingface_hub` if you regenerate datasets with `prepare_data.py`).
+- **`MODE=acceptance`** (default) — sends prompts directly to the server's
+  OpenAI-compatible streaming API and reads speculative-decoding metrics from
+  `/metrics` (vLLM **or** SGLang). No GuideLLM dependency.
+- **`MODE=throughput`** / **`MODE=sweep`** — GuideLLM load driver (vLLM): HF
+  subsets, concurrency, rate sweep, `acceptance.csv` / `perf_results.csv`.
+  Needs `guidellm` (see [`../requirements.txt`](../requirements.txt)).
+
+`MODE=acceptance` needs only `requests` (plus `pandas` / `huggingface_hub` to
+regenerate datasets). `MODE=throughput`/`sweep` also needs `guidellm`.
 
 ## What it reports (per benchmark)
 
@@ -29,11 +33,16 @@ Benchmarks:
   **swe-bench-pro**, **swe-rebench**, **aa-lcr** — derived from sibling
   [`../eval_datasets/`](../eval_datasets) turns files (generate AA-LCR /
   aime26 / swe-bench-pro / swe-rebench first; see
-  [`../README.md`](../README.md#kimi-k3-dspark-acceptance-suite)).
+  [`../README.md`](../README.md#datasets--benchmark-names)).
 - **speed-coding**, **speed-multilingual**, **speed-rag**, **speed-qa**,
-  **speed-writing**, **speed-low-entropy** — NVIDIA SPEED-Bench slices via
-  [`../prepare_speedbench.py`](../prepare_speedbench.py) then
-  `prepare_data.py` (`SPEEDBENCH_DIR`).
+  **speed-writing**, **speed-low-entropy** — NVIDIA SPEED-Bench (in
+  `full-eval.yaml`). Build with [`../prepare_speedbench.py`](../prepare_speedbench.py)
+  then `prepare_data.py` (`SPEEDBENCH_DIR`). Mapping: coding / multilingual /
+  RAG / QA / writing ← qualitative; `speed-low-entropy` ← `throughput_16k` /
+  `low_entropy`.
+- **HumanEval**, **math_reasoning**, **qa**, **question**, **rag**,
+  **summarization**, **tool_call**, **translation**, **writing** —
+  `RedHatAI/speculator_benchmarks` (`prepare_data.py --only HumanEval,...`).
 - **AgentX** — an agentic **trace-replay load test** ([`run_agentx.sh`](./run_agentx.sh)),
   a different mode: it replays real Claude-Code traces at fixed concurrency
   rather than sending prompts from a file. See the [AgentX](#agentx-agentic-trace-replay-load-test)
@@ -73,13 +82,22 @@ how you run the **baseline** (spec off).
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `BACKEND` | `vllm` | `sglang` or `vllm` — selects the evaluator + metric reader |
+| `MODE` | `acceptance` | `acceptance` (sequential), `throughput` or `sweep` (GuideLLM) |
+| `BACKEND` | `vllm` | `sglang` or `vllm` — acceptance-mode metric reader |
 | `BASE_URL` | `http://127.0.0.1:8000` | server root (the eval appends `/v1/...` and `/metrics`) |
-| `BENCHMARKS` | `aime,gpqa,livecodebench` | comma-separated subset; also: `gsm8k,math500,humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy` |
-| `NUM_SAMPLES` | `20` | prompts per benchmark (`0` = all) |
-| `MAX_TOKENS` | `4096` | max generated tokens per request |
-| `TEMPERATURE` | `0.0` | `0` = greedy (canonical acceptance setting) |
-| `RESULT_DIR` | `./results` | output dir (→ `--output-dir`) |
+| `BENCHMARKS` | `aime,gpqa,livecodebench` | acceptance-mode subsets (see names below) |
+| `NUM_SAMPLES` | `20` | prompts per benchmark (`0` = all); acceptance mode |
+| `MAX_TOKENS` | `4096` | max generated tokens per request; acceptance mode |
+| `TEMPERATURE` | `0.0` | greedy = canonical; also forwarded as GuideLLM `--gen-kwargs` |
+| `RESULT_DIR` | `./results` (acceptance); unset = auto `<model>_TIMESTAMP` (GuideLLM) | output dir |
+| `DATASET` | `RedHatAI/speculator_benchmarks` | GuideLLM dataset (HF id, local dir, or `speedbench/...`) |
+| `SUBSETS` | (GuideLLM default 9) | GuideLLM comma-separated subset names |
+| `MAX_CONCURRENCY` / `MAX_REQUESTS` | 128 / 200 | GuideLLM load |
+| `MAX_TOKENS` | `4096` | max generated tokens (acceptance + GuideLLM; sweep still gen-len estimates) |
+| `GEN_LEN_RATE` / `SWEEP_RATE` | 128 / 10 | GuideLLM sweep pipeline |
+| `GEN_KWARGS` | | GuideLLM JSON gen kwargs (overrides `TEMPERATURE`) |
+| `DATA_COLUMN_MAPPER` | prompt column mapper | GuideLLM column mapping |
+| `SPEEDBENCH_DATA_DIR` | `../speedbench_data` if `DATASET=speedbench/...` | SPEED-Bench splits |
 
 ### Direct CLI args (for knobs the wrapper doesn't expose)
 
@@ -96,10 +114,13 @@ All commands run from this directory (`scripts/evaluate/mtp_server_eval/`).
 ### A. Quick start
 
 ```bash
-# vLLM server on :8000
+# vLLM server on :8000 (sequential acceptance)
 BACKEND=vllm  BASE_URL=http://127.0.0.1:8000 ./run_eval.sh
 # SGLang server on :8080
 BACKEND=sglang BASE_URL=http://127.0.0.1:8080 ./run_eval.sh
+# GuideLLM max-rate / sweep (vLLM)
+MODE=throughput BASE_URL=http://127.0.0.1:8000 SUBSETS=HumanEval ./run_eval.sh
+MODE=sweep BASE_URL=http://127.0.0.1:8000 ./run_eval.sh
 ```
 
 ### B. Speedup workflow (baseline vs spec-decoding) — the main use
@@ -204,6 +225,9 @@ python ../prepare_speedbench.py --data-dir ../speedbench_data \
     --download --configs qualitative,throughput_16k
 SPEEDBENCH_DIR=../speedbench_data python prepare_data.py --only \
   speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy
+
+# RedHatAI/speculator_benchmarks (nine subsets; also GuideLLM default SUBSETS)
+python prepare_data.py --only HumanEval,math_reasoning,qa,question,rag,summarization,tool_call,translation,writing
 ```
 
 ### H. Full multi-benchmark suite (YAML preferred)
@@ -222,7 +246,7 @@ cd ../experiments
 **Lower-level** (server already running; same benchmark list as `full-eval.yaml`):
 
 ```bash
-BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
+BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26,HumanEval,math_reasoning,qa,question,rag,summarization,tool_call,translation,writing \
   NUM_SAMPLES=0 TEMPERATURE=0.0 BASE_URL=http://127.0.0.1:8000 \
   RESULT_DIR=./results/full_eval ./run_eval.sh
 ```
@@ -247,6 +271,15 @@ eval:
     - speed-qa
     - speed-writing
     - aime26
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
   num_samples: 0          # all prompts
   max_tokens: 4096
   temperature: 0.0

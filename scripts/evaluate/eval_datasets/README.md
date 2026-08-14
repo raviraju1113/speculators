@@ -1,8 +1,8 @@
 # Benchmark eval datasets
 
 Prompt sets for speculative-decoding acceptance-rate / throughput evaluation with
-[`evaluate.py`](../evaluate.py) and (after `prepare_data.py`) with
-[`../mtp_server_eval`](../mtp_server_eval).
+[`../mtp_server_eval/run_eval.sh`](../mtp_server_eval/run_eval.sh) (`MODE=acceptance`
+or GuideLLM `MODE=throughput`/`sweep`).
 
 Each `*.jsonl` file stores one benchmark, one row per example, in the format:
 
@@ -32,32 +32,32 @@ Each `*.jsonl` file stores one benchmark, one row per example, in the format:
 | `swe-bench-pro.jsonl` | `ScaleAI/SWE-bench_Pro` (large — prefer scratch `turns/`; `mtp_server_eval/data/` copy may be shipped) |
 | `swe-rebench.jsonl` | `nebius/SWE-rebench` (large — scratch only) |
 
-**Kimi-K3-DSpark suite extras** (large — **not committed**; live under
-`/import/ml-sc-scratch5/chenw/datasets/eval/`):
+**SPEED-Bench** (NVIDIA; map into `mtp_server_eval` as `speed-*`):
 
-| File | How to build | Scratch path |
-|------|----------------|--------------|
-| `aa-lcr.jsonl` | [`../prepare_aa_lcr.py`](../prepare_aa_lcr.py) ← `ArtificialAnalysis/AA-LCR` | `…/eval/turns/aa-lcr.jsonl` |
-| `swe-bench-pro.jsonl` / `swe-rebench.jsonl` | converter below | `…/eval/turns/` |
-| SPEED-Bench slices | [`../prepare_speedbench.py`](../prepare_speedbench.py) ← `nvidia/SPEED-Bench` (then map into `mtp_server_eval` as `speed-*`) | `…/eval/turns/throughput_16k_low_entropy.jsonl` (+ small slices may stay in-repo) |
+| Eval name | How to build | Source split |
+|-----------|----------------|--------------|
+| `speed-coding` | [`../prepare_speedbench.py`](../prepare_speedbench.py) then `prepare_data.py` | qualitative / coding |
+| `speed-multilingual` | same | qualitative / multilingual |
+| `speed-rag` | same | qualitative / RAG |
+| `speed-qa` | same | qualitative / QA |
+| `speed-writing` | same | qualitative / writing |
+| `speed-low-entropy` | same | `throughput_16k` / `low_entropy` |
 
-`mtp_server_eval` prompt-format copies live in `…/eval/mtp/`. Symlink into
-`eval_datasets/` / `mtp_server_eval/data/` as needed (paths are gitignored).
+Large dumps (`aa-lcr`, `swe-rebench`, `speed-low-entropy`) may live under
+`/import/ml-sc-scratch5/chenw/datasets/eval/` (gitignored symlinks). AA-LCR:
+[`../prepare_aa_lcr.py`](../prepare_aa_lcr.py). See the parent
+[`README.md`](../README.md) benchmark table.
 
-See the parent [`README.md`](../README.md#kimi-k3-dspark-acceptance-suite) for the
-full card → eval-name mapping.
+## Using them with GuideLLM (`run_eval.sh MODE=throughput`)
 
-## Using them with `evaluate.py`
-
-`evaluate.py` drives GuideLLM, which reads a single text column (`prompt`). Convert
-the `turns` files to GuideLLM-ready `prompt` files first:
+GuideLLM reads a single text column (`prompt`). Convert the `turns` files first:
 
 ```bash
 python scripts/evaluate/eval_datasets/to_guidellm.py
-python scripts/evaluate/evaluate.py \
-    --target http://localhost:8000/v1 \
-    --dataset scripts/evaluate/eval_datasets/guidellm \
-    throughput --subsets "gsm8k,humaneval,math500"
+MODE=throughput BASE_URL=http://localhost:8000 \
+  DATASET=scripts/evaluate/eval_datasets/guidellm \
+  SUBSETS=gsm8k,humaneval,math500 \
+  ./scripts/evaluate/mtp_server_eval/run_eval.sh
 ```
 
 ## Regenerating from source

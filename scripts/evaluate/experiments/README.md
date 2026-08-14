@@ -95,14 +95,24 @@ server:
 
 eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
+  mode: acceptance                          # acceptance | throughput | sweep (GuideLLM)
   # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
   # math500, humaneval, mbpp, mt-bench, aime26, swe-bench-pro, swe-rebench, aa-lcr,
   # speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
-  # speed-low-entropy). Generate extras via prepare_data.py / parent README.
+  # speed-low-entropy, HumanEval, math_reasoning, qa, question, rag,
+  # summarization, tool_call, translation, writing). Generate extras via
+  # prepare_data.py / parent README.
   benchmarks: [aime, gpqa, livecodebench]
   num_samples: 50                           # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                          # greedy = canonical acceptance
+  # GuideLLM-only (when mode is throughput or sweep):
+  # dataset: RedHatAI/speculator_benchmarks
+  # subsets: [HumanEval, qa]
+  # max_concurrency: 128
+  # max_requests: 200
+  # sweep_rate: 10
+  # speedbench_data_dir: ../speedbench_data   # for DATASET=speedbench/...
 
 output_dir: ./results/experiments
 

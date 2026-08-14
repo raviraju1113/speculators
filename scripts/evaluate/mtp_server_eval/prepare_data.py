@@ -56,7 +56,19 @@ SPEEDBENCH_DIR = Path(
         str(Path(__file__).resolve().parent.parent / "speedbench_data"),
     )
 )
-# Inferact/Kimi-K3-DSpark acceptance-suite SPEED-Bench slices.
+# RedHatAI/speculator_benchmarks subsets (former evaluate.py defaults).
+SPECULATOR_BENCHMARKS = (
+    "HumanEval",
+    "math_reasoning",
+    "qa",
+    "question",
+    "rag",
+    "summarization",
+    "tool_call",
+    "translation",
+    "writing",
+)
+SPECULATOR_REPO = "RedHatAI/speculator_benchmarks"
 SPEEDBENCH_BENCHMARKS = {
     "speed-coding": "qualitative_coding.jsonl",
     "speed-multilingual": "qualitative_multilingual.jsonl",
@@ -309,12 +321,51 @@ def prep_from_speedbench(name):
     _write(f"{name}.jsonl", recs)
 
 
+def prep_speculator_benchmark(name):
+    """Download one RedHatAI/speculator_benchmarks subset → data/<name>.jsonl."""
+    from huggingface_hub import hf_hub_download
+
+    try:
+        path = hf_hub_download(
+            SPECULATOR_REPO, f"{name}.jsonl", repo_type="dataset"
+        )
+    except Exception as e:
+        print(
+            f"[{name}] download from {SPECULATOR_REPO} failed ({type(e).__name__}); "
+            "skipping"
+        )
+        return
+    recs = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            prompt = row.get("prompt") or row.get("text") or row.get("question")
+            if not isinstance(prompt, str) or not prompt:
+                turns = row.get("turns")
+                if isinstance(turns, list) and turns and isinstance(turns[0], str):
+                    prompt = turns[0]
+            if not isinstance(prompt, str) or not prompt:
+                continue
+            recs.append(
+                {
+                    "benchmark": name,
+                    "id": str(row.get("id", row.get("question_id", i))),
+                    "prompt": prompt,
+                }
+            )
+    _write(f"{name}.jsonl", recs)
+
+
 def main():
     ap = argparse.ArgumentParser()
     all_named = (
         ["aime", "gpqa", "livecodebench"]
         + list(TURNS_BENCHMARKS)
         + list(SPEEDBENCH_BENCHMARKS)
+        + list(SPECULATOR_BENCHMARKS)
     )
     ap.add_argument(
         "--only",
@@ -343,6 +394,10 @@ def main():
         if name in todo:
             print(f"[{name}]")
             prep_from_speedbench(name)
+    for name in SPECULATOR_BENCHMARKS:
+        if name in todo:
+            print(f"[{name}]")
+            prep_speculator_benchmark(name)
     print("done.")
 
 
