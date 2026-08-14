@@ -80,8 +80,36 @@ pred_id, target_id, correct, cond_correct
 `correct` = draft's step-k prediction matched the target token; `cond_correct`
 chains correctness across shallower steps (the trainer's `cond_acc` semantics).
 
-## Comparing checkpoints
+## Comparing checkpoints — freeze the targets
 
-Run the scorer once per checkpoint (point `--draft-checkpoint` at each, use
-distinct `--out` names), then load several `mistakes.jsonl` into the notebook with
-a `run` column to compare run 1 vs. a new corpus/experiment.
+**Always pass `--reference` when comparing checkpoints.** The scorer generates the
+target continuations greedily, but greedy decoding is not reliably deterministic
+across server runs — regenerating per checkpoint scores each draft on *different*
+text, which invalidates the comparison (symptom: token-level accuracy that
+contradicts the serving `accept_rate`).
+
+`--reference ref.jsonl` fixes this: the first run generates the continuations and
+saves them; every later run *loads* the same continuations and only swaps the
+draft checkpoint. So all checkpoints are scored on identical targets.
+
+```bash
+# first checkpoint: creates the reference
+CUDA_VISIBLE_DEVICES=4 python .../score_mistakes.py \
+  --draft-checkpoint .../gemma4_draft_model_300k_eagle3/checkpoint_best \
+  --vllm-endpoint http://localhost:8000/v1 --hidden-states-path /sms-scratch/ravira/hidden_states \
+  --benchmarks gpqa_diamond,livecodebench,aime --ttt-steps 3 \
+  --reference .../out/reference.jsonl \
+  --out .../out/run1_mistakes.jsonl
+
+# every other checkpoint: reuses the SAME targets (only --draft-checkpoint/--out change)
+CUDA_VISIBLE_DEVICES=4 python .../score_mistakes.py \
+  --draft-checkpoint .../gemma4_draft_model_300k_eagle3_kimi_mtp_stem_code/checkpoint_best \
+  --vllm-endpoint http://localhost:8000/v1 --hidden-states-path /sms-scratch/ravira/hidden_states \
+  --benchmarks gpqa_diamond,livecodebench,aime --ttt-steps 3 \
+  --reference .../out/reference.jsonl \
+  --out .../out/stem_code_mistakes.jsonl
+```
+
+Then load several `mistakes.jsonl` into the notebook with a `run` column to
+compare. Sanity check: offline step-0 accuracy should track the serving
+`accept_rate` — if it doesn't, the reference wasn't shared.

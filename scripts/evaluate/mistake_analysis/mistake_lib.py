@@ -38,6 +38,26 @@ def load_mistakes(path: str | Path) -> pd.DataFrame:
     return df
 
 
+def drop_special_tokens(df: pd.DataFrame, tokenizer) -> pd.DataFrame:
+    """Drop rows whose target/pred is a special/control token.
+
+    The scorer can pick up the turn-boundary / pad / eos token at the end of a
+    generation (e.g. ``<pad>``, ``<turn|>``, ``<eos>``). These are control tokens,
+    not content, so they pollute the category and rare-token analyses. Removes
+    any row where either the target or the predicted id is a tokenizer special id.
+    """
+    special = set(getattr(tokenizer, "all_special_ids", []) or [])
+    # Gemma-style extra control ids the tokenizer may not flag as "special".
+    for name in ("pad_token_id", "eos_token_id", "bos_token_id"):
+        tid = getattr(tokenizer, name, None)
+        if tid is not None:
+            special.add(int(tid))
+    if not special:
+        return df
+    mask = ~(df["target_id"].isin(special) | df["pred_id"].isin(special))
+    return df[mask].reset_index(drop=True)
+
+
 def attach_token_strings(df: pd.DataFrame, tokenizer) -> pd.DataFrame:
     """Add ``target_str`` / ``pred_str`` columns by decoding the token ids.
 

@@ -269,6 +269,17 @@ def main() -> None:
     ap.add_argument("--max-new-tokens", type=int, default=1024)
     ap.add_argument("--total-seq-len", type=int, default=8192)
     ap.add_argument("--out", required=True, help="Output mistakes.jsonl path")
+    ap.add_argument(
+        "--reference",
+        default=None,
+        help=(
+            "Path to a frozen reference of target continuations (JSONL of "
+            "{benchmark,id,input_ids,loss_mask}). If it exists, targets are LOADED "
+            "from it (no regeneration) so every checkpoint is scored on identical "
+            "text -- required for valid cross-checkpoint comparison. If it does not "
+            "exist, targets are generated once and saved here for reuse."
+        ),
+    )
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -285,13 +296,51 @@ def main() -> None:
     model = SpeculatorModel.from_pretrained(args.draft_checkpoint)
     model = model.to(device=device, dtype=torch.bfloat16).eval()
 
+    # Load a frozen reference of target continuations if one exists, so every
+    # checkpoint is scored on identical text (greedy generation is not reliably
+    # deterministic across server runs, and comparing checkpoints scored on
+    # different targets is invalid).
+    ref_path = Path(args.reference) if args.reference else None
+    ref_by_benchmark: dict[str, list[dict]] = {}
+    if ref_path and ref_path.exists():
+        for line in ref_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            ref_by_benchmark.setdefault(r["benchmark"], []).append(r)
+        logger.info("Loaded frozen reference from %s (%d benchmarks)",
+                    ref_path, len(ref_by_benchmark))
+
     n_written = 0
     with out_path.open("w") as fout:
         for benchmark in [b.strip() for b in args.benchmarks.split(",") if b.strip()]:
-            prompts = load_prompts(benchmark, eval_dir, num_samples)
-            gen_ds = build_generated_dataset(
-                client, model_id, prompts, args.max_new_tokens, args.total_seq_len
-            )
+            if benchmark in ref_by_benchmark:
+                rows = ref_by_benchmark[benchmark]
+                gen_ds = Dataset.from_dict({
+                    "input_ids": [r["input_ids"] for r in rows],
+                    "loss_mask": [r["loss_mask"] for r in rows],
+                    "seq_len": [len(r["input_ids"]) for r in rows],
+                    "benchmark": [benchmark] * len(rows),
+                    "id": [str(r["id"]) for r in rows],
+                })
+                logger.info("Using %d frozen reference samples for %s",
+                            len(rows), benchmark)
+            else:
+                prompts = load_prompts(benchmark, eval_dir, num_samples)
+                gen_ds = build_generated_dataset(
+                    client, model_id, prompts, args.max_new_tokens, args.total_seq_len
+                )
+                if ref_path is not None and len(gen_ds) > 0:
+                    with ref_path.open("a") as rf:
+                        for row in gen_ds:
+                            rf.write(json.dumps({
+                                "benchmark": benchmark,
+                                "id": row["id"],
+                                "input_ids": row["input_ids"],
+                                "loss_mask": [bool(x) for x in row["loss_mask"]],
+                            }) + "\n")
+                    logger.info("Saved %d reference samples for %s to %s",
+                                len(gen_ds), benchmark, ref_path)
             if len(gen_ds) == 0:
                 logger.warning("No usable samples for %s; skipping", benchmark)
                 continue
