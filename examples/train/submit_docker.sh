@@ -27,10 +27,10 @@
 #   DRY_RUN=1 bash examples/train/submit_docker.sh    # print scripts, do not submit
 set -euo pipefail
 
-REPO="${REPO:-/import/ml-sc-scratch1/mengmengj/speculators}"
+REPO="${REPO:-/sms-scratch/mengmengj/speculators}"
 JOBNAME="${JOBNAME:-dspark_docker}"
 GPU="${GPU:-4}"
-GPUTYPE="${GPUTYPE:-a100m80}"
+GPUTYPE="${GPUTYPE:-b200m80}"
 CPU="${CPU:-48}"
 MEM="${MEM:-400000}"
 TIME="${TIME:-256:00:00}"

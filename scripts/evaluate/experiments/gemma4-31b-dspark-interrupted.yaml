@@ -44,7 +44,7 @@ server:
 
 eval:
   backend: vllm
-  benchmarks: [gpqa]
+  benchmarks: [aime, gpqa, livecodebench]
   num_samples: 30          # aime.jsonl has 30 rows; gpqa/lcb are sampled to this
   max_tokens: 2048
   temperature: 0.0         # greedy -> canonical, reproducible acceptance

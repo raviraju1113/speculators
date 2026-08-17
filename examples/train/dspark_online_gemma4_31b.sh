@@ -30,12 +30,17 @@
 set -euo pipefail
 
 # ---------------- paths (absolute; see note above) ----------------
-REPO="${REPO:-/import/ml-sc-scratch1/mengmengj/speculators}"
+# Defaults target the standalone 8x B200 box (/sms-scratch). The old SambaNova
+# cluster paths (/import/...) still work by exporting these explicitly.
+REPO="${REPO:-/sms-scratch/mengmengj/speculators}"
+# Python env, first match wins: VENV (a venv dir), then CONDA_SH+CONDA_ENV if
+# present, else whatever `python` is already on PATH (e.g. inside a container).
+VENV="${VENV:-/home/mengmengj/envs/dspark}"
 CONDA_SH="${CONDA_SH:-/import/snvm-sc-scratch1/mengmengj/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-/import/ml-sc-scratch1/mengmengj/condaenvs/dspark}"
-MODEL="${MODEL:-/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it}"
-DATA_ROOT="${DATA_ROOT:-/import/ml-sc-scratch1/mengmengj/datasets}"
-OUT_ROOT="${OUT_ROOT:-/import/ml-sc-scratch1/mengmengj/output}"
+MODEL="${MODEL:-/sms-scratch/checkpoints/gemma-4-31B-it}"
+DATA_ROOT="${DATA_ROOT:-/sms-scratch/mengmengj/data}"
+OUT_ROOT="${OUT_ROOT:-/home/mengmengj/dspark_output}"
 
 # ---------------- mode presets ----------------
 MODE="${MODE:-overfit}"
@@ -164,10 +169,15 @@ TRAIN_DATA_RATIO="${TRAIN_DATA_RATIO:-0.9}"
 ACCUM_STEPS="${ACCUM_STEPS:-0}"
 if [ "${ACCUM_STEPS:-0}" -gt 1 ] 2>/dev/null; then
   TRAIN_SCRIPT="scripts/train_accum.py"
-  # MEASURED epoch length at 1 rank. The earlier 45,531 was a 75% sub-epoch
-  # checkpoint marker misread as an epoch end; the real epoch is 27,946 steps
-  # at 2 ranks (progress bar, 2026-08-06) => 55,892 at 1 rank.
-  _steps_per_epoch=$(( 55892 / TRAIN_GPUS_N ))
+  # MEASURED epoch length: 27,946 steps at 2 ranks over a ratio-0.9 split
+  # (progress bar, 2026-08-06) => 55,892 at 1 rank => 314,224/55,892 = 5.62
+  # conversations per packed rank-step. (The earlier 45,531 was a 75% sub-epoch
+  # checkpoint marker misread as an epoch end.) Steps/epoch scales with the
+  # train split, so recompute from TRAIN_DATA_RATIO instead of hardcoding.
+  TOTAL_SAMPLES="${TOTAL_SAMPLES:-349138}"
+  CONV_PER_STEP="${CONV_PER_STEP:-5.62}"
+  _steps_per_epoch=$(awk -v n="$TOTAL_SAMPLES" -v r="$TRAIN_DATA_RATIO" \
+      -v c="$CONV_PER_STEP" -v g="$TRAIN_GPUS_N" 'BEGIN{printf "%d", n*r/c/g}')
   SCHED_TOTAL="${SCHED_TOTAL:-$(( _steps_per_epoch * EPOCHS / ACCUM_STEPS ))}"
   ACCUM_ARGS=(--accumulation-steps "$ACCUM_STEPS"
               --scheduler-total-steps "$SCHED_TOTAL")
@@ -190,7 +200,9 @@ WARMUP_RATIO="${WARMUP_RATIO:-0.04}"
 if [ -n "${VLLM_PORT:-}" ]; then
   :
 else
-  VLLM_PORT=$(python - "$(( VLLM_TP * VLLM_DP + 2 ))" <<'PYPORT'
+  # python3, not python: this runs BEFORE the venv/conda activation, and slim
+  # images (vllm-openai) ship no bare `python` on PATH.
+  VLLM_PORT=$(python3 - "$(( VLLM_TP * VLLM_DP + 2 ))" <<'PYPORT'
 import socket, sys
 need = int(sys.argv[1])
 for base in range(8600, 9600, 16):
@@ -245,6 +257,10 @@ ON_GENERATE="${ON_GENERATE:-delete}"
 # With cache they must survive the job, so keep those on shared storage.
 if [ "$ON_GENERATE" = "delete" ] && [ -n "${SLURM_TMPDIR:-}" ] && [ -d "${SLURM_TMPDIR:-}" ]; then
   HS_PATH="${HS_PATH:-$SLURM_TMPDIR/hidden_states_$RUN_NAME}"
+elif [ "$ON_GENERATE" = "delete" ] && [ "$(df -BG --output=avail /dev/shm 2>/dev/null | tail -1 | tr -dc 0-9)" -ge 200 ] 2>/dev/null; then
+  # No SLURM scratch (standalone box): transient states go to RAM-backed
+  # /dev/shm (1.5T on the B200 box) instead of hammering NFS at ~400 MB/s.
+  HS_PATH="${HS_PATH:-/dev/shm/hidden_states_$RUN_NAME}"
 else
   HS_PATH="${HS_PATH:-$OUT_ROOT/hidden_states_$RUN_NAME}"
 fi
@@ -337,8 +353,17 @@ echo " shm         : $(df -h /dev/shm | tail -1)"
 echo "=========================================="
 
 # shellcheck disable=SC1090
-source "$CONDA_SH"
-conda activate "$CONDA_ENV"
+if [ -n "$VENV" ] && [ -f "$VENV/bin/activate" ]; then
+  source "$VENV/bin/activate"
+elif [ -f "$CONDA_SH" ]; then
+  source "$CONDA_SH"
+  conda activate "$CONDA_ENV"
+fi
+echo " python      : $(command -v python)"
+python -c "import speculators, vllm" 2>/dev/null || {
+  echo "!! python env lacks speculators/vllm -- set VENV or CONDA_ENV, or run SETUP=1 via run_local_podman.sh" >&2
+  exit 1
+}
 cd "$REPO"
 
 # ---------------- NCCL ----------------
@@ -412,7 +437,13 @@ else
   echo "=== training DSpark draft (torchrun, $TRAIN_GPUS_N ranks) ==="
   # Rendezvous pinned to loopback, matching the invocation Ravi has working on
   # this cluster: --standalone alone can pick a bad interface for the c10d store.
-  LAUNCHER=(torchrun --nnodes=1 --nproc_per_node "$TRAIN_GPUS_N"
+  # `python -m torch.distributed.run`, NOT bare `torchrun`: in a thin
+  # --system-site-packages venv the torchrun console script belongs to the
+  # SYSTEM torch install, so its shebang is the system python and every worker
+  # it spawns (sys.executable) runs OUTSIDE the venv -- imports of venv-only
+  # packages (datasets) then fail while repo-path imports still work, which is
+  # maximally confusing. Observed 2026-08-06. `python -m` pins the venv python.
+  LAUNCHER=(python -m torch.distributed.run --nnodes=1 --nproc_per_node "$TRAIN_GPUS_N"
             --rdzv-backend=c10d --rdzv-endpoint=127.0.0.1:29500
             --local-addr=127.0.0.1)
 fi
