@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import subprocess
 import sys
 import urllib.request
@@ -50,6 +51,24 @@ _PLACEHOLDER_MARKERS = (
     "FULL BENCHMARK DATA SHOULD BE FETCHED FROM THE SOURCE",
     "{article}",
 )
+
+# "{article}" is only a placeholder when it is an unsubstituted template field.
+# Real prompts (e.g. HLE physics/math) embed LaTeX preambles such as
+# ``\documentclass{article}`` or ``\documentclass[english,10pt]{article}``,
+# which must not be mistaken for one.
+_LATEX_ARG_RE = re.compile(r"\\[A-Za-z@]+\s*(?:\[[^\]]*\])?\s*\{article\}")
+
+
+def _has_placeholder(text: str | list) -> str | None:
+    """Return the placeholder marker found in *text*, or None if it is clean."""
+    # `turns` may be list-shaped (multi-turn); scan every turn.
+    if isinstance(text, list):
+        text = "\n".join(str(t) for t in text)
+    for marker in _PLACEHOLDER_MARKERS:
+        probe = _LATEX_ARG_RE.sub("", text) if marker == "{article}" else text
+        if marker in probe:
+            return marker
+    return None
 
 _ALL_CONFIGS = [
     "qualitative",
@@ -87,25 +106,52 @@ def split_config(flat_file: Path, out_dir: Path, config: str) -> int:
 
     use_category_only = config == "qualitative"
     buckets: dict[str, list[str]] = {}
+    # Rows whose external source failed to materialise come back with empty
+    # `turns`. Silently skipping them drops whole categories (e.g. every
+    # HLE-derived category when HF_TOKEN is unset, since cais/hle is gated),
+    # which then looks like the benchmark simply has fewer categories — so
+    # count them per category and fail loudly below.
+    empty: dict[str, int] = {}
 
     for row in rows:
         text = _extract_text(row)
         if not text:
+            cat = row.get("category", "?")
+            empty[cat] = empty.get(cat, 0) + 1
             continue
-        for marker in _PLACEHOLDER_MARKERS:
-            if marker in text:
-                cat = row.get("category", "?")
-                logger.error(
-                    "Placeholder text in %s/%s — re-run NVIDIA prepare.py first.",
-                    config,
-                    cat,
-                )
-                sys.exit(1)
+        marker = _has_placeholder(text)
+        if marker:
+            cat = row.get("category", "?")
+            logger.error(
+                "Placeholder text (%r) in %s/%s — re-run NVIDIA prepare.py first.",
+                marker,
+                config,
+                cat,
+            )
+            sys.exit(1)
 
         cat = (row.get("category") or "unknown").replace(" ", "_").replace("/", "_")
         sub = (row.get("sub_category") or "unknown").replace(" ", "_").replace("/", "_")
         key = cat if use_category_only else f"{cat}__{sub}"
         buckets.setdefault(key, []).append(text)
+
+    if empty:
+        total = sum(empty.values())
+        logger.error(
+            "%s: %d/%d rows have no prompt text — their external sources did not "
+            "materialise, so these categories would be silently truncated or "
+            "missing entirely:",
+            config,
+            total,
+            len(rows),
+        )
+        for cat, n in sorted(empty.items(), key=lambda kv: -kv[1]):
+            logger.error("    %-24s %d rows dropped", cat, n)
+        logger.error(
+            "Re-run NVIDIA prepare.py with access to every source "
+            "(gated ones such as cais/hle need `export HF_TOKEN=...`), then split again."
+        )
+        sys.exit(1)
 
     written = 0
     for key, texts in sorted(buckets.items()):

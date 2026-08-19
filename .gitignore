@@ -197,8 +197,12 @@ scripts/evaluate/speedbench_data/throughput_16k_low_entropy.jsonl
 
 # Generated server-eval results
 scripts/evaluate/mtp_server_eval/results/
+# ... and the YAML runner's, which also holds AgentX matrix.tsv / aiperf artifacts
+scripts/evaluate/experiments/results/
 
-# AgentX trace-replay client checkout (cloned on first run)
+# Legacy: the old AgentX client was a git checkout here. run_agentx.sh now drives
+# aiperf from its own venv and no longer clones anything; kept so a stale
+# checkout from before that change stays out of git status.
 scripts/evaluate/mtp_server_eval/.agentx/
 slurm-*.out
 logs/

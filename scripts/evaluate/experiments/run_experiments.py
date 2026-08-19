@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -41,6 +42,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 MTP_EVAL_DIR = HERE.parent / "mtp_server_eval"
 GUIDELLM_EVAL = MTP_EVAL_DIR / "run_guidellm_eval.py"
+AGENTX_EVAL = MTP_EVAL_DIR / "run_agentx.sh"
 
 # Need at least a baseline + one draft config to compute a speedup.
 MIN_EXPERIMENTS_FOR_COMPARISON = 2
@@ -56,14 +58,28 @@ DEFAULT_SERVER = {
 }
 DEFAULT_EVAL = {
     "backend": "vllm",  # which mtp_server_eval evaluator: vllm | sglang
-    # acceptance = sequential mtp_server_eval; throughput/sweep = GuideLLM
+    # acceptance = sequential mtp_server_eval; throughput/sweep = GuideLLM;
+    # agentx = AgentX agentic trace replay (run_agentx.sh)
     "mode": "acceptance",
     "benchmarks": ["aime", "gpqa", "livecodebench"],
     "num_samples": 50,
     "max_tokens": 4096,
     "temperature": 0.0,
 }
-EVAL_MODES = ("acceptance", "throughput", "sweep")
+EVAL_MODES = ("acceptance", "throughput", "sweep", "agentx")
+
+# Artifact each mode writes into out_dir; its presence means "this run produced results".
+MODE_ARTIFACT = {
+    "acceptance": "mtp_eval_summary.json",
+    "throughput": "acceptance.csv",
+    "sweep": "perf_results.csv",
+    "agentx": "matrix.tsv",
+}
+# Comparison script per mode (reads the artifacts above as `label=path`).
+MODE_COMPARE = {
+    "acceptance": "compare_speedup.py",
+    "agentx": "compare_agentx.py",
+}
 
 
 def deep_merge(base: dict, override: dict | None) -> dict:
@@ -124,12 +140,46 @@ def _as_csv(value) -> str:
     return str(value)
 
 
-def build_eval_command(evalcfg: dict, base_url: str, out_dir: Path) -> list[str]:
+def _as_space_sep(value) -> str:
+    """Space-separated form, so `users_list` accepts `[1, 8]` or `"1 8"` alike."""
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(x) for x in value)
+    return str(value)
+
+
+def build_eval_command(
+    evalcfg: dict, base_url: str, out_dir: Path, backbone: str
+) -> list[str]:
     mode = str(evalcfg.get("mode", "acceptance")).lower()
     if mode not in EVAL_MODES:
         sys.exit(
-            f"eval.mode must be acceptance|throughput|sweep (got {evalcfg.get('mode')!r})"
+            f"eval.mode must be {'|'.join(EVAL_MODES)} (got {evalcfg.get('mode')!r})"
         )
+    if mode == "agentx":
+        # run_agentx.sh is env-var driven; `env K=V ... script` keeps --dry-run output
+        # copy-pasteable instead of hiding the settings in the parent environment.
+        envs = {
+            "BACKEND": evalcfg["backend"],
+            "BASE_URL": base_url,
+            # Absolute: run_agentx.sh cd's to its own dir, and an absolute path
+            # also keeps --dry-run output unambiguous about where results land.
+            "RESULT_DIR": str(out_dir.resolve()),
+            "MODEL": evalcfg.get("model") or backbone,
+            "TEMPERATURE": str(evalcfg["temperature"]),
+        }
+        # Optional knobs: only pass through when set, so run_agentx.sh's own
+        # defaults stay the single source of truth for what they are.
+        for key, cfg_key in (
+            ("USERS_LIST", "users_list"),
+            ("DURATION", "duration"),
+            ("MAX_CONTEXT", "max_context"),
+            ("PUBLIC_DATASET", "public_dataset"),
+            ("TOKENIZER", "tokenizer"),
+            ("AIPERF_BIN", "aiperf_bin"),
+        ):
+            if evalcfg.get(cfg_key) is not None:
+                envs[key] = _as_space_sep(evalcfg[cfg_key])
+        return ["env", *[f"{k}={v}" for k, v in envs.items()], str(AGENTX_EVAL)]
     if mode in ("throughput", "sweep"):
         target = base_url.rstrip("/")
         if not target.endswith("/v1"):
@@ -240,7 +290,7 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
     base_url = f"http://{server['host']}:{server['port']}"
     out_dir = out_root / exp["name"]
     serve_cmd = build_serve_command(cfg, exp, server)
-    eval_cmd = build_eval_command(evalcfg, base_url, out_dir)
+    eval_cmd = build_eval_command(evalcfg, base_url, out_dir, cfg["backbone"])
     gpus = str(cfg.get("gpus", "")) if cfg.get("gpus") is not None else ""
 
     print(f"\n{'=' * 64}\n=== experiment: {exp['name']} ===")
@@ -251,8 +301,8 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
     else:
         print("  draft: (none — baseline)")
     print(f"  CUDA_VISIBLE_DEVICES={gpus or '(inherit)'}")
-    print(f"  serve: {' '.join(serve_cmd)}")
-    print(f"  eval : {' '.join(eval_cmd)}")
+    print(f"  serve: {shlex.join(serve_cmd)}")
+    print(f"  eval : {shlex.join(eval_cmd)}")
     if dry_run:
         return None
 
@@ -279,7 +329,8 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
         server_log.close()
         # let GPU memory settle before the next launch
         time.sleep(10)
-    summary = out_dir / "mtp_eval_summary.json"
+    mode = str(evalcfg.get("mode", "acceptance")).lower()
+    summary = out_dir / MODE_ARTIFACT[mode]
     return summary if summary.exists() else None
 
 
@@ -299,6 +350,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # These runs last hours and are usually piped to a log or nohup'd, where
+    # Python would block-buffer stdout and show nothing until exit. Line-buffer
+    # so progress is followable with `tail -f`.
+    sys.stdout.reconfigure(line_buffering=True)
+
     args = parse_args()
     cfg = load_config(args.config)
     out_root = args.output_dir or Path(cfg.get("output_dir", "./results/experiments"))
@@ -326,10 +382,17 @@ def main() -> None:
     if args.dry_run or len(summaries) < MIN_EXPERIMENTS_FOR_COMPARISON:
         return
 
-    # Speedup comparison (first experiment = baseline).
+    # Speedup comparison (first experiment = baseline). Per-experiment `eval`
+    # overrides could in principle differ; the top-level mode picks the comparer.
+    mode = str(deep_merge(DEFAULT_EVAL, cfg.get("eval"))["mode"]).lower()
+    comparer = MODE_COMPARE.get(mode)
+    if comparer is None:
+        # throughput/sweep write CSVs for plot.py; there is no table to print.
+        print(f"\n(no comparison step for eval.mode={mode}; see {out_root})")
+        return
     compare = [
         sys.executable,
-        str(MTP_EVAL_DIR / "compare_speedup.py"),
+        str(MTP_EVAL_DIR / comparer),
         *[f"{name}={path}" for name, path in summaries],
     ]
     print(f"\n{'=' * 64}\n=== speedup comparison ===")
