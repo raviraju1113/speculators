@@ -141,6 +141,8 @@ async def _poll_lock_async(fd, poll_interval):
 
 
 async def wait_for_lock_async(lock_path, timeout=10.0, poll_interval=0.1):
+    # O_RDWR, not O_RDONLY: on NFS flock() is emulated with POSIX record locks,
+    # and LOCK_EX on a read-only fd fails with EBADF.
     fd = os.open(lock_path, os.O_RDWR)
     try:
         await asyncio.wait_for(_poll_lock_async(fd, poll_interval), timeout=timeout)
@@ -152,6 +154,8 @@ async def wait_for_lock_async(lock_path, timeout=10.0, poll_interval=0.1):
 
 
 def wait_for_lock(lock_path, timeout=10.0, poll_interval=0.1):
+    # O_RDWR, not O_RDONLY: on NFS flock() is emulated with POSIX record locks,
+    # and LOCK_EX on a read-only fd fails with EBADF.
     fd = os.open(lock_path, os.O_RDWR)
     try:
         deadline = time.monotonic() + timeout

@@ -1,0 +1,521 @@
+{
+  "per_draft": {
+    "kimi_mtp_stem_mistakes.jsonl": [
+      {
+        "benchmark": "aime",
+        "n_items": 30,
+        "n_dirty": 0,
+        "n_clean": 30,
+        "n_unscored": 0,
+        "accept_all": 0.49137931034482757,
+        "accept_clean": 0.49137931034482757,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.47840563882754905,
+          0.5047763442496963
+        ],
+        "ci_all": [
+          0.47840563882754905,
+          0.5047763442496963
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "gpqa",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.4893386338995302,
+        "accept_clean": 0.4893386338995302,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.4805179698845531,
+          0.49832674467900856
+        ],
+        "ci_all": [
+          0.4805179698845531,
+          0.49832674467900856
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "livecodebench",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.4781961812320663,
+        "accept_clean": 0.4781961812320663,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.4669240584926087,
+          0.49135374788227215
+        ],
+        "ci_all": [
+          0.4669240584926087,
+          0.49135374788227215
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      }
+    ],
+    "redhat_mistakes.jsonl": [
+      {
+        "benchmark": "aime",
+        "n_items": 30,
+        "n_dirty": 0,
+        "n_clean": 30,
+        "n_unscored": 0,
+        "accept_all": 0.6695321723730815,
+        "accept_clean": 0.6695321723730815,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.6496021216192215,
+          0.6876984114724836
+        ],
+        "ci_all": [
+          0.6496021216192215,
+          0.6876984114724836
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "gpqa",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.6199886901395875,
+        "accept_clean": 0.6199886901395875,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.6065253743805017,
+          0.6325259821614149
+        ],
+        "ci_all": [
+          0.6065253743805017,
+          0.6325259821614149
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "livecodebench",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.643452402804802,
+        "accept_clean": 0.643452402804802,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.6336162844201666,
+          0.6548351965472007
+        ],
+        "ci_all": [
+          0.6336162844201666,
+          0.6548351965472007
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      }
+    ],
+    "run1_mistakes.jsonl": [
+      {
+        "benchmark": "aime",
+        "n_items": 30,
+        "n_dirty": 0,
+        "n_clean": 30,
+        "n_unscored": 0,
+        "accept_all": 0.3377730224321133,
+        "accept_clean": 0.3377730224321133,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.2858552149418391,
+          0.38548167251277066
+        ],
+        "ci_all": [
+          0.2858552149418391,
+          0.38548167251277066
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "gpqa",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.2972707521057174,
+        "accept_clean": 0.2972707521057174,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.2577494177159067,
+          0.3412240950178973
+        ],
+        "ci_all": [
+          0.2577494177159067,
+          0.3412240950178973
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "livecodebench",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.4691802195381622,
+        "accept_clean": 0.4691802195381622,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.45313771835077593,
+          0.4836990337652919
+        ],
+        "ci_all": [
+          0.45313771835077593,
+          0.4836990337652919
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      }
+    ],
+    "stem_code_math_900k_mistakes.jsonl": [
+      {
+        "benchmark": "aime",
+        "n_items": 30,
+        "n_dirty": 0,
+        "n_clean": 30,
+        "n_unscored": 0,
+        "accept_all": 0.5261953955135773,
+        "accept_clean": 0.5261953955135773,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.5118223327217555,
+          0.5416680258910789
+        ],
+        "ci_all": [
+          0.5118223327217555,
+          0.5416680258910789
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "gpqa",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.5027828209172892,
+        "accept_clean": 0.5027828209172892,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.4939111079273386,
+          0.5113099167415062
+        ],
+        "ci_all": [
+          0.4939111079273386,
+          0.5113099167415062
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "livecodebench",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.5113990968831454,
+        "accept_clean": 0.5113990968831454,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.4999291406148279,
+          0.524206034602731
+        ],
+        "ci_all": [
+          0.4999291406148279,
+          0.524206034602731
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      }
+    ],
+    "stem_code_mistakes.jsonl": [
+      {
+        "benchmark": "aime",
+        "n_items": 30,
+        "n_dirty": 0,
+        "n_clean": 30,
+        "n_unscored": 0,
+        "accept_all": 0.35503984651711923,
+        "accept_clean": 0.35503984651711923,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.2992326677479008,
+          0.40589004544899193
+        ],
+        "ci_all": [
+          0.2992326677479008,
+          0.40589004544899193
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "gpqa",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.32673591475936786,
+        "accept_clean": 0.32673591475936786,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.281563246000986,
+          0.37837465369851836
+        ],
+        "ci_all": [
+          0.281563246000986,
+          0.37837465369851836
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "livecodebench",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.5136385329857924,
+        "accept_clean": 0.5136385329857924,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.4964716571468534,
+          0.5295666701636288
+        ],
+        "ci_all": [
+          0.4964716571468534,
+          0.5295666701636288
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      }
+    ],
+    "stem_mistakes.jsonl": [
+      {
+        "benchmark": "aime",
+        "n_items": 30,
+        "n_dirty": 0,
+        "n_clean": 30,
+        "n_unscored": 0,
+        "accept_all": 0.34341794569067297,
+        "accept_clean": 0.34341794569067297,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.2909044666259069,
+          0.39112477516998895
+        ],
+        "ci_all": [
+          0.2909044666259069,
+          0.39112477516998895
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "gpqa",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.3190571147950832,
+        "accept_clean": 0.3190571147950832,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.27519654948327554,
+          0.3685675365352904
+        ],
+        "ci_all": [
+          0.27519654948327554,
+          0.3685675365352904
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      },
+      {
+        "benchmark": "livecodebench",
+        "n_items": 50,
+        "n_dirty": 0,
+        "n_clean": 50,
+        "n_unscored": 0,
+        "accept_all": 0.4743566210213297,
+        "accept_clean": 0.4743566210213297,
+        "accept_dirty": NaN,
+        "gap_all_minus_clean": 0.0,
+        "ci_clean": [
+          0.4581484781823056,
+          0.4890256765199495
+        ],
+        "ci_all": [
+          0.4581484781823056,
+          0.4890256765199495
+        ],
+        "ci_dirty": [
+          NaN,
+          NaN
+        ],
+        "dirty_minus_clean": NaN,
+        "ci_dirty_minus_clean": [
+          NaN,
+          NaN
+        ]
+      }
+    ]
+  },
+  "control": {}
+}

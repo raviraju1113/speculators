@@ -70,14 +70,24 @@ SPECULATOR_BENCHMARKS = (
 )
 SPECULATOR_REPO = "RedHatAI/speculator_benchmarks"
 SPEEDBENCH_BENCHMARKS = {
+    # The qualitative split is 11 categories x 80 prompts = 880 (SPEED-Bench
+    # paper, Table 1). All 11 are listed here; a prep run that yields fewer
+    # means some external sources did not materialise (see prepare_speedbench.py).
     "speed-coding": "qualitative_coding.jsonl",
+    "speed-humanities": "qualitative_humanities.jsonl",
+    "speed-math": "qualitative_math.jsonl",
     "speed-multilingual": "qualitative_multilingual.jsonl",
-    "speed-rag": "qualitative_rag.jsonl",
     "speed-qa": "qualitative_qa.jsonl",
+    "speed-rag": "qualitative_rag.jsonl",
+    "speed-reasoning": "qualitative_reasoning.jsonl",
+    "speed-roleplay": "qualitative_roleplay.jsonl",
+    "speed-stem": "qualitative_stem.jsonl",
+    "speed-summarization": "qualitative_summarization.jsonl",
     "speed-writing": "qualitative_writing.jsonl",
     # Card lists "low-entropy, 10k input" (512 prompts); closest public split is
-    # throughput_16k low_entropy (512). Override via SPEEDBENCH_DIR contents.
-    "speed-low-entropy": "throughput_16k_low_entropy.jsonl",
+    # throughput_16k low_entropy (512 = code_completion 302 + sort 210), which
+    # prepare_speedbench.py writes per sub-category. Override via SPEEDBENCH_DIR.
+    "speed-low-entropy": "throughput_16k_low_entropy__*.jsonl",
 }
 
 # Prompt templates mirror benchmark/math_reason conventions.
@@ -292,32 +302,47 @@ def prep_from_turns(name):
 
 
 def prep_from_speedbench(name):
-    """Convert a SPEED-Bench split file into mtp_server_eval data/<name>.jsonl."""
-    src = SPEEDBENCH_DIR / SPEEDBENCH_BENCHMARKS[name]
-    if not src.exists():
+    """Convert SPEED-Bench split file(s) into mtp_server_eval data/<name>.jsonl.
+
+    The mapped value is a filename or, for splits that prepare_speedbench.py
+    writes per sub-category (throughput_* configs), a glob covering them all.
+    """
+    pattern = SPEEDBENCH_BENCHMARKS[name]
+    srcs = (
+        sorted(SPEEDBENCH_DIR.glob(pattern))
+        if any(ch in pattern for ch in "*?[")
+        else [SPEEDBENCH_DIR / pattern]
+    )
+    srcs = [p for p in srcs if p.exists()]
+    if not srcs:
         print(
-            f"[{name}] source missing at {src}; run "
+            f"[{name}] source missing at {SPEEDBENCH_DIR / pattern}; run "
             f"`python ../prepare_speedbench.py --data-dir {SPEEDBENCH_DIR} "
             f"--download --configs qualitative,throughput_16k` first"
         )
         return
     recs = []
-    with src.open(encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            turns = row.get("turns")
-            if isinstance(turns, list) and turns and isinstance(turns[0], str):
-                prompt = turns[0]
-            elif isinstance(turns, str) and turns:
-                prompt = turns
-            else:
-                prompt = row.get("prompt")
-            if not isinstance(prompt, str) or not prompt:
-                continue
-            recs.append({"benchmark": name, "id": str(row.get("id", i)), "prompt": prompt})
+    for src in srcs:
+        with src.open(encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                turns = row.get("turns")
+                if isinstance(turns, list) and turns and isinstance(turns[0], str):
+                    prompt = turns[0]
+                elif isinstance(turns, str) and turns:
+                    prompt = turns
+                else:
+                    prompt = row.get("prompt")
+                if not isinstance(prompt, str) or not prompt:
+                    continue
+                # Prefix the source stem so ids stay unique across split files.
+                rid = f"{src.stem}:{row.get('id', i)}" if len(srcs) > 1 else str(
+                    row.get("id", i)
+                )
+                recs.append({"benchmark": name, "id": rid, "prompt": prompt})
     _write(f"{name}.jsonl", recs)
 
 

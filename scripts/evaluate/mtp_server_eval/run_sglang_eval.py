@@ -51,11 +51,28 @@ DATA_FILES = {
     "swe-bench-pro": "swe-bench-pro.jsonl",
     "swe-rebench": "swe-rebench.jsonl",
     "aa-lcr": "aa-lcr.jsonl",
+    # AA-LCR context-length sweep: same 100 questions truncated to each length,
+    # so acceptance differences isolate context length (../prepare_aa_lcr_sweep.py).
+    # Needs max_model_len >= bin + max_tokens.
+    "aa-lcr-1k": "aa-lcr-1k.jsonl",
+    "aa-lcr-2k": "aa-lcr-2k.jsonl",
+    "aa-lcr-4k": "aa-lcr-4k.jsonl",
+    "aa-lcr-8k": "aa-lcr-8k.jsonl",
+    "aa-lcr-16k": "aa-lcr-16k.jsonl",
+    "aa-lcr-32k": "aa-lcr-32k.jsonl",
+    # SPEED-Bench qualitative: all 11 categories x 80 prompts (see ../README.md)
     "speed-coding": "speed-coding.jsonl",
+    "speed-humanities": "speed-humanities.jsonl",
+    "speed-math": "speed-math.jsonl",
     "speed-multilingual": "speed-multilingual.jsonl",
-    "speed-rag": "speed-rag.jsonl",
     "speed-qa": "speed-qa.jsonl",
+    "speed-rag": "speed-rag.jsonl",
+    "speed-reasoning": "speed-reasoning.jsonl",
+    "speed-roleplay": "speed-roleplay.jsonl",
+    "speed-stem": "speed-stem.jsonl",
+    "speed-summarization": "speed-summarization.jsonl",
     "speed-writing": "speed-writing.jsonl",
+    # SPEED-Bench throughput slice
     "speed-low-entropy": "speed-low-entropy.jsonl",
     # RedHatAI/speculator_benchmarks (former evaluate.py defaults)
     "HumanEval": "HumanEval.jsonl",
@@ -266,7 +283,9 @@ def main():
         help=(
             "comma-separated subset of: aime,gpqa,livecodebench,gsm8k,math500,"
             "humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,"
-            "speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,"
+            "speed-coding,speed-humanities,speed-math,speed-multilingual,"
+            "speed-qa,speed-rag,speed-reasoning,speed-roleplay,speed-stem,"
+            "speed-summarization,speed-writing,"
             "speed-low-entropy"
         ),
     )

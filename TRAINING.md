@@ -1,0 +1,319 @@
+# Speculator Training Flow (SambaNova cluster setup)
+
+This is my end-to-end setup for training speculative-decoding drafts (EAGLE3 / MTP /
+D-Flash / P-EAGLE) against a frozen verifier, running on the `sngpu` scheduler inside
+the project Docker image. It's meant to get a colleague from a fresh checkout to a
+trained + evaluated draft without rediscovering the cluster-specific gotchas.
+
+If you just want the package overview / model formats, see [README.md](README.md).
+This doc is the *operational* recipe.
+
+---
+
+## 0. TL;DR
+
+```bash
+# 1. Prepare data (tokenize + loss-mask + token-freq)  — CPU, cheap
+python scripts/prepare_data.py \
+    --model google/gemma-4-31B-it \
+    --data ultrachat --max-samples 50000 --seq-length 8192 \
+    --output ultrachat_gemma4_31b_50k_seq_len_8k/
+
+# 2a. Online hidden states: start the verifier vLLM server (separate GPUs/node)
+python scripts/launch_vllm.py google/gemma-4-31B-it \
+    --hidden-states-path /shared/hidden_states -- --tensor-parallel-size 4
+
+# 2b. …OR generate them offline first (see §3).
+
+# 3. Train (submits a bare sngpu node -> project docker -> torchrun/FSDP)
+export WANDB_API_KEY=...
+bash scripts/submit_train.sh                       # on-policy EAGLE3, 2-layer draft
+NUM_LAYERS=1 bash scripts/submit_train.sh          # 1-layer variant
+
+# 4. Evaluate acceptance / speedup
+cd scripts/evaluate/experiments
+python run_experiments.py --config gemma4-kimi-mtp-300k.yaml
+```
+
+Everything below explains the pieces, the knobs, and why the wrappers exist.
+
+---
+
+## 1. Environment
+
+### Creating the conda environment
+
+Do this once inside the container (or on any box with the toolchain). It builds the
+`speculators` env the wrappers expect:
+
+```bash
+conda create -n speculators python=3.11 -y
+conda activate speculators
+
+# Install the package (editable) from the repo root
+pip install -e .
+
+# Extra deps for the evaluation scripts (vllm, guidellm, plotting, yaml, …)
+pip install -r scripts/evaluate/requirements.txt
+```
+
+`pip install -e .` is editable so host code edits take effect immediately (this is what
+makes the mounted-checkout overlay in `launch_interactive_docker.sh` work — no reinstall
+needed after editing `src/`). The eval requirements are only needed if you'll run §5.
+
+### Where training runs
+
+Training runs **inside the project Docker image**, not directly on the node. The
+`sngpu` scheduler has no `--shm-size`/`--ipc` knob, and the DataLoader passes large
+per-sample hidden-state tensors through `/dev/shm`; without a big shared-memory segment
+you hit `unable to allocate shared memory ... Resource temporarily unavailable`. So the
+pattern is always: **ask sngpu for a bare node, then launch the container with
+`--shm-size` + `--ipc=host` ourselves.**
+
+| Piece | Value (adjust paths to your user) |
+|---|---|
+| Docker image (batch) | `sc-artifacts2.sambanovasystems.com/sw-docker-scratch/speculators:ngc-24.12` |
+| Docker image (interactive) | `…/speculators:ngc-14.12.t3` |
+| Conda env | `speculators` |
+| `conda.sh` | `/import/ml-sc-scratch1/ravir/miniconda3/etc/profile.d/conda.sh` |
+| `HF_HOME` | `/import/ml-sc-scratch1/ravir/cache` |
+| WandB project | `eagle3-speculators` (needs `WANDB_API_KEY` in your env) |
+
+> ⚠️ The conda path, `HF_HOME`, and default `NODELIST` in `submit_train.sh` are
+> hard-coded to my scratch. Override them (see the env-var table in §4) or they'll
+> point at paths you can't write.
+
+### Interactive shell (debugging / iterating on code)
+
+```bash
+# Allocate an interactive node first:
+sngpu --cpu 92 --mem 900000 --gpu 4 --gputype a100m80 --time 5:59:00 --interactive
+# Then, from inside the allocation:
+bash launch_interactive_docker.sh
+```
+
+`launch_interactive_docker.sh` **stages just the code tree** (`src/`, `scripts/`, …)
+onto job-local scratch (`$SLURM_TMPDIR`) and mounts *that* over the image's baked-in
+`/workspace/speculators`, symlinking data/checkpoint dirs back to `/import`. This is
+because:
+
+- The full checkout is ~2.3 TB (dataset + `.git` + checkpoints); `cuda-docker-run-wrapper`
+  refuses NFS `-v` mounts outside `$SLURM_TMPDIR`, but only the few MB of *code* needs to
+  be live.
+- Without the overlay you silently run the **stale** `scripts/train.py` baked into the
+  image against your patched `src/speculators`.
+
+Re-run the script after editing code on the host to re-sync (it's a copy, not a live mount).
+
+---
+
+## 2. Data preparation
+
+`scripts/prepare_data.py` turns a raw dataset into the training format:
+
+1. applies the verifier's chat template + tokenizes,
+2. builds a **loss/assistant mask** (only assistant tokens contribute to loss),
+3. records **token-frequency stats** (`token_freq.pt`, used to build the pruned draft
+   vocab mappings `d2t.npy` / `t2d.npy`).
+
+```bash
+python scripts/prepare_data.py \
+    --model google/gemma-4-31B-it \
+    --data ultrachat \                 # shortcut name, HF id, or local .jsonl (repeatable)
+    --max-samples 50000 \
+    --seq-length 8192 \
+    --output ultrachat_gemma4_31b_50k_seq_len_8k/
+```
+
+Output lands in `--output/` as `*.arrow` + `token_freq.pt`. Re-running is a no-op unless
+you pass `--overwrite`.
+
+**Shortcut:** you can skip this step and pass `--data` straight to `train.py`, which
+tokenizes on the fly into `--data-path` (the cheap step only — hidden states are still
+generated online). Handy for quick runs; prefer the explicit `prepare_data.py` step for
+anything you'll reuse.
+
+### Off-policy / regenerated responses (optional)
+
+To train on responses regenerated by the *target* model (off-policy tokens), use the
+regeneration pipeline, then train with `--use-off-policy-tokens`:
+
+```bash
+scripts/response_regeneration/run_all.sh \
+    --model google/gemma-4-31B-it --dataset magpie --tp-size 4 --gpus 0,1,2,3
+```
+
+`run_all.sh` starts a vLLM server, regenerates, and tears the server down (it reaps the
+whole process group and refuses to start on GPUs still held by a stale server — set
+`RESPONSE_REGEN_KILL_STALE=1` to auto-clean). Output JSONL goes to your invocation dir
+(or `$SLURM_TMPDIR` — **copy it to persistent storage before the job ends**).
+
+---
+
+## 3. Hidden states (verifier features)
+
+The draft is trained to match the verifier's hidden states at specific layers. There are
+two ways to supply them:
+
+### Online (default) — generate on demand from a live vLLM endpoint
+
+Start the verifier with the hidden-states connector:
+
+```bash
+python scripts/launch_vllm.py google/gemma-4-31B-it \
+    --hidden-states-path /shared/hidden_states \
+    -- --tensor-parallel-size 4 --gpu-memory-utilization 0.9
+```
+
+- `--hidden-states-path` **must be reachable from the training node** (same node or a
+  shared network drive) — vLLM writes the features there and the DataLoader reads them.
+- Default target layers are `[2, L/2, L-3, L]`. If you override `--target-layer-ids`,
+  you **must pass the identical list to `train.py`** or the features won't line up.
+- In `train.py` this is controlled by `--vllm-endpoint`, `--on-missing generate`
+  (default), and `--on-generate {delete,cache}`. Use `--on-generate cache` for
+  **hybrid** training: generate on epoch 1, reuse from disk after.
+
+### Offline
+
+Generate hidden states ahead of time and point `--hidden-states-path` at the dump; run
+training with `--on-missing skip` (the `submit_train.sh` default) so it never calls
+vLLM.
+
+---
+
+## 4. Training
+
+`scripts/train.py` is the general entry point (EAGLE3 / D-Flash / P-EAGLE / MTP). It runs
+under `torchrun` and shards with FSDP.
+
+### The submit wrapper (batch runs)
+
+`scripts/submit_train.sh` is the way I launch batch jobs. It generates two git-ignored
+scripts and submits them:
+
+- `.job_<name>.sh` — **outer**, runs on the bare sngpu node, docker-runs the inner script
+  with `--shm-size 16G --ipc=host`.
+- `.job_<name>_inner.sh` — **inner**, runs in the container: `conda activate` +
+  `torchrun … scripts/train.py …`. Your `WANDB_API_KEY` is baked in here (git-ignored,
+  redacted from stdout).
+
+```bash
+export WANDB_API_KEY=...                              # kept out of git
+bash scripts/submit_train.sh                          # default: on-policy EAGLE3, 2-layer
+NUM_LAYERS=1 bash scripts/submit_train.sh             # 1-layer draft
+OFF_POLICY=1 NUM_LAYERS=1 bash scripts/submit_train.sh# off-policy baseline
+DRY_RUN=1 bash scripts/submit_train.sh                # print the scripts, don't submit
+
+# Power-user: forward a full train.py arg list verbatim (torchrun preamble still added)
+bash scripts/submit_train.sh --speculator-type mtp --verifier-name-or-path google/gemma-4-31B-it ...
+```
+
+Key env knobs (see the header of `submit_train.sh` for the full list):
+
+| Var | Meaning | Default |
+|---|---|---|
+| `NUM_LAYERS` | draft decoder layers (the main experimental variable) | `2` |
+| `OFF_POLICY` | `1` adds `--use-off-policy-tokens` | `0` |
+| `EPOCHS` / `LR` / `SEQ_LEN` | training length / LR / seq len | `5` / `1e-4` / `8192` |
+| `VERIFIER` | verifier model id/path | `google/gemma-4-31B-it` |
+| `DATA_PATH` / `HIDDEN_STATES_PATH` | prepared dataset / HS dir | ultrachat 50k |
+| `GPU` / `NPROC` / `CUDA_DEVICES` | GPUs requested / procs / device list | `4` / `4` / `0,1,2,3` |
+| `NODELIST` | sngpu node | `sc3-c98` |
+| `SAVE_PATH` / `RUN_NAME` | checkpoint dir / WandB run name | derived from above |
+
+Watch progress: `tail -f <JOBNAME>.out`.
+
+### Running train.py directly
+
+```bash
+# multi-GPU (FSDP)
+torchrun --standalone --nproc_per_node=4 scripts/train.py \
+    --verifier-name-or-path google/gemma-4-31B-it \
+    --data-path ultrachat_gemma4_31b_50k_seq_len_8k/ \
+    --speculator-type eagle3 --num-layers 2 --draft-arch llama \
+    --epochs 5 --lr 1e-4 --total-seq-len 8192 \
+    --on-missing skip --logger wandb --run-name my_run
+
+# single GPU
+python scripts/train.py ...
+```
+
+### How the draft is defined (pick exactly one)
+
+- `--from-pretrained <path|hf-id>` — finetune an existing draft, **or** (config-only
+  dir) init fresh weights from a saved speculator config. Takes precedence over everything.
+- `--draft-config <config>` — use a decoder config as the draft `transformer_layer_config`;
+  build the rest from CLI args.
+- decoder-shaping flags (`--num-layers`, `--draft-arch`, `--draft-hidden-act`,
+  `--sliding-window[-indices]`) — synthesize the decoder from the verifier config.
+
+These are mutually exclusive; `train.py` errors if you mix them. **MTP** is special: it
+reuses the verifier's own decoder config and extracts the native MTP head weights, so the
+shaping flags and `--draft-config` don't apply.
+
+### Useful flags
+
+- `--dry-run` — build + init the draft, save a checkpoint to `--save-path`, exit before
+  training. Validate the config/weights in vLLM, then feed it back via `--from-pretrained`.
+- `--speculator-type {eagle3,dflash,peagle,mtp}` — algorithm.
+- `--draft-vocab-size` (+ `token_freq.pt`) — pruned draft vocab via `d2t`/`t2d` mappings.
+- `--optimizer {adamw,muon}` — Muon applies to 2-D weight matrices, AdamW to the rest.
+- `--scheduler-type {linear,cosine,constant,none}`, `--checkpoint-freq` (`<1` = sub-epoch),
+  `--save-best`, `--no-resume-from-checkpoint`.
+- `--draft-attn-impl {simple_flex_attention,sdpa,eager}` — use `sdpa`/`eager` on hardware
+  without flex-attention. Note: with `simple_flex_attention`, `--total-seq-len` must be a
+  multiple of 128.
+
+Training auto-resumes from the last checkpoint in `--save-path` unless
+`--no-resume-from-checkpoint`. FSDP full-state-dict checkpoints are written per epoch
+(or per `--checkpoint-freq`), and `checkpoint_best` symlinks the lowest val-loss epoch.
+
+### Gemma-4 MTP (standalone path)
+
+`scripts/gemma4_mtp/train.py` is a separate DDP loop for TTT multi-step distillation of
+the Gemma-4 native MTP assistant (freezes the target + the assistant's tied
+head/embeddings, trains the decoder + projections). Optionally precompute target signals
+with `prepare_cache.py` to avoid loading the full target during training:
+
+```bash
+torchrun --nproc_per_node=4 scripts/gemma4_mtp/train.py \
+    --target /path/to/gemma4/target --assistant /path/to/gemma4/assistant \
+    --data train_regenerated.jsonl --output ./out/gemma4_mtp \
+    --epochs 1 --bf16 --ttt-steps 5
+```
+
+---
+
+## 5. Evaluation
+
+Acceptance rate / throughput / speedup live under
+[scripts/evaluate/experiments/](scripts/evaluate/experiments/). The runner launches one
+vLLM server per experiment (backbone alone, or with a draft via `--speculative-config`),
+runs the benchmark, stops the server, and prints a speedup table (first experiment =
+baseline).
+
+```bash
+cd scripts/evaluate/experiments
+python run_experiments.py --config gemma4-kimi-mtp-300k.yaml
+python run_experiments.py --config gemma4-kimi-mtp-300k.yaml --dry-run   # print commands only
+```
+
+Point a config's `experiments[].draft` at the `checkpoint_best` dir your training run
+produced. Benchmarks/samples/temperature are set in the YAML; greedy (`temperature: 0.0`)
+gives canonical acceptance. See [scripts/evaluate/experiments/README.md](scripts/evaluate/experiments/README.md)
+for the config schema.
+
+---
+
+## 6. Gotchas / lessons learned
+
+- **Shared memory:** always run training in the container with `--shm-size` + `--ipc=host`
+  (the submit wrapper does this). Bare sngpu containers OOM `/dev/shm`.
+- **Stale code:** when iterating, make sure you're running the mounted checkout, not the
+  image's baked-in copy (`launch_interactive_docker.sh` handles this).
+- **Target layer ids** must match between `launch_vllm.py` and `train.py`.
+- **Hidden-states path** must be visible to the training node (shared FS or same node).
+- **`$SLURM_TMPDIR` is node-local** — copy regen output / anything you want to keep to
+  persistent storage before the job ends.
+- **`WANDB_API_KEY`** is read from your shell env and only baked into the git-ignored
+  inner script — rotate it rather than committing it.

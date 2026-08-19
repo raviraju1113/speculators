@@ -18,16 +18,16 @@
 # max_model_len; remove it for a shorter / smaller-GPU run.
 
 engine: vllm
-backbone: REPLACE_WITH_BACKBONE_PATH_OR_HF_ID
-gpus: "0,1,2,3"
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+gpus: "0,1,2,3,4,5,6,7"
 
 server:
   host: 127.0.0.1
   port: 8000
-  tensor_parallel_size: 4
+  tensor_parallel_size: 8
   gpu_memory_utilization: 0.9
   # Raise for aa-lcr (~tens of k tokens); 8192 is enough if you drop aa-lcr.
-  max_model_len: 131072
+  max_model_len: 16384
   health_timeout: 1800
   extra_args: []
 
@@ -38,11 +38,19 @@ eval:
     - gsm8k
     - humaneval
     - mbpp
+    # SPEED-Bench qualitative: all 11 categories x 80 prompts.
     - speed-coding
+    - speed-humanities
+    - speed-math
     - speed-multilingual
     - speed-rag
+    - speed-reasoning
+    - speed-roleplay
+    - speed-stem
+    - speed-summarization
     - math500
-    - speed-low-entropy
+    # speed-low-entropy prompts are 15.8k-21.4k tokens; needs max_model_len >= 32768.
+    # - speed-low-entropy
     - swe-bench-pro
     - aa-lcr
     - mt-bench
@@ -63,12 +71,12 @@ eval:
   max_tokens: 4096
   temperature: 0.0        # greedy = canonical acceptance
 
-output_dir: ./results/full-eval
+output_dir: ./results/full-eval-gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math
 
 experiments:
   # First entry is the baseline (backbone alone) — the speedup denominator.
   - name: baseline
 
-  - name: draft_k5
-    draft: REPLACE_WITH_DRAFT_PATH_OR_HF_ID
-    num_speculative_tokens: 5
+  - name: eagle3
+    draft: /sms-scratch/ravira/checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math/checkpoint_best/
+    num_speculative_tokens: 3
