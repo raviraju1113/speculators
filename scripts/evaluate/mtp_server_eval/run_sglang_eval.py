@@ -51,6 +51,7 @@ DATA_FILES = {
     "swe-bench-pro": "swe-bench-pro.jsonl",
     "swe-rebench": "swe-rebench.jsonl",
     "aa-lcr": "aa-lcr.jsonl",
+    "bfcl": "bfcl.jsonl",
     "speed-coding": "speed-coding.jsonl",
     "speed-multilingual": "speed-multilingual.jsonl",
     "speed-rag": "speed-rag.jsonl",

@@ -24,6 +24,10 @@ Benchmark and evaluate your trained speculator models.
 
 Published GLM-5.2 native MTP evaluation results.
 
+## [Gemma-4-31B Assistant BFCL Results](gemma4_31b_assistant_bfcl_results.md)
+
+Speculative-decoding results for Gemma-4-31B-it with the official assistant draft on the BFCL function-calling benchmark.
+
 ## [Serve in vLLM](serve_vllm.md)
 
 Deploy your trained speculator models in vLLM for production inference.

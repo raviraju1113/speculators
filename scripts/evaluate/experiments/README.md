@@ -77,6 +77,18 @@ speedup table.
 - **Quick smoke test:** set `eval.benchmarks: [aime]` and `num_samples: 5` in the
   YAML and use `--only baseline,<one-draft>` before the full run.
 
+## Configs in this directory
+
+| Config | What it runs | Results |
+|---|---|---|
+| [`example.yaml`](./example.yaml) | Small smoke-test template | — |
+| [`full-eval.yaml`](./full-eval.yaml) | Full multi-domain suite template (edit backbone/draft first) | — |
+| [`glm52-eval.yaml`](./glm52-eval.yaml) | GLM-5.2 native MTP vs baseline | [GLM-5.2 MTP results](../../../docs/user_guide/tutorials/glm52_mtp_results.md) |
+| [`glm52-kvcache-ablation.yaml`](./glm52-kvcache-ablation.yaml) | GLM-5.2 KV-cache dtype ablation | same doc |
+| [`gemma4-31b.yaml`](./gemma4-31b.yaml) | Gemma-4-31B-it + assistant draft, k=3/5, math+code trio | — |
+| [`gemma4-31b-compare-1gpu.yaml`](./gemma4-31b-compare-1gpu.yaml) | Draft head-to-head (ours vs Google assistant vs RedHat eagle-3) on 1 GPU | — |
+| [`gemma4-31b-bfcl.yaml`](./gemma4-31b-bfcl.yaml) | Gemma-4-31B-it + assistant draft on BFCL function calling, k=3/5 | [BFCL results](../../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) — 2.62× (k=3) / 3.48× (k=5) decode speedup, ~90–96% acceptance |
+
 ## Config schema (`example.yaml`)
 
 ```yaml
@@ -98,7 +110,7 @@ eval:
   mode: acceptance                          # acceptance | throughput | sweep (GuideLLM)
   # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
   # math500, humaneval, mbpp, mt-bench, aime26, swe-bench-pro, swe-rebench, aa-lcr,
-  # speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
+  # bfcl, speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
   # speed-low-entropy, HumanEval, math_reasoning, qa, question, rag,
   # summarization, tool_call, translation, writing). Generate extras via
   # prepare_data.py / parent README.

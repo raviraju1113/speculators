@@ -11,6 +11,7 @@ contributors can see what landed without digging through git alone.
 
 | When | Change |
 |------|--------|
+| 2026-08-26 | **BFCL function calling** — `bfcl` (BFCL v3 AST core, `gorilla-llm/Berkeley-Function-Calling-Leaderboard`) wired through the converter, `prepare_data.py`, both eval registries, and `full-eval.yaml`. First results (Gemma-4-31B-it + assistant draft): [BFCL results doc](../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) via [`experiments/gemma4-31b-bfcl.yaml`](./experiments/gemma4-31b-bfcl.yaml). |
 | 2026-08-14 | **YAML GuideLLM modes honor `eval.benchmarks`.** `mode: throughput`/`sweep` reuse the same names as local `mtp_server_eval/data/<name>.jsonl` unless `eval.dataset` is set. |
 | 2026-08-14 | **Removed `evaluate.py`.** GuideLLM throughput/sweep lives in `mtp_server_eval/run_guidellm_eval.py` and is reached only via `run_eval.sh` (`MODE=throughput`/`sweep`) or YAML `eval.mode`. |
 | 2026-08-14 | **YAML full-eval entrypoint** — [`experiments/full-eval.yaml`](./experiments/full-eval.yaml) + [`run_full_eval.sh`](./experiments/run_full_eval.sh); guide: [How to run a full evaluation](#how-to-run-a-full-evaluation). |
@@ -159,6 +160,7 @@ prepare) as `mtp_server_eval/data/<name>.jsonl`. The same names are GuideLLM
 | `gsm8k`, `math500`, `humaneval`, `mbpp`, `mt-bench`, `aime26` | From `eval_datasets/` |
 | `swe-bench-pro`, `swe-rebench` | SWE-style; large — often kept off-git |
 | `aa-lcr` | Long-context (~tens of k tokens) |
+| `bfcl` | BFCL v3 function calling (AST core: simple/multiple/parallel/parallel-multiple) |
 
 ### SPEED-Bench (included)
 

@@ -51,6 +51,7 @@ eval:
     - speed-qa
     - speed-writing
     - aime26
+    - bfcl
     # RedHatAI/speculator_benchmarks (former evaluate.py defaults)
     - HumanEval
     - math_reasoning

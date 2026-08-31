@@ -1,0 +1,44 @@
+# BFCL-only speculative-decoding eval: gemma-4-31b-it backbone
+# + gemma-4-31B-it-assistant draft (both local).
+#
+# BFCL v3 AST core (simple/multiple/parallel/parallel_multiple) — long
+# structured-schema prefill, short low-entropy function-call decode.
+# Prepare data once:  python ../mtp_server_eval/prepare_data.py --only bfcl
+#
+# Run:  python run_experiments.py --config gemma4-31b-bfcl.yaml --dry-run
+#       python run_experiments.py --config gemma4-31b-bfcl.yaml
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it     # target / verifier (local, ~62GB)
+gpus: "0,1,2,3"                                        # 4x A100 80GB on this box
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [bfcl]
+  num_samples: 100                                     # of 1000 prompts (0 = all)
+  max_tokens: 2048                                     # function-call outputs are short
+  temperature: 0.0                                     # greedy = canonical acceptance
+
+output_dir: ./results/gemma4-31b-bfcl
+
+experiments:
+  # First entry is the baseline (backbone alone) — the speedup denominator.
+  - name: baseline
+
+  - name: assistant_k3
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 3
+
+  - name: assistant_k5
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 5
