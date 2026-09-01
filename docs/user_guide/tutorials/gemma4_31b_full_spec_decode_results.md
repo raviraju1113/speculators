@@ -50,7 +50,7 @@ vLLM 0.24 cannot serve DSpark (`method=dspark` landed in 0.25; 0.28 is required 
 
 ## Throughput (decode tok/s vs baseline)
 
-| benchmark | n | baseline | Google Assistant (MTP) | Eagle-3 Qwen (Ravi) | Eagle-3 Llama (John) | DSpark SWA (Mengmeng) | × MTP | × Ravi | × John | × Mengmeng |
+| benchmark | n | baseline | Google Assistant (MTP) | Eagle-3 Qwen | Eagle-3 Llama | DSpark SWA | × Google Assistant (MTP) | × Eagle-3 Qwen | × Eagle-3 Llama | × DSpark SWA |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | aime | 30 | 54.3 | 168.8 | 121.9 | 138.2 | 211.6 | **3.11×** | **2.24×** | **2.55×** | **3.90×** |
 | gpqa | 50 | 54.6 | 155.4 | 98.5 | 109.6 | 157.9 | **2.85×** | **1.80×** | **2.01×** | **2.89×** |
