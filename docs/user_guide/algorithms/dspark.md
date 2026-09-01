@@ -61,3 +61,4 @@ DSpark is based on research from DeepSeek: [arXiv Paper](https://arxiv.org/abs/2
 
 - [DFlash](dflash.md) -- The base algorithm DSpark extends
 - [Train a Speculator](../tutorials/train.md) -- Step-by-step training guide (select DSpark, then online, offline, or hybrid)
+- [Gemma-4-31B Full-Suite Spec Decode Results](../tutorials/gemma4_31b_full_spec_decode_results.md) -- DSpark SWA (Mengmeng) vs Google Assistant (MTP) / Eagle-3 on the 25-bench suite

@@ -308,20 +308,10 @@ Every metric on one row per (benchmark, config), including baseline.
 
 ## Observations
 
-- **Math / code:** DSpark SWA (Mengmeng) leads every other draft on accept
-  length (gsm8k 6.43, math500 6.59, math_reasoning 6.36, humaneval 6.14,
-  aime 5.95) and on decode tok/s. That is the training mix (kimi / nemotron
-  782k: STEM + code).
-- **Function calling:** Google Assistant (MTP) still edges DSpark SWA (Mengmeng)
-  on BFCL (AL 5.59 / AR 92% vs 5.14 / 52%). Assistant drafts at k=5 with much
-  higher per-token accept rate; DSpark's longer block still lands similar tok/s.
-- **Chat / writing / multilingual:** Google Assistant (MTP) wins accept rate by
-  a wide margin (speed-multilingual 69% vs DSpark SWA (Mengmeng) 16%). DSpark
-  still beats both Eagle-3 drafts on most of these benches.
-- **Eagle-3 ranking is stable:** Eagle-3 Llama (John) beats Eagle-3 Qwen (Ravi)
-  on decode tok/s on every bench, and on accept length on 24/25
-  (speed-multilingual is a tie: 1.951 vs 1.957). Both trail Google Assistant
-  (MTP) and (except chat/multilingual) DSpark SWA (Mengmeng).
+DSpark SWA (Mengmeng) wins math/code (gsm8k AL 6.43, math500 6.59) and beats
+both Eagle-3 drafts on most benches. Google Assistant (MTP) still wins chat,
+multilingual, and BFCL (AR 92% vs 52%). Eagle-3 Llama (John) beats Eagle-3
+Qwen (Ravi) 25/25 on decode tok/s.
 
 ## Raw outputs
 

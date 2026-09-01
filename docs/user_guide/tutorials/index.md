@@ -28,6 +28,10 @@ Published GLM-5.2 native MTP evaluation results.
 
 Speculative-decoding results for Gemma-4-31B-it with the official assistant draft on the BFCL function-calling benchmark.
 
+## [Gemma-4-31B Full-Suite Spec Decode Results](gemma4_31b_full_spec_decode_results.md)
+
+25-benchmark comparison of Gemma-4-31B-it baseline vs Google Assistant (MTP), Eagle-3 Qwen (Ravi), Eagle-3 Llama (John), and DSpark SWA (Mengmeng).
+
 ## [Serve in vLLM](serve_vllm.md)
 
 Deploy your trained speculator models in vLLM for production inference.

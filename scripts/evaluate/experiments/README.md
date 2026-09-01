@@ -86,6 +86,10 @@ speedup table.
 | [`glm52-eval.yaml`](./glm52-eval.yaml) | GLM-5.2 native MTP vs baseline | [GLM-5.2 MTP results](../../../docs/user_guide/tutorials/glm52_mtp_results.md) |
 | [`glm52-kvcache-ablation.yaml`](./glm52-kvcache-ablation.yaml) | GLM-5.2 KV-cache dtype ablation | same doc |
 | [`gemma4-31b.yaml`](./gemma4-31b.yaml) | Gemma-4-31B-it + assistant draft, k=3/5, math+code trio | — |
+| [`gemma4-31b-full.yaml`](./gemma4-31b-full.yaml) | Full 25-bench suite: baseline + Google Assistant (MTP) k=3/5 | [full-suite results](../../../docs/user_guide/tutorials/gemma4_31b_full_spec_decode_results.md) |
+| [`gemma4-31b-full-eagle3.yaml`](./gemma4-31b-full-eagle3.yaml) | Same suite, Eagle-3 Qwen (Ravi) k=3/5 | same doc |
+| [`gemma4-31b-full-redhat-ft.yaml`](./gemma4-31b-full-redhat-ft.yaml) | Same suite, Eagle-3 Llama (John) k=3/5 | same doc |
+| [`gemma4-31b-full-dspark-nemo782k.yaml`](./gemma4-31b-full-dspark-nemo782k.yaml) | Same suite, DSpark SWA (Mengmeng) k=8 | same doc |
 | [`gemma4-31b-compare-1gpu.yaml`](./gemma4-31b-compare-1gpu.yaml) | Draft head-to-head (ours vs Google assistant vs RedHat eagle-3) on 1 GPU | — |
 | [`gemma4-31b-bfcl.yaml`](./gemma4-31b-bfcl.yaml) | Gemma-4-31B-it + assistant draft on BFCL function calling, k=3/5 | [BFCL results](../../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) — 2.62× (k=3) / 3.48× (k=5) decode speedup, ~90–96% acceptance |
 
