@@ -30,7 +30,7 @@ Speculative-decoding results for Gemma-4-31B-it with the official assistant draf
 
 ## [Gemma-4-31B Full-Suite Spec Decode Results](gemma4_31b_full_spec_decode_results.md)
 
-25-benchmark comparison of Gemma-4-31B-it baseline vs Google Assistant (MTP), Eagle-3 Qwen (Ravi), Eagle-3 Llama (John), and DSpark SWA (Mengmeng).
+25-benchmark comparison of Gemma-4-31B-it baseline vs Google Assistant (MTP), Eagle-3 Qwen (Ravi), Eagle-3 Llama (John), and DSpark Qwen (Mengmeng).
 
 ## [Serve in vLLM](serve_vllm.md)
 
