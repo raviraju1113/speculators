@@ -1,0 +1,52 @@
+# AgentX concurrency sweep: gemma-4-31B-it + the same drafts as the sequential
+# full-suite eval (Google Assistant MTP, Eagle-3 Qwen, Eagle-3 Llama).
+#
+# Replays Claude-Code traces at USERS=1/8/16 and records decode tok/s,
+# accept_len, accept_rate, out_tok_s — the load-test counterpart of
+# gemma4-31b-full*.yaml (those are concurrency=1 sequential benches).
+#
+# max_model_len 32768: AgentX traces are long-context. USERS=16 may hit KV
+# pressure; if a cell collapses, rerun with users_list: [1, 4, 8].
+#
+# vLLM 0.24 (conda env speculator). DSpark is a separate YAML (needs 0.28).
+#
+#   python run_experiments.py --config gemma4-31b-agentx.yaml --dry-run
+#   python run_experiments.py --config gemma4-31b-agentx.yaml
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: agentx
+  temperature: 0.0
+  users_list: [1, 8, 16]
+  duration: 600          # seconds per concurrency; 1800 for a longer run
+  max_context: 32768     # capped to server.max_model_len
+
+output_dir: ./results/gemma4-31b-agentx
+
+experiments:
+  - name: baseline
+
+  - name: assistant_k5
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 5
+
+  - name: eagle3_k5
+    draft: /nvmedata/hf_checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math
+    num_speculative_tokens: 5
+
+  - name: redhat_ft_k5
+    draft: /nvmedata/hf_checkpoints/gemma4_redhat_draft_ft_2026-07-26_06-06-06
+    num_speculative_tokens: 5

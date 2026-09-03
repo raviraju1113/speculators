@@ -1,0 +1,40 @@
+# AgentX concurrency sweep: DSpark Qwen (block_size=8) on the same Gemma-4-31B-it
+# backbone / GPUs / context as gemma4-31b-agentx.yaml. Baseline is skipped —
+# reuse results/gemma4-31b-agentx/baseline/matrix.tsv.
+#
+# vLLM 0.28.0+cu129 (venv /nvmedata/chenw/envs/speculator-vllm028).
+#
+#   source /nvmedata/chenw/envs/speculator-vllm028/bin/activate
+#   export CUDA_HOME=/usr/local/cuda-12.9 PATH="$CUDA_HOME/bin:$PATH"
+#   export PYTHONUNBUFFERED=1 FLASHINFER_DISABLE_VERSION_CHECK=1
+#   python run_experiments.py --config gemma4-31b-agentx-dspark.yaml
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: agentx
+  temperature: 0.0
+  users_list: [1, 8, 16]
+  duration: 600
+  max_context: 32768
+
+output_dir: ./results/gemma4-31b-agentx
+
+experiments:
+  - name: dspark_k8
+    draft: /nvmedata/hf_checkpoints/gemma4_31b_dspark_nemo782k_scratch
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark

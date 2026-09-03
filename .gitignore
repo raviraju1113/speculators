@@ -197,3 +197,4 @@ scripts/evaluate/mtp_server_eval/.agentx/
 slurm-*.out
 logs/
 output/
+scripts/evaluate/experiments/results/gemma4-31b-agentx/eagle3_k5/users8/trace_replay/progress.json

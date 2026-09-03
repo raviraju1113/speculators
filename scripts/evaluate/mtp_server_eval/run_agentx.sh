@@ -179,9 +179,12 @@ PY
     echo "==> [users=$users] decode_tok_s=${decode_tps}  accept_len=${acc_len}  accept_rate=${acc_rate}  (wall-clock out_tok_s=${out_tps})"
     echo -e "${users}\t${decode_tps}\t${acc_len}\t${acc_rate}\t${out_tps}" > "$out_dir/result.row"
 
-    { echo -e "$MATRIX_HEADER"
+    {
+      echo -e "$MATRIX_HEADER"
       for u in $USERS_LIST; do
-        [[ -f "$RESULT_DIR/users${u}/result.row" ]] && cat "$RESULT_DIR/users${u}/result.row"
+        if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
+          cat "$RESULT_DIR/users${u}/result.row"
+        fi
       done
     } > "$RESULT_DIR/matrix.tsv"
 }

@@ -1,0 +1,4 @@
+users	baseline:decode_tok_s	baseline:accept_len	baseline:accept_rate	baseline:out_tok_s	Google Assistant (MTP) k=5:decode_tok_s	Google Assistant (MTP) k=5:accept_len	Google Assistant (MTP) k=5:accept_rate	Google Assistant (MTP) k=5:out_tok_s	Eagle-3 Qwen k=5:decode_tok_s	Eagle-3 Qwen k=5:accept_len	Eagle-3 Qwen k=5:accept_rate	Eagle-3 Qwen k=5:out_tok_s	DSpark Qwen k=8:decode_tok_s	DSpark Qwen k=8:accept_len	DSpark Qwen k=8:accept_rate	DSpark Qwen k=8:out_tok_s
+1	42.5	NA	NA	12	62.6	3.622	0.5244	12	35.5	1.984	0.1967	12	64.0	3.185	0.2731	12
+8	22.0	NA	NA	72	28.3	3.547	0.5094	89	17.0	1.872	0.1744	66	30.6	3.202	0.2752	95
+16	10.4	NA	NA	89	12.8	3.584	0.5168	101	8.2	1.872	0.1745	71	12.6	3.346	0.2932	98

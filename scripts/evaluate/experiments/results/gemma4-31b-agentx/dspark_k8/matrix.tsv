@@ -1,0 +1,4 @@
+users	decode_tok_s	accept_len	accept_rate	out_tok_s
+1	64.0	3.185	0.2731	12
+8	30.6	3.202	0.2752	95
+16	12.6	3.346	0.2932	98

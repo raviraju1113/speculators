@@ -90,6 +90,8 @@ speedup table.
 | [`gemma4-31b-full-eagle3.yaml`](./gemma4-31b-full-eagle3.yaml) | Same suite, Eagle-3 Qwen (Ravi) k=3/5 | same doc |
 | [`gemma4-31b-full-redhat-ft.yaml`](./gemma4-31b-full-redhat-ft.yaml) | Same suite, Eagle-3 Llama (John) k=3/5 | same doc |
 | [`gemma4-31b-full-dspark-nemo782k.yaml`](./gemma4-31b-full-dspark-nemo782k.yaml) | Same suite, DSpark Qwen (Mengmeng) k=8 | same doc |
+| [`gemma4-31b-agentx.yaml`](./gemma4-31b-agentx.yaml) | AgentX concurrency 1/8/16: baseline + Assistant / Eagle-3 Qwen / Eagle-3 Llama k=5 | — |
+| [`gemma4-31b-agentx-dspark.yaml`](./gemma4-31b-agentx-dspark.yaml) | Same AgentX sweep, DSpark Qwen k=8 (vLLM 0.28) | — |
 | [`gemma4-31b-compare-1gpu.yaml`](./gemma4-31b-compare-1gpu.yaml) | Draft head-to-head (ours vs Google assistant vs RedHat eagle-3) on 1 GPU | — |
 | [`gemma4-31b-bfcl.yaml`](./gemma4-31b-bfcl.yaml) | Gemma-4-31B-it + assistant draft on BFCL function calling, k=3/5 | [BFCL results](../../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) — 2.62× (k=3) / 3.48× (k=5) decode speedup, ~90–96% acceptance |
 
@@ -111,7 +113,11 @@ server:
 
 eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
-  mode: acceptance                          # acceptance | throughput | sweep (GuideLLM)
+  mode: acceptance                          # acceptance | throughput | sweep (GuideLLM) | agentx
+  # AgentX-only (when mode is agentx): concurrency sweep via run_agentx.sh
+  # users_list: [1, 8, 16]
+  # duration: 600                             # seconds per concurrency level
+  # max_context: 32768                        # default: cap to server.max_model_len
   # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
   # math500, humaneval, mbpp, mt-bench, aime26, swe-bench-pro, swe-rebench, aa-lcr,
   # bfcl, speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,

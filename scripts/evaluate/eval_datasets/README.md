@@ -1,85 +1,66 @@
 # Benchmark eval datasets
 
-Prompt sets for speculative-decoding acceptance-rate / throughput evaluation with
-[`../mtp_server_eval/run_eval.sh`](../mtp_server_eval/run_eval.sh) (`MODE=acceptance`
-or GuideLLM `MODE=throughput`/`sweep`).
+Prompt sources for the Gemma-4-31B 25-benchmark suite in
+[`gemma4_31b_full_spec_decode_results.md`](../../../docs/user_guide/tutorials/gemma4_31b_full_spec_decode_results.md)
+(`gemma4-31b-full.yaml`, `mode: acceptance`).
 
-Each `*.jsonl` file stores one benchmark, one row per example, in the format:
+The eval reads `mtp_server_eval/data/<name>.jsonl`. Turns files in **this**
+folder (`{"turns": [...]}`) are converted by
+[`../mtp_server_eval/prepare_data.py`](../mtp_server_eval/prepare_data.py)
+(first user turn → `prompt`). Other benches are shipped, SPEED-Bench, or
+`RedHatAI/speculator_benchmarks` — they are not stored here.
 
-```json
-{"turns": ["<user turn 1>", "<user turn 2>", ...]}
-```
+Skipped in that run (no JSONL on the box): `aa-lcr`, `speed-low-entropy`.
 
-## Included datasets
+## The 25 benches
 
-**DeepSpec-style (shipped or convertible):**
+| Eval name | n | Source | This folder |
+|-----------|--:|--------|-------------|
+| `aime` | 30 | shipped `mtp_server_eval/data/aime.jsonl` (AIME 2024 parquet / `prepare_data.py`) | no — not `aime24.jsonl` |
+| `gpqa` | 50 | shipped `gpqa_diamond.jsonl` (`Idavidrein/gpqa`) | no |
+| `livecodebench` | 50 | `prepare_data.py` from `livecodebench/code_generation_lite` | no |
+| `gsm8k` | 50 | `openai/gsm8k` | `gsm8k.jsonl` |
+| `humaneval` | 50 | `openai/openai_humaneval` | `humaneval.jsonl` |
+| `mbpp` | 50 | `google-research-datasets/mbpp` | `mbpp.jsonl` |
+| `math500` | 50 | `HuggingFaceH4/MATH-500` | `math500.jsonl` |
+| `mt-bench` | 50 | `HuggingFaceH4/mt_bench_prompts` | `mt-bench.jsonl` |
+| `aime26` | 30 | `MathArena/aime_2026` | `aime26.jsonl` |
+| `bfcl` | 50 | BFCL v3 AST core (`gorilla-llm/Berkeley-Function-Calling-Leaderboard`) | `bfcl.jsonl` |
+| `swe-bench-pro` | 50 | `ScaleAI/SWE-bench_Pro` | `swe-bench-pro.jsonl` (often scratch) |
+| `speed-coding` | 50 | NVIDIA SPEED-Bench qualitative / coding | no |
+| `speed-multilingual` | 47 | qualitative / multilingual | no |
+| `speed-rag` | 50 | qualitative / RAG | no |
+| `speed-qa` | 50 | qualitative / QA | no |
+| `speed-writing` | 50 | qualitative / writing | no |
+| `HumanEval` | 50 | `RedHatAI/speculator_benchmarks` | no |
+| `math_reasoning` | 50 | same | no |
+| `qa` | 50 | same | no |
+| `question` | 50 | same | no |
+| `rag` | 50 | same | no |
+| `summarization` | 50 | same | no |
+| `tool_call` | 50 | same | no |
+| `translation` | 50 | same | no |
+| `writing` | 50 | same | no |
 
-| File | Hugging Face source |
-|------|---------------------|
-| `gsm8k.jsonl` | `openai/gsm8k` |
-| `math500.jsonl` | `HuggingFaceH4/MATH-500` |
-| `aime24.jsonl` | `HuggingFaceH4/aime_2024` |
-| `aime25.jsonl` | `MathArena/aime_2025` |
-| `aime26.jsonl` | `MathArena/aime_2026` |
-| `humaneval.jsonl` | `openai/openai_humaneval` |
-| `mbpp.jsonl` | `google-research-datasets/mbpp` |
-| `lbpp.jsonl` | `CohereLabs/lbpp` |
-| `livecodebench.jsonl` | `livecodebench/code_generation_lite` |
-| `mt-bench.jsonl` | `HuggingFaceH4/mt_bench_prompts` |
-| `alpaca.jsonl` | `tatsu-lab/alpaca` |
-| `arena-hard-v2.jsonl` | (shipped) |
-| `swe-bench.jsonl` | `princeton-nlp/SWE-bench_Lite` |
-| `swe-bench-pro.jsonl` | `ScaleAI/SWE-bench_Pro` (large — prefer scratch `turns/`; `mtp_server_eval/data/` copy may be shipped) |
-| `swe-rebench.jsonl` | `nebius/SWE-rebench` (large — scratch only) |
+`humaneval` and `HumanEval` are different prompt sets.
 
-**SPEED-Bench** (NVIDIA; map into `mtp_server_eval` as `speed-*`):
+SPEED-Bench: [`../prepare_speedbench.py`](../prepare_speedbench.py) then `prepare_data.py`.
+RedHat subsets: `python ../mtp_server_eval/prepare_data.py --only HumanEval,...`.
 
-| Eval name | How to build | Source split |
-|-----------|----------------|--------------|
-| `speed-coding` | [`../prepare_speedbench.py`](../prepare_speedbench.py) then `prepare_data.py` | qualitative / coding |
-| `speed-multilingual` | same | qualitative / multilingual |
-| `speed-rag` | same | qualitative / RAG |
-| `speed-qa` | same | qualitative / QA |
-| `speed-writing` | same | qualitative / writing |
-| `speed-low-entropy` | same | `throughput_16k` / `low_entropy` |
-
-Large dumps (`aa-lcr`, `swe-rebench`, `speed-low-entropy`) may live under
-`/import/ml-sc-scratch5/chenw/datasets/eval/` (gitignored symlinks). AA-LCR:
-[`../prepare_aa_lcr.py`](../prepare_aa_lcr.py). See the parent
-[`README.md`](../README.md) benchmark table.
-
-## Using them with GuideLLM (`run_eval.sh MODE=throughput`)
-
-GuideLLM reads a single text column (`prompt`). Convert the `turns` files first:
+## Regenerating turns files in this folder
 
 ```bash
-python scripts/evaluate/eval_datasets/to_guidellm.py
-MODE=throughput BASE_URL=http://localhost:8000 \
-  DATASET=scripts/evaluate/eval_datasets/guidellm \
-  SUBSETS=gsm8k,humaneval,math500 \
-  ./scripts/evaluate/mtp_server_eval/run_eval.sh
-```
-
-## Regenerating from source
-
-[`convert_eval_datasets_to_jsonl.py`](./convert_eval_datasets_to_jsonl.py) rebuilds
-the `turns` files from their upstream Hugging Face datasets:
-
-```bash
-python scripts/evaluate/eval_datasets/convert_eval_datasets_to_jsonl.py --list-supported
 python scripts/evaluate/eval_datasets/convert_eval_datasets_to_jsonl.py openai/gsm8k
 python scripts/evaluate/eval_datasets/convert_eval_datasets_to_jsonl.py MathArena/aime_2026
+python scripts/evaluate/eval_datasets/convert_eval_datasets_to_jsonl.py gorilla-llm/Berkeley-Function-Calling-Leaderboard
 python scripts/evaluate/eval_datasets/convert_eval_datasets_to_jsonl.py ScaleAI/SWE-bench_Pro
-python scripts/evaluate/eval_datasets/convert_eval_datasets_to_jsonl.py nebius/SWE-rebench
 ```
-By default the converter refuses to overwrite an existing JSONL.
 
-## Provenance & license
+By default the converter refuses to overwrite an existing JSONL. Extra converter
+targets (`aime24`, `aime25`, `lbpp`, `alpaca`, `swe-bench` Lite, …) are **not**
+in the 25-bench results table.
 
-The DeepSpec-adapted `*.jsonl` files and `convert_eval_datasets_to_jsonl.py` are
-adapted from [deepseek-ai/DeepSpec](https://github.com/deepseek-ai/DeepSpec)
-(commit `005e03b`), **MIT-licensed** (Copyright (c) 2026 The DeepSpec Authors).
-Upstream benchmarks retain their own licenses — see the source table in
-`convert_eval_datasets_to_jsonl.py`. SPEED-Bench and AA-LCR have separate
-upstream terms; do not redistribute materialised prompt dumps without checking
-those licenses.
+## Provenance
+
+Turns converters are adapted from [deepseek-ai/DeepSpec](https://github.com/deepseek-ai/DeepSpec)
+(commit `005e03b`), MIT. Upstream datasets keep their own licenses.
