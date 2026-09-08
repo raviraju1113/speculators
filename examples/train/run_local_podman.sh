@@ -186,6 +186,7 @@ INNERSCRIPT="$REPO/examples/train/.job_${JOBNAME}_inner.sh"
   printf 'export ACCUM_STEPS=%q\n'     "${ACCUM_STEPS:-23}"
   [ -n "${SCHED_TOTAL:-}" ] && printf 'export SCHED_TOTAL=%q\n' "$SCHED_TOTAL"
   [ -n "${GPU_IDS:-}" ]     && printf 'export GPU_IDS=%q\n' "$GPU_IDS"
+  [ -n "${FULL_ATTENTION_INDICES:-}" ] && printf 'export FULL_ATTENTION_INDICES=%q\n' "$FULL_ATTENTION_INDICES"
   # Single node: keep NCCL on loopback and off IB, same as the cluster runs.
   # Engine init (compile + CUDA-graph capture) took 621 s cold on B200; vLLM's
   # default API-server readiness timeout is 600 s and killed the 2026-08-06 run

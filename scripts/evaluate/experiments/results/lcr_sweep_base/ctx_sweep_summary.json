@@ -1,0 +1,38 @@
+[
+  {
+    "target_len": "16384",
+    "actual_prompt_len_mean": 16352,
+    "n": 30,
+    "accept_length": null,
+    "accept_rate": null,
+    "decode_tok_s": 25.5,
+    "completion_tokens": 4105
+  },
+  {
+    "target_len": "32768",
+    "actual_prompt_len_mean": 32736,
+    "n": 30,
+    "accept_length": null,
+    "accept_rate": null,
+    "decode_tok_s": 25.6,
+    "completion_tokens": 6290
+  },
+  {
+    "target_len": "65536",
+    "actual_prompt_len_mean": 65504,
+    "n": 30,
+    "accept_length": null,
+    "accept_rate": null,
+    "decode_tok_s": 25.5,
+    "completion_tokens": 6568
+  },
+  {
+    "target_len": "full",
+    "actual_prompt_len_mean": 106082,
+    "n": 30,
+    "accept_length": null,
+    "accept_rate": null,
+    "decode_tok_s": 25.6,
+    "completion_tokens": 7145
+  }
+]

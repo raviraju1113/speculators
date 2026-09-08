@@ -33,9 +33,12 @@ export VLLM_TP=1
 export VLLM_DP=4
 export TRAIN_GPUS_N=4
 export ACCUM_STEPS=18
-export SCHED_TOTAL=25000
+# Overridable for warm-restart extensions (val still climbing at ep24). Each
+# nemo782k epoch ~1,490 optimizer steps: SCHED_TOTAL = 25000 + N_extra*1490
+# (e.g. EPOCHS=32 -> 7 extra epochs -> SCHED_TOTAL=35400).
+export SCHED_TOTAL="${SCHED_TOTAL:-25000}"
 export LR=6e-4
-export EPOCHS=25
+export EPOCHS="${EPOCHS:-25}"
 export MAX_ANCHORS=512
 export ON_GENERATE=delete
 export CHECKPOINT_FREQ=0.25

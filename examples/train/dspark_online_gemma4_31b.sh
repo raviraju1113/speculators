@@ -119,6 +119,16 @@ DRAFT_VOCAB_SIZE="${DRAFT_VOCAB_SIZE:-32000}"
 # gemma-4 dspark config is all-sliding at 2048, i.e. exactly the default, so we
 # pass only the window size and no per-layer overrides.
 SLIDING_WINDOW="${SLIDING_WINDOW:-2048}"
+# Space-separated draft layer indices to run FULL attention instead of sliding
+# (e.g. "0 3"). Exported into the checkpoint's transformer_layer_config
+# .layer_types, which vLLM's gemma4_dspark honors per layer -- so train/serve
+# parity is config-driven. Empty = all-sliding (RedHat/DeepSpec default).
+FULL_ATTENTION_INDICES="${FULL_ATTENTION_INDICES:-}"
+if [ -n "$FULL_ATTENTION_INDICES" ]; then
+  FULL_ATTN_ARGS=(--full-attention-indices $FULL_ATTENTION_INDICES)
+else
+  FULL_ATTN_ARGS=()
+fi
 MARKOV_RANK="${MARKOV_RANK:-256}"
 MARKOV_HEAD_TYPE="${MARKOV_HEAD_TYPE:-vanilla}"
 LOSS_FN="${LOSS_FN:-{\"ce\": 0.1, \"tv\": 0.9\}}"
@@ -262,7 +272,18 @@ elif [ "$ON_GENERATE" = "delete" ] && [ "$(df -BG --output=avail /dev/shm 2>/dev
   # /dev/shm (1.5T on the B200 box) instead of hammering NFS at ~400 MB/s.
   HS_PATH="${HS_PATH:-/dev/shm/hidden_states_$RUN_NAME}"
 else
-  HS_PATH="${HS_PATH:-$OUT_ROOT/hidden_states_$RUN_NAME}"
+  # HARD FAIL instead of falling back to NFS: transient hidden states stream at
+  # ~400 MB/s and FILLED /sms-scratch to 100% on 2026-08-19 (took down every
+  # run on the fleet). The usual cause: /dev/shm still holds orphaned
+  # hidden_states_* dirs from a killed run -- clean them:
+  #     rm -rf /dev/shm/hidden_states_*
+  # To deliberately use another location, set HS_PATH explicitly.
+  if [ -z "${HS_PATH:-}" ]; then
+    echo "!! no safe hidden-states location: SLURM_TMPDIR unset and /dev/shm has" >&2
+    echo "   <200G free ($(df -h /dev/shm | tail -1)). Refusing NFS fallback." >&2
+    echo "   Clean /dev/shm/hidden_states_* orphans or set HS_PATH explicitly." >&2
+    exit 1
+  fi
 fi
 SAVE_PATH="${SAVE_PATH:-$OUT_ROOT/$RUN_NAME/checkpoints}"
 LOG_DIR="${LOG_DIR:-$OUT_ROOT/$RUN_NAME/logs}"
@@ -465,6 +486,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --draft-vocab-size "$DRAFT_VOCAB_SIZE" \
     --target-layer-ids $TARGET_LAYER_IDS \
     --sliding-window "$SLIDING_WINDOW" \
+    "${FULL_ATTN_ARGS[@]+"${FULL_ATTN_ARGS[@]}"}" \
     --markov-rank "$MARKOV_RANK" \
     --markov-head-type "$MARKOV_HEAD_TYPE" \
     --enable-confidence-head \
