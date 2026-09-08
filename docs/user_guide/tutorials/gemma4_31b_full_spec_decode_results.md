@@ -3,7 +3,8 @@
 Head-to-head acceptance + throughput eval of `gemma-4-31b-it` with four drafts
 on the same 25-benchmark suite (50 samples per bench; AIME / AIME26 = 30;
 speed-multilingual = 47). Skipped (no JSONL on this box): `aa-lcr`,
-`speed-low-entropy`.
+`speed-low-entropy`. The same drafts were also run as an AgentX concurrency
+sweep (Claude-Code trace replay at 1 / 8 / 16 / 32 / 64 / 128 users).
 
 ## Setup
 
@@ -316,6 +317,59 @@ both Eagle-3 drafts on most benches. Google Assistant (MTP) still wins chat,
 multilingual, and BFCL (AR 92% vs 52%). Eagle-3 Llama (John) beats Eagle-3
 Qwen (Ravi) 25/25 on decode tok/s.
 
+## AgentX concurrency
+
+Load-test counterpart of the sequential suite: SemiAnalysis InferenceX replays
+Claude-Code traces at fixed concurrency. Same backbone / drafts / GPUs / greedy
+decode. `max_model_len` is 32,768 (traces are long-context). 600s per cell
+at users 1 / 8 / 16 / 32 / 64 / 128.
+YAMLs: `gemma4-31b-agentx.yaml` (vLLM 0.24) and `gemma4-31b-agentx-dspark.yaml`
+(vLLM 0.28). Eagle-3 Llama needs `speculative_config.method: eagle3` — the
+checkpoint path has no `eagle3` substring, so vLLM otherwise infers
+`draft_model` and crashes (`forward() missing hidden_states`).
+
+AgentX metrics (see `run_agentx.sh`):
+
+- **decode tok/s** — `sum(output) / sum(TTL − TTFT)` over successful requests.
+  Spec-decode signal; used for speedup.
+- **accept_len / accept_rate** — same vLLM counter formulas as the sequential
+  eval (`1 + accepted/drafts`, `accepted/draft_tokens`). Baseline is n/a.
+- **out tok/s** — client wall-clock output tok/s (includes TTFT / queueing).
+  Reference only.
+
+> Same vLLM 0.24 vs 0.28 caveat as above. Peak KV stayed ~21–23% even at 16–128
+> users (not cache thrash). From 1→16, decode tok/s drops ~2× per step; from
+> 32→128 it plateaus (most in-flight requests are prefilling). Acceptance stays
+> roughly flat.
+
+### Throughput (decode tok/s vs baseline)
+
+| users | baseline | Google Assistant (MTP) k=5 | Eagle-3 Qwen k=5 | Eagle-3 Llama k=5 | DSpark Qwen k=8 | × Google Assistant (MTP) | × Eagle-3 Qwen | × Eagle-3 Llama | × DSpark Qwen |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 42.5 | 62.6 | 35.5 | 37.0 | 64.0 | **1.47×** | 0.84× | 0.87× | **1.51×** |
+| 8 | 22.0 | 28.3 | 17.0 | 18.5 | 30.6 | **1.29×** | 0.77× | 0.84× | **1.39×** |
+| 16 | 10.4 | 12.8 | 8.2 | 8.4 | 12.6 | **1.23×** | 0.79× | 0.81× | **1.21×** |
+| 32 | 1.8 | 4.6 | 2.4 | 2.6 | 4.1 | **2.56×** | **1.33×** | **1.44×** | **2.28×** |
+| 64 | 1.4 | 4.4 | 2.3 | 2.5 | 4.3 | **3.14×** | **1.64×** | **1.79×** | **3.07×** |
+| 128 | 1.4 | 4.4 | 2.3 | 2.5 | 4.2 | **3.14×** | **1.64×** | **1.79×** | **3.00×** |
+
+### Acceptance (accept_len and accept_rate)
+
+| users | Google Assistant (MTP) k=5 AL | Eagle-3 Qwen k=5 AL | Eagle-3 Llama k=5 AL | DSpark Qwen k=8 AL | Google Assistant (MTP) k=5 AR | Eagle-3 Qwen k=5 AR | Eagle-3 Llama k=5 AR | DSpark Qwen k=8 AR |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3.622 | 1.984 | 2.025 | 3.185 | 0.5244 | 0.1967 | 0.2050 | 0.2731 |
+| 8 | 3.547 | 1.872 | 2.022 | 3.202 | 0.5094 | 0.1744 | 0.2044 | 0.2752 |
+| 16 | 3.584 | 1.872 | 1.990 | 3.346 | 0.5168 | 0.1745 | 0.1980 | 0.2932 |
+| 32 | 3.409 | 1.763 | 1.908 | 2.838 | 0.4818 | 0.1526 | 0.1817 | 0.2297 |
+| 64 | 3.275 | 1.759 | 1.901 | 3.032 | 0.4551 | 0.1517 | 0.1802 | 0.2540 |
+| 128 | 3.328 | 1.778 | 1.911 | 3.025 | 0.4655 | 0.1557 | 0.1823 | 0.2531 |
+
+DSpark Qwen wins decode tok/s at 1 and 8 users; Google Assistant (MTP) is
+slightly ahead at 16 (12.8 vs 12.6) and leads at 32 / 64 / 128. Both Eagle-3
+drafts stay below baseline through 16 users, then beat it once baseline
+collapses (~1.4–1.8 tok/s). Combined matrix:
+`scripts/evaluate/experiments/results/gemma4-31b-agentx/comparison.tsv`.
+
 ## Raw outputs
 
 | config | summary |
@@ -325,6 +379,7 @@ Qwen (Ravi) 25/25 on decode tok/s.
 | Eagle-3 Qwen (Ravi) | `scripts/evaluate/experiments/results/gemma4-31b-full-eagle3/eagle3_k5/` |
 | Eagle-3 Llama (John) | `scripts/evaluate/experiments/results/gemma4-31b-full-redhat-ft/redhat_ft_k5/` |
 | DSpark Qwen (Mengmeng) | `scripts/evaluate/experiments/results/gemma4-31b-full-dspark-nemo782k/dspark_nemo782k_k8/` |
+| AgentX (all drafts) | `scripts/evaluate/experiments/results/gemma4-31b-agentx/` (`comparison.tsv`; per-draft `*/matrix.tsv`) |
 
 ## Re-running
 
@@ -343,4 +398,7 @@ source /nvmedata/chenw/envs/speculator-vllm028/bin/activate
 export CUDA_HOME=/usr/local/cuda-12.9 PATH="$CUDA_HOME/bin:$PATH"
 export PYTHONUNBUFFERED=1 FLASHINFER_DISABLE_VERSION_CHECK=1
 python run_experiments.py --config gemma4-31b-full-dspark-nemo782k.yaml
+
+# AgentX concurrency 1/8/16/32/64/128 (0.24 drafts, then 0.28 DSpark)
+./run_gemma4_31b_agentx.sh
 ```
