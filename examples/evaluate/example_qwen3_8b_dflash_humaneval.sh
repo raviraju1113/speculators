@@ -62,13 +62,13 @@ echo "vLLM server ready."
 # Step 2: Run acceptance rate only (no gen-len estimation or sweep)
 echo ""
 echo "=== Step 2: Running acceptance rate evaluation ==="
-python "$SCRIPT_DIR/evaluate.py" \
-    --target "${SERVER_URL}/v1" \
-    --dataset "$DATASET" \
-    --data-column-mapper "kind=generative_column_mapper,column_mappings.text_column=prompt" \
-    throughput \
-    --subsets "HumanEval" \
-    --max-requests 80
+MODE=throughput \
+  BASE_URL="${SERVER_URL}" \
+  DATASET="$DATASET" \
+  SUBSETS=HumanEval \
+  MAX_REQUESTS=80 \
+  RESULT_DIR="./results/qwen3_8b_dflash_humaneval" \
+  bash "$SCRIPT_DIR/mtp_server_eval/run_eval.sh"
 
 echo ""
 echo "Done. Check the output directory for results."

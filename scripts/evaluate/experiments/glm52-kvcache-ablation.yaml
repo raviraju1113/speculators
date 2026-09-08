@@ -1,0 +1,48 @@
+# GLM-5.2 native MTP — KV-cache dtype ablation.
+#
+# Same as glm52-eval.yaml (method=mtp, num_speculative_tokens=5) but with a
+# bf16 KV cache instead of fp8, to test whether fp8 KV quantization was
+# lowering the MTP acceptance rate. Benchmarks span easy->hard math
+# (gsm8k -> math500 -> aime) since acceptance is strongly workload-dependent.
+#
+# Only the MTP arm is run (no baseline): acceptance comes from the server's
+# cumulative Prometheus counters, so no baseline is needed for it.
+#
+# Run:  python run_experiments.py --config glm52-kvcache-ablation.yaml
+
+engine: vllm
+backbone: zai-org/GLM-5.2-FP8
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.9
+  max_model_len: 16384
+  health_timeout: 7200
+  # NOTE: deliberately NO `--kv-cache-dtype fp8` here -> KV cache defaults to
+  # the model dtype (bf16). That is the one knob being ablated vs glm52-eval.yaml.
+  extra_args:
+    - --enable-prefix-caching
+    - --no-enable-chunked-prefill
+    - --tool-call-parser
+    - glm47
+    - --reasoning-parser
+    - glm45
+    - --enable-auto-tool-choice
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, math500, aime]
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/glm52-kvcache-ablation
+
+experiments:
+  - name: glm52-mtp-bf16kv
+    speculative_config:
+      method: mtp
+      num_speculative_tokens: 5

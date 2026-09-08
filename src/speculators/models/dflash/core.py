@@ -1,4 +1,5 @@
 import logging
+from copy import deepcopy
 from typing import ClassVar
 
 import torch
@@ -10,6 +11,7 @@ from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3RotaryEmbedding,
 )
 
+from speculators.losses import LossConfig, resolve_loss_config
 from speculators.model import DraftVocabMixin, SpeculatorModel
 from speculators.models.attention import create_float_mask
 from speculators.models.dflash import DFlashSpeculatorConfig
@@ -20,7 +22,6 @@ from speculators.models.dflash.utils import (
     get_base_indices_for_anchored_blocks,
     select_anchors,
 )
-from speculators.models.metrics import LossConfig, resolve_loss_config
 from speculators.models.utils import conditional_torch_compile, resolve_target_layer_ids
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,19 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             config.transformer_layer_config.hidden_size,
             eps=config.transformer_layer_config.rms_norm_eps,  # type: ignore[arg-type]
         )
-        self.rotary_emb = Qwen3RotaryEmbedding(config.transformer_layer_config)  # type: ignore[arg-type]
+        rotary_config = config.transformer_layer_config
+        rope_params = getattr(rotary_config, "rope_parameters", None)
+        if rope_params and "sliding_attention" in rope_params:
+            if self.uses_full_attn:
+                logger.warning(
+                    "Flattening nested rope_parameters to the sliding_attention "
+                    "variant, but this model has %d full-attention layer(s). "
+                    "Full-attention layers may use incorrect rope scaling.",
+                    num_draft_layers - len(self.sliding_window_indices),
+                )
+            rotary_config = deepcopy(rotary_config)
+            rotary_config.rope_parameters = rope_params["sliding_attention"]
+        self.rotary_emb = Qwen3RotaryEmbedding(rotary_config)  # type: ignore[arg-type]
 
         self.fc = nn.Linear(
             len(self.target_layer_ids) * config.transformer_layer_config.hidden_size,
@@ -234,9 +247,11 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         Returns:
             Tuple of (train_call_kwargs, val_call_kwargs)
         """
-        loss_config = resolve_loss_config(kwargs["loss_fn"])
+        loss_config = resolve_loss_config(
+            kwargs["loss_fn"], kwargs.get("loss_implementation", "fused")
+        )
         gamma = kwargs.get("dflash_decay_gamma", 4.0)
-        max_anchors = kwargs.get("max_anchors", 3072)
+        max_anchors = kwargs.get("max_anchors", 512)
         per_position_loss_weight = kwargs.get(
             "per_position_loss_weight", "fixed-exp-decay"
         )
@@ -336,7 +351,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         """
         device = hidden_states.device
         total_seq_len = hidden_states.shape[1]
-        num_anchors = kwargs.pop("max_anchors", 3072)
+        num_anchors = kwargs.pop("max_anchors", 512)
 
         if position_ids is None:
             position_ids = torch.arange(
@@ -440,7 +455,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         position_ids: torch.Tensor | None = None,  # shape: [1, total_seq_len]
         loss_config: LossConfig | None = None,
         gamma: float = 4.0,
-        max_anchors: int = 3072,
+        max_anchors: int = 512,
         per_position_loss_weight: str = "fixed-exp-decay",
         dpace_alpha: float = 0.5,
         **kwargs,

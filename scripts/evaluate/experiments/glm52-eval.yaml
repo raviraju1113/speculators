@@ -23,21 +23,28 @@
 
 engine: vllm
 backbone: zai-org/GLM-5.2-FP8
-gpus: "0,1,2,3,4,5,6,7"                                 # 8x A100/H100 on this box
+gpus: "0,1,2,3,4,5,6,7"                                 # 8x B200 on this box
 
 server:
   host: 127.0.0.1
   port: 8000
-  # GLM-5.2 FP8: ~743B total params. 8 GPUs x 80GB ~= 640GB; should fit with tp=8
+  # GLM-5.2 FP8: ~743B total params. 8x B200 x 180GB ~= 1440GB; fits comfortably with tp=8
   tensor_parallel_size: 8
   gpu_memory_utilization: 0.9
   # 1M context (GLM-5.2 native) — keep max_model_len high for long-horizon tasks
   max_model_len: 16384
-  health_timeout: 3600                                  # large model load + IndexShare init is slow
+  health_timeout: 7200                                  # large model load + IndexShare init is slow (2h safety net)
+  # Keep these in sync with glm52/run_glm52_vllm.sh (the manual launcher).
   extra_args:
     - --enable-prefix-caching
     - --kv-cache-dtype
     - fp8
+    - --no-enable-chunked-prefill
+    - --tool-call-parser
+    - glm47
+    - --reasoning-parser
+    - glm45
+    - --enable-auto-tool-choice
 
 eval:
   backend: vllm

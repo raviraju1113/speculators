@@ -6,10 +6,15 @@
 # realistic long-context, multi-user load -- the fourth benchmark alongside the
 # static prompt sets (aime, gpqa, livecodebench) handled by run_eval.sh.
 #
-# Unlike the internal sweep this was migrated from, it does NOT launch or manage
-# the server: point it at a server you started yourself (spec on OR off), exactly
-# like run_eval.sh. To compare, run it twice (baseline server vs spec server) and
-# diff the matrices -- see the baseline-vs-spec workflow in the README.
+# The replay client is aiperf's `--scenario inferencex-agentx-mvp`, which is the
+# current upstream AgentX implementation: it bundles the scenario's locked replay
+# rules (preserve trace timing, no early stop, cache-bust the first-turn prefix,
+# >=900s duration) and stamps `submission_valid` onto its output.
+#
+# Like run_eval.sh, it does NOT launch or manage the server: point it at a server
+# you started yourself (spec on OR off). To compare, run it twice (baseline
+# server vs spec server) and diff the matrices -- or let the YAML runner do it,
+# see `eval.mode: agentx` in ../experiments/.
 #
 # It sweeps one axis: concurrency (USERS_LIST). Per level it runs a replay cell,
 # reads acceptance off /metrics (SGLang windowed gauges or vLLM cumulative
@@ -18,40 +23,92 @@
 #   BACKEND=vllm  BASE_URL=http://127.0.0.1:8000 ./run_agentx.sh
 #   USERS_LIST="1 8 16" DURATION=1800 ./run_agentx.sh
 #
-# Requires network access: clones SemiAnalysis InferenceX (trace-replay client)
-# and downloads the traces dataset on first run.
+# NOTE ON WHAT IS MEASURED: the trace corpus carries no prompt *text* -- only
+# per-request token counts and KV block hashes. aiperf synthesizes prompts that
+# reproduce each trace's length and prefix-sharing structure. So AgentX measures
+# the serving regime of agentic load (long context, high prefix reuse, short
+# outputs, concurrency), not draft quality on real text. Read decode_tok_s and
+# its scaling with concurrency as the headline; cross-check absolute acceptance
+# against the real-text benchmarks in run_eval.sh.
+#
+# Requires network access on first run: aiperf downloads the traces dataset from
+# HuggingFace (public, no auth) and caches it.
 set -euo pipefail
 
+# Resolve output/input paths against the caller's cwd *before* cd'ing to the
+# script dir (which we do so the helper scripts next to us are on hand). Without
+# this a relative RESULT_DIR would silently land under mtp_server_eval/.
+INVOCATION_DIR="$PWD"
 cd "$(dirname "$0")"
+
+abspath() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s\n' "$INVOCATION_DIR/$1" ;;
+    esac
+}
 
 # --- settings (override via env) -------------------------------------------
 BACKEND="${BACKEND:-vllm}"                  # sglang | vllm (acceptance reader)
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 USERS_LIST="${USERS_LIST:-1 8 16}"          # concurrency levels to sweep
-DURATION="${DURATION:-300}"                 # replay seconds per cell (1800 for a real run)
+DURATION="${DURATION:-1800}"                # replay seconds per cell (scenario minimum 900)
 TEMPERATURE="${TEMPERATURE:-0}"             # 0 = greedy/argmax acceptance
 MAX_CONTEXT="${MAX_CONTEXT:-128000}"        # traces longer than this are filtered out
-HF_DATASET="${HF_DATASET:-semianalysisai/cc-traces-weka-042026}"
+# Date-pinned corpus alias; the rolling `..._with_subagents` alias advances when a
+# new drop lands, and two runs on different drops are not comparable.
+PUBLIC_DATASET="${PUBLIC_DATASET:-semianalysis_cc_traces_weka_062126}"
 RESULT_DIR="${RESULT_DIR:-./results/agentx}"
 POLL_INTERVAL="${POLL_INTERVAL:-0.25}"
-# InferenceX trace-replay client checkout.
-AGENTX_DIR="${AGENTX_DIR:-./.agentx/InferenceX}"
-AGENTX_BRANCH="${AGENTX_BRANCH:-chore/agentx-integration}"
-AGENTX_REPO="${AGENTX_REPO:-https://github.com/SemiAnalysisAI/InferenceX.git}"
-REPLAY="$AGENTX_DIR/utils/trace-replay/trace_replay_tester.py"
+# Model name the server advertises, and the tokenizer aiperf rebuilds prompts
+# with. MODEL is usually the served path/alias; TOKENIZER defaults to it.
+MODEL="${MODEL:-}"
+TOKENIZER="${TOKENIZER:-${MODEL}}"
+# aiperf lives in its own venv so it cannot disturb the serving env's vllm/torch:
+#   python3.11 -m venv /sms-scratch/ravira/.venv-aiperf
+#   /sms-scratch/ravira/.venv-aiperf/bin/pip install aiperf
+AIPERF_BIN="${AIPERF_BIN:-/sms-scratch/ravira/.venv-aiperf/bin/aiperf}"
+
+# GPU telemetry is off by default: aiperf polls a DCGM exporter on :9400, and a
+# host whose exporter omits fields aiperf requires (e.g. `hostname`) floods the
+# log with pydantic validation errors. Nothing here uses the telemetry, and this
+# eval's numbers come from the server's own /metrics. Set GPU_TELEMETRY=1 to
+# re-enable, or to a value aiperf accepts (`pynvml`, `amdsmi`, a DCGM URL).
+GPU_TELEMETRY="${GPU_TELEMETRY:-}"
+case "$GPU_TELEMETRY" in
+    ""|0|no|false) GPU_TELEMETRY_ARGS=(--no-gpu-telemetry) ;;
+    1|yes|true)    GPU_TELEMETRY_ARGS=(--gpu-telemetry) ;;
+    *)             GPU_TELEMETRY_ARGS=(--gpu-telemetry "$GPU_TELEMETRY") ;;
+esac
+
+# The scenario rejects durations under 900s. Allow a short smoke run, but only
+# via --unsafe-override, which stamps submission_valid=false so nobody mistakes
+# a plumbing check for a comparable result.
+MIN_VALID_DURATION=900
+UNSAFE_ARGS=()
+if (( DURATION < MIN_VALID_DURATION )); then
+    UNSAFE_ARGS=(--unsafe-override)
+    echo "!! DURATION=${DURATION}s is below the AgentX minimum of ${MIN_VALID_DURATION}s."
+    echo "!! Passing --unsafe-override: results will be stamped submission_valid=false."
+    echo "!! Use this for plumbing validation only, never for reported numbers."
+fi
 
 case "$BACKEND" in sglang|vllm) ;; *) echo "BACKEND must be sglang|vllm" >&2; exit 1;; esac
+[[ -n "$MODEL" ]] || { echo "!! set MODEL to the model name/path the server serves" >&2; exit 1; }
+RESULT_DIR="$(abspath "$RESULT_DIR")"
 mkdir -p "$RESULT_DIR"
-MATRIX_HEADER="users\tdecode_tok_s\taccept_len\taccept_rate\tout_tok_s"
+MATRIX_HEADER="users\tdecode_tok_s\taccept_len\taccept_rate\tout_tok_s\tvalid"
 
 setup_agentx() {
-    if [[ ! -f "$REPLAY" ]]; then
-        echo "==> cloning InferenceX ($AGENTX_BRANCH) into $AGENTX_DIR"
-        git clone --recurse-submodules -b "$AGENTX_BRANCH" "$AGENTX_REPO" "$AGENTX_DIR"
+    if [[ ! -x "$AIPERF_BIN" ]]; then
+        echo "!! aiperf not found at $AIPERF_BIN" >&2
+        echo "   create it with:" >&2
+        echo "     python3.11 -m venv $(dirname "$(dirname "$AIPERF_BIN")")" >&2
+        echo "     $(dirname "$AIPERF_BIN")/pip install aiperf" >&2
+        echo "   or point AIPERF_BIN at an existing install." >&2
+        exit 1
     fi
-    [[ -f "$REPLAY" ]] || { echo "!! trace_replay_tester.py missing at $REPLAY" >&2; exit 1; }
-    python -m pip install -q -r "$AGENTX_DIR/utils/trace-replay/requirements.txt"
-    hf download --repo-type dataset "$HF_DATASET" >/dev/null || true
+    echo "==> aiperf $("$AIPERF_BIN" --version 2>/dev/null || echo '?') at $AIPERF_BIN"
 }
 
 # vLLM cumulative counters -> "drafts draft_tokens accepted" (summed over labels).
@@ -87,51 +144,38 @@ run_cell() {
         vllm_before="$(scrape_vllm)"
     fi
 
-    python "$REPLAY" \
-        --api-endpoint "$BASE_URL" \
-        --hf-dataset "$HF_DATASET" \
-        --output-dir "$out_dir/trace_replay" \
-        --metrics-output-prefix "$out_dir/metrics" \
-        --start-users "$users" --max-users "$users" \
-        --test-duration "$DURATION" --recycle --warmup-enabled \
-        --max-concurrent-requests 0 \
-        --max-context "$MAX_CONTEXT" \
-        --advance-min 0.0 --advance-max 0.7 \
-        --temperature "$TEMPERATURE" \
-        --seed 42 2>&1 | tee "$log" || echo "!! [users=$users] replay errored (see $log)"
+    # aiperf's own --server-metrics scrape is on by default and would also hit
+    # $BASE_URL/metrics; harmless alongside the reads above (both are GETs).
+    "$AIPERF_BIN" profile \
+        --scenario inferencex-agentx-mvp \
+        --url "$BASE_URL" \
+        --endpoint-type chat \
+        --model "$MODEL" \
+        --tokenizer "$TOKENIZER" \
+        --public-dataset "$PUBLIC_DATASET" \
+        --max-context-length "$MAX_CONTEXT" \
+        --concurrency "$users" \
+        --benchmark-duration "$DURATION" \
+        --streaming \
+        --use-server-token-count \
+        --extra-inputs ignore_eos:true \
+        --extra-inputs "temperature:$TEMPERATURE" \
+        --cache-bust first_turn_prefix \
+        --artifact-dir "$out_dir/aiperf" \
+        --random-seed 42 \
+        --ui simple \
+        "${GPU_TELEMETRY_ARGS[@]}" \
+        "${UNSAFE_ARGS[@]}" 2>&1 | tee "$log" || echo "!! [users=$users] replay errored (see $log)"
 
-    # Wall-clock aggregate output tok/s from the client summary (reference only).
-    local out_tps
-    out_tps=$({ grep -oE '[0-9,]+ output tok/s' "$log" || true; } | tail -1 | tr -d ', ' | sed 's/outputtok\/s//')
-
-    # Pooled DECODE tok/s -- the spec-decode-relevant number: per successful
-    # request decode_time = ttlt - ttft; pool as sum(output)/sum(decode_time).
-    local decode_tps
-    decode_tps=$(python - "$out_dir/trace_replay/detailed_results.csv" <<'PY'
-import csv, sys
-num = den = 0.0
-try:
-    with open(sys.argv[1]) as f:
-        for r in csv.DictReader(f):
-            if r.get('success') != 'True':
-                continue
-            try:
-                out = float(r['output_tokens_actual']); dt = float(r['ttlt']) - float(r['ttft'])
-            except (KeyError, ValueError):
-                continue
-            if out > 0 and dt > 0:
-                num += out; den += dt
-    print(f"{num/den:.1f}" if den > 0 else "NA")
-except FileNotFoundError:
-    print("NA")
-PY
-) || true
+    # Pooled DECODE tok/s (excludes TTFT) + wall-clock out tok/s + validity stamp.
+    local cell decode_tps out_tps valid
+    cell=$(python3 agentx_metrics.py "$out_dir/aiperf") || cell=""
+    decode_tps=$(cut -f1 <<<"$cell"); out_tps=$(cut -f2 <<<"$cell"); valid=$(cut -f3 <<<"$cell")
 
     # Acceptance (NA for baseline / no spec).
-    local acc_len="NA" acc_rate="NA"
+    local acc_len="NA" acc_rate="NA" acc
     if [[ "$BACKEND" == "sglang" ]]; then
         kill "$accpid" 2>/dev/null || true
-        local acc
         acc=$(python3 - "$acc_file" <<'PY'
 import sys
 L=[]; R=[]
@@ -174,19 +218,25 @@ PY
 ) || true
         acc_len=${acc%% *}; acc_rate=${acc##* }
     fi
-    : "${acc_len:=NA}" "${acc_rate:=NA}" "${decode_tps:=NA}" "${out_tps:=NA}"
+    : "${acc_len:=NA}" "${acc_rate:=NA}" "${decode_tps:=NA}" "${out_tps:=NA}" "${valid:=NA}"
 
-    echo "==> [users=$users] decode_tok_s=${decode_tps}  accept_len=${acc_len}  accept_rate=${acc_rate}  (wall-clock out_tok_s=${out_tps})"
-    echo -e "${users}\t${decode_tps}\t${acc_len}\t${acc_rate}\t${out_tps}" > "$out_dir/result.row"
+    echo "==> [users=$users] decode_tok_s=${decode_tps}  accept_len=${acc_len}  accept_rate=${acc_rate}  (wall-clock out_tok_s=${out_tps}, submission_valid=${valid})"
+    echo -e "${users}\t${decode_tps}\t${acc_len}\t${acc_rate}\t${out_tps}\t${valid}" > "$out_dir/result.row"
 
+    # `if` (not `[[ ... ]] && cat`): on every pass but the last, the not-yet-run
+    # levels make the final test false, which under `set -e` would abort the whole
+    # sweep after the first cell.
     { echo -e "$MATRIX_HEADER"
       for u in $USERS_LIST; do
-        [[ -f "$RESULT_DIR/users${u}/result.row" ]] && cat "$RESULT_DIR/users${u}/result.row"
+        if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
+            cat "$RESULT_DIR/users${u}/result.row"
+        fi
       done
     } > "$RESULT_DIR/matrix.tsv"
 }
 
 echo "==> AgentX trace-replay against $BASE_URL (backend=$BACKEND, users: $USERS_LIST, ${DURATION}s/cell)"
+echo "==> model=$MODEL corpus=$PUBLIC_DATASET max_context=$MAX_CONTEXT"
 setup_agentx
 for users in $USERS_LIST; do
     run_cell "$users"

@@ -125,9 +125,16 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Generated sngpu job scripts (contain WANDB_API_KEY) and their job logs
+.job_*.sh
+scripts/.job_*.sh
+scripts/**/.job_*.sh
+*.out
+
 # Environments
 .env
 .venv
+.venv-vllm/
 env/
 venv/
 ENV/
@@ -177,6 +184,41 @@ cython_debug/
 # Generated GuideLLM prompt files (see scripts/evaluate/eval_datasets/to_guidellm.py)
 scripts/evaluate/eval_datasets/guidellm/
 
+# Large generated eval dumps — keep on scratch, not in git.
+# Canonical copies: /import/ml-sc-scratch5/chenw/datasets/eval/{turns,mtp}/
+# Local symlinks into these paths are fine and also ignored.
+scripts/evaluate/eval_datasets/aa-lcr.jsonl
+scripts/evaluate/eval_datasets/swe-rebench.jsonl
+scripts/evaluate/eval_datasets/swe-bench-pro.jsonl
+scripts/evaluate/mtp_server_eval/data/aa-lcr.jsonl
+scripts/evaluate/mtp_server_eval/data/swe-rebench.jsonl
+scripts/evaluate/mtp_server_eval/data/speed-low-entropy.jsonl
+scripts/evaluate/speedbench_data/throughput_16k_low_entropy.jsonl
+
+# Generated server-eval results
+scripts/evaluate/mtp_server_eval/results/
+# ... and the YAML runner's, which also holds AgentX matrix.tsv / aiperf artifacts
+scripts/evaluate/experiments/results/
+
+# Legacy: the old AgentX client was a git checkout here. run_agentx.sh now drives
+# aiperf from its own venv and no longer clones anything; kept so a stale
+# checkout from before that change stays out of git status.
+scripts/evaluate/mtp_server_eval/.agentx/
+slurm-*.out
+logs/
+
+# added
+initial_test_checkpoints
+ultrachat_gemma4_31b_50k_seq_len_8k
+output
+smoke_test
+notebook
+*.jsonl
+*.out
+logs
+# Generated GuideLLM prompt files (see scripts/evaluate/eval_datasets/to_guidellm.py)
+scripts/evaluate/eval_datasets/guidellm/
+
 # Generated server-eval results
 scripts/evaluate/mtp_server_eval/results/
 
@@ -184,3 +226,11 @@ scripts/evaluate/mtp_server_eval/results/
 scripts/evaluate/mtp_server_eval/.agentx/
 slurm-*.out
 logs/
+
+# Local-dir alias for the verifier: ./google/gemma-4-31B-it -> the local checkout.
+# Lets --verifier-name-or-path google/gemma-4-31B-it resolve off-disk (so train.py
+# does not re-download 50GB from the hub) while still matching vLLM's
+# --served-model-name, which the hidden-states requests address.
+google/
+*.json
+*.yaml

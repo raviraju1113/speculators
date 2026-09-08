@@ -41,6 +41,7 @@ Big updates have landed in Speculators! To get a more in-depth look, check out t
 
 Some of the exciting new features include:
 
+- **Evaluation harness (YAML full eval)**: [`scripts/evaluate/`](./scripts/evaluate/) — `evaluate.py` removed; use [`experiments/run_full_eval.sh`](./scripts/evaluate/experiments/run_full_eval.sh) + [`full-eval.yaml`](./scripts/evaluate/experiments/full-eval.yaml), or `mtp_server_eval/run_eval.sh`. Includes SPEED-Bench (`speed-*`) and `RedHatAI/speculator_benchmarks`. Guide: [How to run a full evaluation](./scripts/evaluate/README.md#how-to-run-a-full-evaluation); changelog: [Recent changes](./scripts/evaluate/README.md#recent-changes).
 - **DSpark Training Algorithm**: Added support for the DSpark training algorithm, which extends DFlash's anchored-block drafting with a Markov head that conditions each draft position on the previous token within the block, plus a confidence head that predicts per-position acceptance probability. DSpark checkpoints can warm-start from existing DFlash checkpoints.
 - **P-EAGLE Training Support**: Added support for the [P-EAGLE training algorithm](https://docs.vllm.ai/projects/speculators/en/latest/user_guide/algorithms/peagle), which extends EAGLE-3's architecture with parallel multi-token prediction via Conditional-On-Distribution (COD) sampling. Rather than generating draft tokens sequentially, P-EAGLE predicts multiple tokens in a single forward pass, reducing drafting latency. The Red Hat team published a [P-EAGLE speculator for Qwen3-8B](https://huggingface.co/RedHatAI/Qwen3-8B-speculator.peagle).
 - **MTP Finetuning Support**: Added support for finetuning the native Multi-Token Prediction (MTP) heads of models like Qwen3-Next on domain-specific data, following the [FastMTP](https://arxiv.org/abs/2509.18362) approach. Because the MTP head is small (~100M–400M params), it can be trained on pre-extracted hidden states without loading the full verifier
@@ -75,7 +76,7 @@ The following table summarizes the models that have been trained end-to-end by o
 </thead>
 <tbody>
 <tr>
-<td rowspan="3">Llama</td>
+<td rowspan="2">Llama</td>
 <td>8B-Instruct</td>
 <td><a href="https://huggingface.co/RedHatAI/Llama-3.1-8B-Instruct-speculator.eagle3">EAGLE-3</a> ✅</td>
 <td>✅</td>
@@ -84,8 +85,6 @@ The following table summarizes the models that have been trained end-to-end by o
 <td>70B-Instruct</td>
 <td><a href="https://huggingface.co/RedHatAI/Llama-3.3-70B-Instruct-speculator.eagle3">EAGLE-3</a> ✅</td>
 <td>✅</td>
-</tr>
-<tr>
 </tr>
 <tr>
 <td rowspan="3">Qwen3</td>
@@ -145,6 +144,7 @@ The following table summarizes the models that have been trained end-to-end by o
     </a> ✅</td>
   <td>✅</td>
 </tr>
+<tr>
 <td>Qwen3-VL</td>
 <td>235B-A22B</td>
 <td><a href="https://huggingface.co/RedHatAI/Qwen3-VL-235B-A22B-Instruct-speculator.eagle3">
@@ -207,6 +207,9 @@ Served models can then be benchmarked using [GuideLLM](https://github.com/vllm-p
 ## Additional Utility Scripts
 
 - [Regenerate responses to enhance your training data](https://github.com/vllm-project/speculators/tree/main/scripts/response_regeneration)
+- For a concrete example of preparing downloaded OpenCodeInstruct parquet data and regenerating it with Gemma-4 on a multi-GPU cluster, see [scripts/response_regeneration/submit_regen_opencodeinstruct_sc-c96.sh](scripts/response_regeneration/submit_regen_opencodeinstruct_sc-c96.sh).
+- The same response-regeneration workflow is also available for Aya via [scripts/response_regeneration/submit_regen_aya_sc-c96.sh](scripts/response_regeneration/submit_regen_aya_sc-c96.sh), which converts the Aya parquet shards into a conversation JSONL and then regenerates them with the same Gemma-4 multi-GPU pipeline.
+- The local workflow used in this repo’s response-regeneration examples relies on the downloaded OpenCodeInstruct parquet shards and Aya parquet files under /import/ml-sc-scratch5/chenw/datasets/, with the prepared OpenCodeInstruct JSONL passed into the regeneration pipeline.
 
 ## Getting Started
 
