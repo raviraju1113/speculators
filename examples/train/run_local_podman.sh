@@ -185,6 +185,8 @@ INNERSCRIPT="$REPO/examples/train/.job_${JOBNAME}_inner.sh"
   printf 'export SAMPLE_FROM_ANCHOR=%q\n' "${SAMPLE_FROM_ANCHOR:-0}"
   printf 'export ACCUM_STEPS=%q\n'     "${ACCUM_STEPS:-23}"
   [ -n "${SCHED_TOTAL:-}" ] && printf 'export SCHED_TOTAL=%q\n' "$SCHED_TOTAL"
+  [ -n "${SCHEDULER_TYPE:-}" ] && printf 'export SCHEDULER_TYPE=%q\n' "$SCHEDULER_TYPE"
+  [ -n "${WSD_DECAY_RATIO:-}" ] && printf 'export WSD_DECAY_RATIO=%q\n' "$WSD_DECAY_RATIO"
   [ -n "${GPU_IDS:-}" ]     && printf 'export GPU_IDS=%q\n' "$GPU_IDS"
   [ -n "${FULL_ATTENTION_INDICES:-}" ] && printf 'export FULL_ATTENTION_INDICES=%q\n' "$FULL_ATTENTION_INDICES"
   # Single node: keep NCCL on loopback and off IB, same as the cluster runs.

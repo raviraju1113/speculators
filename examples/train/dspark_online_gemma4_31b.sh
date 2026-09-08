@@ -199,6 +199,7 @@ fi
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 SCHEDULER_TYPE="${SCHEDULER_TYPE:-linear}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.04}"
+WSD_DECAY_RATIO="${WSD_DECAY_RATIO:-0.15}"
 
 # ---------------- runtime ----------------
 # Port selection is a real failure mode with DP: vLLM opens a TCPStore per engine
@@ -503,6 +504,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     $( [ "$SAVE_BEST" = "1" ] && echo --save-best ) \
     --scheduler-type "$SCHEDULER_TYPE" \
     --scheduler-warmup-ratio "$WARMUP_RATIO" \
+    --scheduler-wsd-decay-ratio "$WSD_DECAY_RATIO" \
     --num-workers "$NUM_WORKERS" \
     --on-missing generate \
     --on-generate "$ON_GENERATE"

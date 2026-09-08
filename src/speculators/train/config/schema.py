@@ -361,8 +361,11 @@ class OptimizerArgs(_Group):
 
 
 class SchedulerArgs(_Group):
-    scheduler_type: Literal["linear", "cosine", "none"] = Field(
-        default="linear", description="LR scheduler type."
+    scheduler_type: Literal["linear", "cosine", "constant", "wsd", "none"] = Field(
+        default="linear",
+        description="LR scheduler type. 'wsd' = warmup -> stable plateau at peak "
+        "LR -> linear decay over the final scheduler_wsd_decay_ratio of steps "
+        "(stop/resume on the plateau is free; no warm-restart dip).",
     )
     scheduler_warmup_steps: int | None = Field(
         default=None, description="Warmup steps (default: scheduler-dependent)."
@@ -374,6 +377,10 @@ class SchedulerArgs(_Group):
     )
     scheduler_total_steps: int | None = Field(
         default=None, description="Total scheduler steps (default: inferred)."
+    )
+    scheduler_wsd_decay_ratio: float = Field(
+        default=0.15,
+        description="WSD only: fraction of total steps for the final linear decay.",
     )
     scheduler_num_cosine_cycles: float = Field(
         default=0.5, description="Number of cosine cycles for the cosine scheduler."
