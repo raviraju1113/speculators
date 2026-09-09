@@ -1,12 +1,12 @@
 # AgentX concurrency sweep: gemma-4-31B-it + the same drafts as the sequential
 # full-suite eval (Google Assistant MTP, Eagle-3 Qwen, Eagle-3 Llama).
 #
-# Replays Claude-Code traces at USERS=1/8/16 and records decode tok/s,
-# accept_len, accept_rate, out_tok_s — the load-test counterpart of
+# Replays Claude-Code traces at USERS=1/8/16/32/64/128 and records decode
+# tok/s, accept_len, accept_rate, out_tok_s — the load-test counterpart of
 # gemma4-31b-full*.yaml (those are concurrency=1 sequential benches).
 #
-# max_model_len 32768: AgentX traces are long-context. USERS=16 may hit KV
-# pressure; if a cell collapses, rerun with users_list: [1, 4, 8].
+# max_model_len 32768: AgentX traces are long-context. USERS≥32 is
+# prefill-bound (peak KV stayed ~20–23%; most in-flight requests wait in queue).
 #
 # vLLM 0.24 (conda env speculator). DSpark is a separate YAML (needs 0.28).
 #
@@ -30,7 +30,7 @@ eval:
   backend: vllm
   mode: agentx
   temperature: 0.0
-  users_list: [1, 8, 16]
+  users_list: [1, 8, 16, 32, 64, 128]
   duration: 600          # seconds per concurrency; 1800 for a longer run
   max_context: 32768     # capped to server.max_model_len
 
@@ -47,6 +47,10 @@ experiments:
     draft: /nvmedata/hf_checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math
     num_speculative_tokens: 5
 
+  # Path name has no "eagle3", so vLLM infers method=draft_model and crashes
+  # (Eagle3LlamaForCausalLM.forward missing hidden_states). Force eagle3.
   - name: redhat_ft_k5
     draft: /nvmedata/hf_checkpoints/gemma4_redhat_draft_ft_2026-07-26_06-06-06
     num_speculative_tokens: 5
+    speculative_config:
+      method: eagle3
