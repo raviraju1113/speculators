@@ -29,6 +29,14 @@ Lower-level server recipes: [`mtp_server_eval/README.md`](./mtp_server_eval/READ
 - [ ] **Unit tests** — cover metric scraping (`accept_stats`, Prometheus parsing), compare/tabulate helpers, and YAML→command building
 - [ ] **Research diagnostics** (DSpark / confidence) — confidence AUC/ECE and calibrated STS checks when those heads exist
 
+## AgentX (`run_agentx.sh`)
+
+- [x] Repaired onto aiperf `--scenario inferencex-agentx-mvp` — the pinned InferenceX branch/`trace_replay_tester.py` no longer exist upstream
+- [x] Wired into the YAML runner as `eval.mode: agentx` (+ `compare_agentx.py`, `agentx_metrics.py`)
+- [ ] **Per-request acceptance from aiperf** — its `SpecDecodeAcceptanceRecord` carries an `acceptance_histogram` and optional per-step accepted/drafted arrays, which is strictly richer than the aggregate `1 + Δaccepted/Δdrafts` this script scrapes off `/metrics`; would also close “Position-wise acceptance” below
+- [ ] Cross-check AgentX acceptance against a real-text long-context bench (`aa-lcr`, `swe-bench-pro`) — AgentX prompts are synthesized from token counts + KV block hashes, so its absolute acceptance is regime-specific
+- [ ] Optional: sweep `max_context` (128k vs the model's native max) as a second axis
+
 ## YAML experiment runner (`experiments/`)
 
 - [ ] **Resume / skip** — don’t relaunch experiments that already have a valid `mtp_eval_summary.json` unless `--force`

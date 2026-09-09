@@ -297,20 +297,44 @@ Notes:
 ## AgentX (agentic trace-replay load test)
 
 [`run_agentx.sh`](./run_agentx.sh) is the fourth benchmark and a **different mode
-of evaluation**: instead of sending prompts from a file, it drives SemiAnalysis's
-[InferenceX](https://github.com/SemiAnalysisAI/InferenceX) `trace_replay_tester.py`
-to replay real **Claude-Code agentic traces** against your server at a fixed
-concurrency. This measures speculative-decoding value under realistic
-long-context, multi-user load (where acceptance/throughput behave differently
-than at concurrency 1).
+of evaluation**: instead of sending prompts from a file, it replays real
+**Claude-Code agentic traces** against your server at a fixed concurrency. This
+measures speculative-decoding value under realistic long-context, multi-user load
+(where acceptance/throughput behave differently than at concurrency 1).
+
+The replay client is [aiperf](https://github.com/SemiAnalysisAI/aiperf)'s
+`--scenario inferencex-agentx-mvp`, the current upstream AgentX implementation. It
+bundles the scenario's locked replay rules (preserve trace timing, no early stop,
+cache-bust the first-turn prefix, ≥900s duration) and stamps `submission_valid`
+onto its output.
 
 Like `run_eval.sh`, it targets a **server you launch yourself** (spec on or off)
 — it does not manage the server. It sweeps one axis, **concurrency**
 (`USERS_LIST`), and reads acceptance off `/metrics` using the same backend split
 (SGLang windowed gauges vs vLLM cumulative counters).
 
-> **Network required:** on first run it clones InferenceX (the trace-replay
-> client) and downloads the traces dataset (`semianalysisai/cc-traces-weka-042026`).
+> **What AgentX acceptance does and does not tell you.** The trace corpus carries
+> no prompt *text* — only per-request token counts and 64-token KV block hashes.
+> aiperf *synthesizes* prompts reproducing each trace's length and prefix-sharing
+> structure. So AgentX measures the **serving regime** of agentic load (median
+> ~110k input, ~218 output, ~96.6% prefix reuse, concurrency), not draft quality
+> on real text. Read `decode_tok_s` and how it scales with concurrency as the
+> headline; cross-check absolute `accept_len` against the real-text benchmarks
+> above.
+
+### Setup: aiperf in its own venv
+
+aiperf is kept out of the serving env so it cannot disturb the vLLM/torch install:
+
+```bash
+python3.11 -m venv /sms-scratch/ravira/.venv-aiperf
+/sms-scratch/ravira/.venv-aiperf/bin/pip install aiperf     # needs py >=3.11,<3.14
+```
+
+Point `AIPERF_BIN` elsewhere if you install it somewhere else. On first run aiperf
+downloads the traces corpus from HuggingFace (public, no auth) and caches it;
+prompts are then rebuilt through the model's HF tokenizer, which takes a while for
+a 100k-token median ISL.
 
 ### AgentX settings
 
@@ -318,38 +342,77 @@ Like `run_eval.sh`, it targets a **server you launch yourself** (spec on or off)
 |---------|---------|---------|
 | `BACKEND` | `vllm` | `sglang`/`vllm` — acceptance reader |
 | `BASE_URL` | `http://127.0.0.1:8000` | server root |
+| `MODEL` | *(required)* | model name/path the server serves |
+| `TOKENIZER` | `$MODEL` | HF tokenizer aiperf rebuilds prompts with |
 | `USERS_LIST` | `1 8 16` | concurrency levels to sweep |
-| `DURATION` | `300` | replay seconds per level (use `1800` for a real run) |
+| `DURATION` | `1800` | replay seconds per level (**900 is the scenario minimum**) |
 | `TEMPERATURE` | `0` | greedy for comparable acceptance |
 | `MAX_CONTEXT` | `128000` | drop traces longer than this |
-| `HF_DATASET` | `semianalysisai/cc-traces-weka-042026` | traces dataset |
+| `PUBLIC_DATASET` | `semianalysis_cc_traces_weka_062126` | date-pinned corpus alias |
 | `RESULT_DIR` | `./results/agentx` | output dir |
-| `AGENTX_DIR` / `AGENTX_BRANCH` / `AGENTX_REPO` | `./.agentx/InferenceX`, `chore/agentx-integration`, SemiAnalysis repo | client checkout |
+| `AIPERF_BIN` | `/sms-scratch/ravira/.venv-aiperf/bin/aiperf` | aiperf executable |
+
+> **`DURATION` below 900s is a smoke run only.** The scenario enforces a 900s
+> minimum; below it `run_agentx.sh` adds `--unsafe-override`, which makes aiperf
+> stamp `submission_valid: false`. The matrix carries that stamp in its `valid`
+> column and `compare_agentx.py` calls it out, so a plumbing check can never be
+> mistaken for a comparable result.
+
+> **Corpus pinning.** Use a date-pinned alias. The rolling
+> `semianalysis_cc_traces_weka_with_subagents` alias advances when a new drop
+> lands, and two runs on different drops are not comparable. List what your aiperf
+> build registers with `aiperf plugins public_dataset_loader`.
 
 > **Concurrency feasibility:** each request holds its full context in the KV
 > cache, so the server holds only ~`max_total_num_tokens / MAX_CONTEXT` requests
 > at once. Beyond that the cache thrashes and throughput collapses for *every*
 > config — keep `USERS × MAX_CONTEXT` under the pool (or lower `MAX_CONTEXT` to
-> study higher concurrency).
+> study higher concurrency). Check the `GPU KV cache size: N tokens` line in the
+> server log. `MAX_CONTEXT` must also be ≤ the server's `--max-model-len`, or
+> over-length traces fail server-side and trip AgentX's 1% context-overflow
+> threshold.
 
 ### AgentX recipes
 
+**Baseline vs spec in one command** — the YAML runner does serve → replay →
+compare with identical serve flags on both sides (see
+[`../experiments/agentx-gemma4.yaml`](../experiments/agentx-gemma4.yaml)):
+
 ```bash
-# concurrency sweep against a vLLM server
-BACKEND=vllm BASE_URL=http://127.0.0.1:8000 USERS_LIST="1 8 16" ./run_agentx.sh
-
-# a real run: longer replay, against an SGLang server
-BACKEND=sglang BASE_URL=http://127.0.0.1:8080 \
-  USERS_LIST="1 8 16 24" DURATION=1800 ./run_agentx.sh
-
-# baseline vs spec: run twice against the two servers, diff the matrices
-BASE_URL=http://127.0.0.1:8000 RESULT_DIR=./results/agentx_base ./run_agentx.sh
-BASE_URL=http://127.0.0.1:8001 RESULT_DIR=./results/agentx_spec ./run_agentx.sh
+cd ../experiments
+python run_experiments.py --config agentx-gemma4.yaml --dry-run   # no GPUs needed
+python run_experiments.py --config agentx-gemma4.yaml
 ```
 
-Each concurrency level writes `results/agentx/users<N>/result.row`; all levels are
-collected into `results/agentx/matrix.tsv`
-(`users  decode_tok_s  accept_len  accept_rate  out_tok_s`).
+Lower-level, against servers you manage yourself:
+
+```bash
+# concurrency sweep against a vLLM server
+BACKEND=vllm BASE_URL=http://127.0.0.1:8000 MODEL=/path/to/backbone \
+  USERS_LIST="1 8 16" ./run_agentx.sh
+
+# a real run: longer replay, against an SGLang server
+BACKEND=sglang BASE_URL=http://127.0.0.1:8080 MODEL=/path/to/backbone \
+  USERS_LIST="1 8 16 24" DURATION=1800 ./run_agentx.sh
+
+# baseline vs spec: run twice against the two servers, then compare
+MODEL=/path/to/backbone BASE_URL=http://127.0.0.1:8000 \
+  RESULT_DIR=./results/agentx_base ./run_agentx.sh
+MODEL=/path/to/backbone BASE_URL=http://127.0.0.1:8001 \
+  RESULT_DIR=./results/agentx_spec ./run_agentx.sh
+python compare_agentx.py \
+    base=./results/agentx_base/matrix.tsv \
+    spec=./results/agentx_spec/matrix.tsv
+```
+
+Each concurrency level writes `results/agentx/users<N>/result.row` (plus that
+cell's aiperf artifacts under `users<N>/aiperf/`); all levels are collected into
+`results/agentx/matrix.tsv`
+(`users  decode_tok_s  accept_len  accept_rate  out_tok_s  valid`).
+[`compare_agentx.py`](./compare_agentx.py) turns two or more matrices into a
+per-concurrency speedup table — the AgentX counterpart of `compare_speedup.py`.
+[`agentx_metrics.py`](./agentx_metrics.py) reduces one aiperf artifact dir to a
+matrix cell; run it with `--json` to inspect a cell's full metrics.
 
 ## Output files
 
