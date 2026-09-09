@@ -152,6 +152,7 @@ def agentx_env_vars(
         "MAX_CONTEXT": str(max_ctx),
         "RESULT_DIR": str(out_dir.resolve()),
         "TEMPERATURE": temp_s,
+        "PYTHON": sys.executable,
     }
     if evalcfg.get("hf_dataset"):
         env["HF_DATASET"] = str(evalcfg["hf_dataset"])

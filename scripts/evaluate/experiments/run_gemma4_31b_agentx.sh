@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # AgentX concurrency sweep for the Gemma-4-31B full-suite drafts.
-# Serves each config (TP=4), then run_agentx.sh at USERS=1/8/16.
+# Serves each config (TP=4), then run_agentx.sh at USERS=1/8/16/32/64/128.
 #
 # Usage (from this directory, in tmux/screen):
 #   ./run_gemma4_31b_agentx.sh
@@ -22,7 +22,7 @@ SPECULATOR_PY="${SPECULATOR_PY:-/root/miniconda3/envs/speculator/bin/python}"
 VLLM028_PY="${VLLM028_PY:-/nvmedata/chenw/envs/speculator-vllm028/bin/python}"
 
 echo "==> AgentX sweep (0.24: baseline + 3 drafts, then 0.28 DSpark)"
-echo "    logs: $HERE/results/gemma4-31b-agentx/run.log"
+echo "    pipe to tee if you want a log, e.g. ./run_gemma4_31b_agentx.sh 2>&1 | tee results/gemma4-31b-agentx/run.log"
 
 mkdir -p "$HERE/results/gemma4-31b-agentx"
 
