@@ -8,7 +8,7 @@
 # auto-load, wandb-offline warning, off-SLURM-squatter wait). Holds the
 # allocation via podman wait; scancel -> graceful stop (5 min for checkpoint).
 #SBATCH -N1
-#SBATCH --exclude=trn-b200x8-101
+#SBATCH --exclude=trn-b200x8-101,trn-b200x8-097,trn-b200x8-099
 #SBATCH --gres=gpu:b200:8
 #SBATCH -J dspark_nemo_scratch
 #SBATCH --chdir=/sms-scratch/mengmengj/speculators

@@ -31,6 +31,7 @@ from speculators.train.distributed import (
     maybe_destroy_distributed,
     maybe_setup_distributed,
 )
+from speculators.train import distributed as dist_state
 from speculators.train.logger import setup_metric_logger, setup_root_logger
 from speculators.train.trainer import Trainer, TrainerConfig
 from speculators.train.utils import resolve_mask_token_id
@@ -523,8 +524,14 @@ def main(cfg: TrainConfig):  # noqa: C901
         loggers=args.logger, run_name=args.run_name, output_dir=args.log_dir
     )
 
-    # Setup distributed training
-    local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
+    # Setup distributed training. Since upstream #711 (DDP/AMP refactor),
+    # maybe_setup_distributed() returns None and publishes topology through
+    # module getters -- the old 4-tuple unpack TypeErrors on every launch.
+    maybe_setup_distributed()
+    local_rank = dist_state.get_local_rank()
+    world_size = dist_state.get_world_size()
+    rank = dist_state.get_rank()
+    is_distributed = dist_state.is_distributed()
 
     # Record the run hyperparameters (e.g. to the wandb run config). The metric
     # logger's rank0 filter ensures this only fires once in distributed runs.

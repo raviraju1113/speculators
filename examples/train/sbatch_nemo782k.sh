@@ -10,7 +10,7 @@
 # absent, warns if wandb will be offline, holds the allocation via podman wait,
 # and converts scancel into a graceful stop (5 min for checkpoint writing).
 #SBATCH -N1
-#SBATCH --exclude=trn-b200x8-101
+#SBATCH --exclude=trn-b200x8-101,trn-b200x8-097,trn-b200x8-099
 #SBATCH --gres=gpu:b200:8
 #SBATCH -J dspark_anchorT_nemo
 #SBATCH --chdir=/sms-scratch/mengmengj/speculators
