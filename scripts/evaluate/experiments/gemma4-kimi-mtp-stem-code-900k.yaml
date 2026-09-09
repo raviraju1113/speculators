@@ -32,7 +32,7 @@ eval:
   max_tokens: 4096
   temperature: 0.0                               # greedy = canonical acceptance
 
-output_dir: ./results/gemma4_draft_model_300k_eagle3_kimi_mtp_stem_code 
+output_dir: ./results/gemma4_draft_model_300k_eagle3_kimi_mtp_stem_code
 
 experiments:
   # First entry is the baseline (backbone alone, no draft) — the speedup denominator.

@@ -1,0 +1,71 @@
+# Full-suite decode-throughput eval: gemma-4-31B-it + assistant draft.
+#
+# Acceptance mode (mtp_server_eval): per-benchmark accept_len / decode tok/s /
+# speedup vs baseline. This is the YAML "full eval" path, not GuideLLM
+# MODE=throughput (guidellm is not in the speculator conda env).
+#
+# Skipped (data not prepared on this box): aa-lcr, speed-low-entropy.
+# max_model_len 8192 is enough without aa-lcr.
+#
+# Run (conda env speculator, CUDA_HOME=cuda-12.9):
+#   python run_experiments.py --config gemma4-31b-full.yaml --dry-run
+#   python run_experiments.py --config gemma4-31b-full.yaml
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks:
+    - aime
+    - gpqa
+    - livecodebench
+    - gsm8k
+    - humaneval
+    - mbpp
+    - math500
+    - mt-bench
+    - aime26
+    - bfcl
+    - swe-bench-pro
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - speed-qa
+    - speed-writing
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-full
+
+experiments:
+  - name: baseline
+
+  - name: assistant_k5
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 5
+
+  - name: assistant_k3
+    draft: /nvmedata/hf_checkpoints/gemma-4-31B-it-assistant
+    num_speculative_tokens: 3

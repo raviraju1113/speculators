@@ -45,6 +45,7 @@ TURNS_BENCHMARKS = {
     "swe-bench-pro": "swe-bench-pro.jsonl",
     "swe-rebench": "swe-rebench.jsonl",
     "aa-lcr": "aa-lcr.jsonl",
+    "bfcl": "bfcl.jsonl",
 }
 
 # SPEED-Bench materialised splits (see ../prepare_speedbench.py). Env override

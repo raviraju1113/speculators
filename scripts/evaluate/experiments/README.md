@@ -77,6 +77,24 @@ speedup table.
 - **Quick smoke test:** set `eval.benchmarks: [aime]` and `num_samples: 5` in the
   YAML and use `--only baseline,<one-draft>` before the full run.
 
+## Configs in this directory
+
+| Config | What it runs | Results |
+|---|---|---|
+| [`example.yaml`](./example.yaml) | Small smoke-test template | — |
+| [`full-eval.yaml`](./full-eval.yaml) | Full multi-domain suite template (edit backbone/draft first) | — |
+| [`glm52-eval.yaml`](./glm52-eval.yaml) | GLM-5.2 native MTP vs baseline | [GLM-5.2 MTP results](../../../docs/user_guide/tutorials/glm52_mtp_results.md) |
+| [`glm52-kvcache-ablation.yaml`](./glm52-kvcache-ablation.yaml) | GLM-5.2 KV-cache dtype ablation | same doc |
+| [`gemma4-31b.yaml`](./gemma4-31b.yaml) | Gemma-4-31B-it + assistant draft, k=3/5, math+code trio | — |
+| [`gemma4-31b-full.yaml`](./gemma4-31b-full.yaml) | Full 25-bench suite: baseline + Google Assistant (MTP) k=3/5 | [full-suite results](../../../docs/user_guide/tutorials/gemma4_31b_full_spec_decode_results.md) |
+| [`gemma4-31b-full-eagle3.yaml`](./gemma4-31b-full-eagle3.yaml) | Same suite, Eagle-3 Qwen (Ravi) k=3/5 | same doc |
+| [`gemma4-31b-full-redhat-ft.yaml`](./gemma4-31b-full-redhat-ft.yaml) | Same suite, Eagle-3 Llama (John) k=3/5 | same doc |
+| [`gemma4-31b-full-dspark-nemo782k.yaml`](./gemma4-31b-full-dspark-nemo782k.yaml) | Same suite, DSpark Qwen (Mengmeng) k=8 | same doc |
+| [`gemma4-31b-agentx.yaml`](./gemma4-31b-agentx.yaml) | AgentX concurrency 1/8/16: baseline + Assistant / Eagle-3 Qwen / Eagle-3 Llama k=5 | — |
+| [`gemma4-31b-agentx-dspark.yaml`](./gemma4-31b-agentx-dspark.yaml) | Same AgentX sweep, DSpark Qwen k=8 (vLLM 0.28) | — |
+| [`gemma4-31b-compare-1gpu.yaml`](./gemma4-31b-compare-1gpu.yaml) | Draft head-to-head (ours vs Google assistant vs RedHat eagle-3) on 1 GPU | — |
+| [`gemma4-31b-bfcl.yaml`](./gemma4-31b-bfcl.yaml) | Gemma-4-31B-it + assistant draft on BFCL function calling, k=3/5 | [BFCL results](../../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) — 2.62× (k=3) / 3.48× (k=5) decode speedup, ~90–96% acceptance |
+
 ## Config schema (`example.yaml`)
 
 ```yaml
@@ -95,20 +113,24 @@ server:
 
 eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
-  mode: acceptance                          # acceptance | throughput | sweep (GuideLLM)
+  mode: acceptance                          # acceptance | throughput | sweep (GuideLLM) | agentx
+  # AgentX-only (when mode is agentx): concurrency sweep via run_agentx.sh
+  # users_list: [1, 8, 16]
+  # duration: 600                             # seconds per concurrency level
+  # max_context: 32768                        # default: cap to server.max_model_len
   # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
   # math500, humaneval, mbpp, mt-bench, aime26, swe-bench-pro, swe-rebench, aa-lcr,
-  # speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
+  # bfcl, speed-coding, speed-multilingual, speed-rag, speed-qa, speed-writing,
   # speed-low-entropy, HumanEval, math_reasoning, qa, question, rag,
   # summarization, tool_call, translation, writing). Generate extras via
   # prepare_data.py / parent README.
-  benchmarks: [aime, gpqa, livecodebench]
+  benchmarks: [aime, gpqa, livecodebench]  # also GuideLLM subsets when `subsets` is unset
   num_samples: 50                           # per benchmark (0 = all)
   max_tokens: 4096
   temperature: 0.0                          # greedy = canonical acceptance
   # GuideLLM-only (when mode is throughput or sweep):
-  # dataset: RedHatAI/speculator_benchmarks
-  # subsets: [HumanEval, qa]
+  # dataset: RedHatAI/speculator_benchmarks   # default: mtp_server_eval/data
+  # subsets: [HumanEval, qa]                  # default: eval.benchmarks
   # max_concurrency: 128
   # max_requests: 200
   # sweep_rate: 10

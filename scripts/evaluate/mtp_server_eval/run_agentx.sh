@@ -226,10 +226,11 @@ PY
     # `if` (not `[[ ... ]] && cat`): on every pass but the last, the not-yet-run
     # levels make the final test false, which under `set -e` would abort the whole
     # sweep after the first cell.
-    { echo -e "$MATRIX_HEADER"
+    {
+      echo -e "$MATRIX_HEADER"
       for u in $USERS_LIST; do
         if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
-            cat "$RESULT_DIR/users${u}/result.row"
+          cat "$RESULT_DIR/users${u}/result.row"
         fi
       done
     } > "$RESULT_DIR/matrix.tsv"
