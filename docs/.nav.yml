@@ -20,6 +20,7 @@ nav:
                 - Response Regeneration: user_guide/tutorials/response_regeneration.md
                 - Evaluating Model Performance: user_guide/tutorials/evaluating_performance.md
                 - GLM-5.2 MTP Evaluation Results: user_guide/tutorials/glm52_mtp_results.md
+                - Gemma-4-31B Assistant BFCL Results: user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md
                 - Serve in vLLM: user_guide/tutorials/serve_vllm.md
     - Developer Guide:
           - developer/index.md

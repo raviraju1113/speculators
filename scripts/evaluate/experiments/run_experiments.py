@@ -7,7 +7,7 @@ configs, serving params, and eval settings. For each experiment it:
   1. launches a vLLM server for the backbone (optionally with a speculative
      draft attached),
   2. waits for /health,
-  3. runs the acceptance / throughput eval (mtp_server_eval evaluator),
+  3. runs the acceptance / throughput / AgentX eval,
   4. stops the server,
 
 then prints a speedup comparison across all experiments (baseline first).
@@ -65,6 +65,10 @@ DEFAULT_EVAL = {
     "num_samples": 50,
     "max_tokens": 4096,
     "temperature": 0.0,
+    # AgentX (eval.mode: agentx) — concurrency sweep via run_agentx.sh
+    "users_list": [1, 8, 16],
+    "duration": 600,  # seconds per concurrency level
+    "max_context": None,  # default: cap to server.max_model_len
 }
 EVAL_MODES = ("acceptance", "throughput", "sweep", "agentx")
 
@@ -193,10 +197,21 @@ def build_eval_command(
             "--output-dir",
             str(out_dir),
         ]
-        if evalcfg.get("dataset"):
-            cmd += ["--dataset", str(evalcfg["dataset"])]
-        if evalcfg.get("subsets"):
-            cmd += ["--subsets", _as_csv(evalcfg["subsets"])]
+        # subsets wins when set; otherwise reuse eval.benchmarks so flipping
+        # mode: throughput/sweep in full-eval.yaml keeps the same suite.
+        explicit_subsets = evalcfg.get("subsets")
+        subsets = (
+            explicit_subsets
+            if explicit_subsets is not None
+            else evalcfg.get("benchmarks")
+        )
+        explicit_dataset = evalcfg.get("dataset")
+        if explicit_dataset:
+            cmd += ["--dataset", str(explicit_dataset)]
+        else:
+            cmd += ["--dataset", str(MTP_EVAL_DIR / "data")]
+        if subsets:
+            cmd += ["--subsets", _as_csv(subsets)]
         if evalcfg.get("max_concurrency") is not None:
             cmd += ["--max-concurrency", str(evalcfg["max_concurrency"])]
         if evalcfg.get("max_requests") is not None:
@@ -323,7 +338,7 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
             print(f"   see {out_dir / 'server.log'}", flush=True)
             return None
         print(f"  server healthy at {base_url}; running eval ...", flush=True)
-        subprocess.run(eval_cmd, check=False)
+        subprocess.run(eval_cmd, check=False, env=env)
     finally:
         stop_server(proc)
         server_log.close()

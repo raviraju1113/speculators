@@ -32,7 +32,7 @@ eval:
   max_tokens: 4096
   temperature: 0.0                               # greedy = canonical acceptance
 
-output_dir: ./results/redhat 
+output_dir: ./results/redhat
 
 experiments:
   # First entry is the baseline (backbone alone, no draft) — the speedup denominator.

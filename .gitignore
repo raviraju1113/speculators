@@ -226,6 +226,8 @@ scripts/evaluate/mtp_server_eval/results/
 scripts/evaluate/mtp_server_eval/.agentx/
 slurm-*.out
 logs/
+output/
+scripts/evaluate/experiments/results/gemma4-31b-agentx/eagle3_k5/users8/trace_replay/progress.json
 
 # Local-dir alias for the verifier: ./google/gemma-4-31B-it -> the local checkout.
 # Lets --verifier-name-or-path google/gemma-4-31B-it resolve off-disk (so train.py

@@ -11,9 +11,11 @@ contributors can see what landed without digging through git alone.
 
 | When | Change |
 |------|--------|
+| 2026-08-26 | **BFCL function calling** — `bfcl` (BFCL v3 AST core, `gorilla-llm/Berkeley-Function-Calling-Leaderboard`) wired through the converter, `prepare_data.py`, both eval registries, and `full-eval.yaml`. First results (Gemma-4-31B-it + assistant draft): [BFCL results doc](../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) via [`experiments/gemma4-31b-bfcl.yaml`](./experiments/gemma4-31b-bfcl.yaml). |
 | 2026-08-19 | **Context-length sweep for acceptance** — [`prepare_aa_lcr_sweep.py`](./prepare_aa_lcr_sweep.py) builds `aa-lcr-{1k,2k,4k,8k,16k,32k}`: the same 100 AA-LCR questions truncated to each length with header + question held fixed, so acceptance vs context length isn't confounded by domain or entropy (the old `speed-low-entropy` comparison was). Runs via [`experiments/gemma4-kimi-mtp-stem-code-math-900k-ctxlen-sweep.yaml`](./experiments/gemma4-kimi-mtp-stem-code-math-900k-ctxlen-sweep.yaml). |
 | 2026-08-19 | **Fixed silently-skipped benchmarks.** `DATA_FILES` in `run_vllm_eval.py` / `run_sglang_eval.py` still held only the 5-category partial SPEED-Bench prep, so the six categories added on 2026-08-14 hit `unknown benchmark; skipping` and runs quietly evaluated one slice. Registered all 11 plus the sweep bins, in both runners and `run_eval.sh`. |
 | 2026-08-18 | **AgentX repaired and wired into the YAML runner.** Its pinned client (InferenceX branch `chore/agentx-integration`, `utils/trace-replay/trace_replay_tester.py`) no longer exists upstream; `run_agentx.sh` now drives [aiperf](https://github.com/SemiAnalysisAI/aiperf)'s `--scenario inferencex-agentx-mvp` from a dedicated venv. New `eval.mode: agentx` does serve → replay → compare for baseline vs draft ([`experiments/agentx-gemma4.yaml`](./experiments/agentx-gemma4.yaml)), with `compare_agentx.py` + `agentx_metrics.py`. |
+| 2026-08-14 | **YAML GuideLLM modes honor `eval.benchmarks`.** `mode: throughput`/`sweep` reuse the same names as local `mtp_server_eval/data/<name>.jsonl` unless `eval.dataset` is set. |
 | 2026-08-14 | **SPEED-Bench qualitative is now complete — all 11 categories (880 prompts)**, not the 5 that a partial prep had produced. Added `speed-humanities`, `speed-math`, `speed-reasoning`, `speed-roleplay`, `speed-stem`, `speed-summarization`; `prepare_speedbench.py` now fails loudly when external sources don't materialise instead of dropping rows silently. |
 | 2026-08-14 | **Removed `evaluate.py`.** GuideLLM throughput/sweep lives in `mtp_server_eval/run_guidellm_eval.py` and is reached only via `run_eval.sh` (`MODE=throughput`/`sweep`) or YAML `eval.mode`. |
 | 2026-08-14 | **YAML full-eval entrypoint** — [`experiments/full-eval.yaml`](./experiments/full-eval.yaml) + [`run_full_eval.sh`](./experiments/run_full_eval.sh); guide: [How to run a full evaluation](#how-to-run-a-full-evaluation). |
@@ -154,6 +156,8 @@ sessions rather than sending prompts from a file.
 
 The **YAML full eval** defaults to `MODE=acceptance` (`mtp_server_eval`). Set
 `eval.mode` to `throughput`/`sweep` for GuideLLM, or `agentx` for AgentX.
+For GuideLLM, subsets come from `eval.subsets` if set, otherwise `eval.benchmarks`;
+dataset is `mtp_server_eval/data` unless `eval.dataset` is set.
 
 **AgentX** replays real Claude-Code agentic traces at fixed concurrency, so it
 measures speculative decoding where the static prompt sets can't: ~110k-token
@@ -165,8 +169,9 @@ Setup and caveats: [AgentX section](./mtp_server_eval/README.md#agentx-agentic-t
 
 ## Datasets / benchmark names
 
-Names below are valid in `eval.benchmarks` / `BENCHMARKS=` (`MODE=acceptance`)
-and ship (or prepare) as `mtp_server_eval/data/<name>.jsonl`.
+Names below are valid in `eval.benchmarks` / `BENCHMARKS=` and ship (or
+prepare) as `mtp_server_eval/data/<name>.jsonl`. The same names are GuideLLM
+`--subsets` when YAML `eval.mode` is `throughput` / `sweep`.
 
 | Eval name | Notes |
 |-----------|--------|
@@ -175,6 +180,8 @@ and ship (or prepare) as `mtp_server_eval/data/<name>.jsonl`.
 | `swe-bench-pro`, `swe-rebench` | SWE-style; large — often kept off-git |
 | `aa-lcr` | Long-context (~tens of k tokens) |
 | `aa-lcr-1k` … `aa-lcr-128k` | Context-length sweep — see [Context-length sweep](#context-length-sweep) |
+| `bfcl` | BFCL v3 function calling (AST core: simple/multiple/parallel/parallel-multiple) |
+| `aa-lcr-1k` … `aa-lcr-32k` | Context-length sweep — see [Context-length sweep](#context-length-sweep) |
 
 ### Context-length sweep
 

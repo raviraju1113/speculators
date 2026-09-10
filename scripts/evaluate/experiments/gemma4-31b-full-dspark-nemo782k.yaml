@@ -1,0 +1,75 @@
+# Full-suite eval: gemma-4-31B-it + DSpark draft trained on kimi/nemotron 782k
+# from scratch (block_size=8, sample_from_anchor=True).
+#
+# Same benches / sample budget / GPUs / server settings as gemma4-31b-full.yaml
+# so acceptance is comparable. Baseline is skipped — reuse
+# results/gemma4-31b-full/baseline/mtp_eval_summary.json for speedup.
+#
+# vLLM 0.24 cannot serve DSpark (method added in 0.25+). This eval needs
+# vLLM >= 0.28 so sample_from_anchor is read from the checkpoint (0.26
+# hardcoded speculators DSpark as 1+N bonus-anchor and would mis-draft).
+# Decode tok/s is therefore not strictly comparable to the 0.24 baseline.
+#
+# k=3 / k=5 are not used: DSpark drafts a whole block, and this checkpoint
+# was trained at block_size=8. Smaller k is an unsupported layout.
+#
+# Run (venv /nvmedata/chenw/envs/speculator-vllm028, vLLM 0.28.0+cu129):
+#   source /nvmedata/chenw/envs/speculator-vllm028/bin/activate
+#   export CUDA_HOME=/usr/local/cuda-12.9 PATH="$CUDA_HOME/bin:$PATH"
+#   export PYTHONUNBUFFERED=1 FLASHINFER_DISABLE_VERSION_CHECK=1
+#   python run_experiments.py --config gemma4-31b-full-dspark-nemo782k.yaml
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks:
+    - aime
+    - gpqa
+    - livecodebench
+    - gsm8k
+    - humaneval
+    - mbpp
+    - math500
+    - mt-bench
+    - aime26
+    - bfcl
+    - swe-bench-pro
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - speed-qa
+    - speed-writing
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-full-dspark-nemo782k
+
+experiments:
+  - name: dspark_nemo782k_k8
+    draft: /nvmedata/hf_checkpoints/gemma4_31b_dspark_nemo782k_scratch
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark

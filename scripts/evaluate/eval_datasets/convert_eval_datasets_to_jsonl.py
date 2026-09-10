@@ -27,6 +27,7 @@ Supported datasets:
 | swe-bench-pro | ScaleAI/SWE-bench_Pro |
 | swe-rebench | nebius/SWE-rebench |
 | livecodebench | livecodebench/code_generation_lite |
+| bfcl | gorilla-llm/Berkeley-Function-Calling-Leaderboard |
 
 Also see ``prepare_speedbench.py`` (NVIDIA SPEED-Bench) and
 ``prepare_aa_lcr.py`` (ArtificialAnalysis/AA-LCR) for the remaining
@@ -134,6 +135,40 @@ def format_swe_rebench(row: dict) -> list[str]:
     return format_swe_bench(row)
 
 
+# BFCL prompting-mode preamble (mirrors gorilla's non-function-calling format);
+# the function schemas are folded into the first user turn.
+BFCL_PREAMBLE = (
+    "You are an expert in composing functions. You are given a question and a "
+    "set of possible functions. Based on the question, you will need to make "
+    "one or more function/tool calls to achieve the purpose.\n"
+    "If none of the functions can be used, point it out. If the given question "
+    "lacks the parameters required by the function, also point it out.\n"
+    "You should only return the function calls in your response, in the format "
+    "[func_name1(param1=value1, param2=value2...), func_name2(...)], without "
+    "any other text.\n\n"
+    "Here is a list of functions in JSON format that you can invoke:\n"
+    "{functions}"
+)
+
+
+def format_bfcl(row: dict) -> list[str]:
+    """BFCL v3 AST categories: schemas + question folded into user turns."""
+    functions = json.dumps(row["function"], ensure_ascii=False, indent=2)
+    turns = []
+    for turn in row["question"]:
+        contents = [
+            message["content"]
+            for message in turn
+            if message.get("role") == "user" and message.get("content")
+        ]
+        if contents:
+            turns.append("\n\n".join(contents))
+    if not turns:
+        raise ValueError(f"BFCL row {row.get('id')!r} has no user turns.")
+    turns[0] = f"{BFCL_PREAMBLE.format(functions=functions)}\n\n{turns[0]}"
+    return turns
+
+
 def format_livecodebench(row: dict) -> list[str]:
     if "messages" in row:
         turns = [
@@ -191,6 +226,20 @@ DATASET_SPECS = (
     ),
     DatasetSpec(
         "swe-rebench", "nebius/SWE-rebench", None, "test", format_swe_rebench
+    ),
+    DatasetSpec(
+        "bfcl",
+        "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
+        None,
+        "test",
+        format_bfcl,
+        # v3 AST core categories; files are line-delimited despite .json names.
+        jsonl_files=(
+            "BFCL_v3_simple.json",
+            "BFCL_v3_multiple.json",
+            "BFCL_v3_parallel.json",
+            "BFCL_v3_parallel_multiple.json",
+        ),
     ),
     DatasetSpec(
         "livecodebench",
