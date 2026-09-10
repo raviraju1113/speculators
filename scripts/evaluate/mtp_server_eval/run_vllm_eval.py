@@ -58,6 +58,10 @@ DATA_FILES = {
     "aa-lcr-8k": "aa-lcr-8k.jsonl",
     "aa-lcr-16k": "aa-lcr-16k.jsonl",
     "aa-lcr-32k": "aa-lcr-32k.jsonl",
+    "aa-lcr-64k": "aa-lcr-64k.jsonl",
+    # The source documents top out at ~123k tokens, so this bin is the full
+    # untruncated document set (~89k-123k), not an exact 128k point.
+    "aa-lcr-128k": "aa-lcr-128k.jsonl",
     # SPEED-Bench qualitative: all 11 categories x 80 prompts (see ../README.md)
     "speed-coding": "speed-coding.jsonl",
     "speed-humanities": "speed-humanities.jsonl",

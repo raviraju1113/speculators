@@ -46,6 +46,16 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--summary", type=Path, required=True, help="mtp_eval_summary.json")
     p.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help=(
+            "baseline (no-draft) mtp_eval_summary.json. Adds the baseline series "
+            "to the throughput panel and turns the headline panel into speedup vs "
+            "context, which is what actually says whether drafting pays."
+        ),
+    )
+    p.add_argument(
         "--out-dir",
         type=Path,
         default=None,
@@ -62,15 +72,23 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_points(summary_path: Path, k: int):
-    """Return [(tokens, label, accept_len, decode_tok_s)] sorted by context length."""
+def load_points(summary_path: Path, k: int, require_accept: bool = True):
+    """Return [(tokens, label, accept_len, decode_tok_s)] sorted by context length.
+
+    ``require_accept=False`` keeps rows whose ``accept_length`` is null, which is
+    every row of a baseline (no-draft) run: nothing is drafted, so nothing is
+    accepted. Those rows still carry the decode throughput that the speedup
+    denominator needs, so dropping them is what used to make a baseline summary
+    unplottable.
+    """
     rows = json.loads(summary_path.read_text())
     pts = []
     for r in rows:
         m = re.fullmatch(r"aa-lcr-(\d+)k", str(r.get("benchmark", "")))
         if not m:
             continue
-        if r.get("accept_length") is None:
+        al = r.get("accept_length")
+        if al is None and require_accept:
             print(f"  skipping {r['benchmark']}: accept_length is null (spec off?)")
             continue
         n_k = int(m.group(1))
@@ -78,7 +96,7 @@ def load_points(summary_path: Path, k: int):
             (
                 n_k * 1024,
                 f"{n_k}k",
-                float(r["accept_length"]),
+                float(al) if al is not None else None,
                 float(r["decode_tok_s"]),
                 r.get("accept_rate"),
             )
@@ -88,7 +106,7 @@ def load_points(summary_path: Path, k: int):
     # accept_rate must be a pure restatement of accept_length; if not, the two
     # are measuring different things and the omission below would hide something.
     for _, label, al, _, ar in pts:
-        if ar is None:
+        if ar is None or al is None:
             continue
         if abs((al - 1) / k - ar) > 5e-3:
             print(
@@ -134,6 +152,31 @@ def main() -> None:
     span = f"{labels[0]}→{labels[-1]}"
     ctx_mult = xs[-1] / xs[0]
 
+    # Baseline (no-draft) throughput -- the speedup denominator. Bins are matched
+    # by context length, so a baseline covering only some bins yields fewer
+    # speedup points rather than a silently misaligned curve.
+    sx: list[float] = []
+    slabels: list[str] = []
+    sbase: list[float] = []
+    speedup: list[float] = []
+    if args.baseline:
+        base_pts = load_points(args.baseline, args.num_spec_tokens, require_accept=False)
+        base_by_x = {p[0]: p[3] for p in base_pts}
+        for x, lb, _, dt in pts:
+            b = base_by_x.get(x)
+            if b:
+                sx.append(x)
+                slabels.append(lb)
+                sbase.append(b)
+                speedup.append(dt / b)
+        if not sx:
+            raise SystemExit(
+                f"--baseline {args.baseline} shares no aa-lcr-*k bins with {args.summary}"
+            )
+        missing = [lb for x, lb, _, _ in pts if x not in base_by_x]
+        if missing:
+            print(f"  note: no baseline row for {', '.join(missing)}; omitted from speedup")
+
     fig = plt.figure(figsize=(11, 8.2), facecolor=SURFACE)
     gs = fig.add_gridspec(
         2, 2, height_ratios=[1.25, 1], hspace=0.40, wspace=0.22,
@@ -143,40 +186,77 @@ def main() -> None:
     ax_b = fig.add_subplot(gs[1, 0])
     ax_c = fig.add_subplot(gs[1, 1])
 
-    # ── headline: both measures indexed to the shortest context ──────────────
-    style_axis(ax_a, xs, labels)
-    ax_a.axhline(100, color=INK_MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
-    ax_a.plot(xs, acc_idx, color=BLUE, linewidth=2, marker="o", markersize=8,
-              markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3,
-              label="Acceptance length")
-    ax_a.plot(xs, tps_idx, color=ORANGE, linewidth=2, marker="o", markersize=8,
-              markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3,
-              label="Decode throughput")
-    ax_a.set_title(
-        "Long-context slowdown is not an acceptance problem",
-        color=INK, fontsize=13.5, fontweight="bold", loc="left", pad=10,
-    )
-    ax_a.set_ylabel(f"% of {labels[0]} value", color=INK_2, fontsize=10)
-    ax_a.set_ylim(0, 118)
-    ax_a.set_yticks([0, 25, 50, 75, 100])
-    ax_a.set_yticklabels(["0", "25", "50", "75", "100"])
+    # ── headline ─────────────────────────────────────────────────────────────
+    if speedup:
+        # With a baseline in hand the decision-relevant headline is the ratio, not
+        # indexed throughput: nearly all of the raw throughput fall with context is
+        # the cost of long-context decoding, which the baseline pays too. Only
+        # draft ÷ baseline isolates what speculation contributes.
+        style_axis(ax_a, sx, slabels)
+        ax_a.axhline(1.0, color=INK_MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
+        ax_a.fill_between(sx, speedup, 1.0, where=[s < 1 for s in speedup],
+                          interpolate=True, color=ORANGE, alpha=0.10, zorder=2)
+        ax_a.plot(sx, speedup, color=ORANGE, linewidth=2, marker="o", markersize=8,
+                  markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3)
+        below = [i for i, s in enumerate(speedup) if s < 1]
+        if not below:
+            head = "Drafting pays at every measured context length"
+        elif below[0] == 0:
+            head = "Drafting is slower than the backbone at every measured length"
+        else:
+            head = f"Drafting stops paying above {slabels[below[0] - 1]}"
+        ax_a.set_title(head, color=INK, fontsize=13.5, fontweight="bold",
+                       loc="left", pad=10)
+        ax_a.set_ylabel("speedup  (draft ÷ baseline)", color=INK_2, fontsize=10)
+        ax_a.set_ylim(0, max(1.15, max(speedup) * 1.20))
+        for x, v, ha, dx in ((sx[0], speedup[0], "left", -4),
+                             (sx[-1], speedup[-1], "right", 4)):
+            ax_a.annotate(f"{v:.2f}×", (x, v), textcoords="offset points",
+                          xytext=(dx, 11), ha=ha, color=ORANGE, fontsize=10,
+                          fontweight="bold")
+        # Keep to one line of ~90 chars: longer overflows the figure width, and a
+        # second line collides with the lower row's panel titles.
+        ax_a.annotate(
+            "1.0× = no gain from drafting. Only this ratio isolates it from long-context cost.",
+            xy=(0.5, -0.20), xycoords="axes fraction", ha="center",
+            color=INK_2, fontsize=9.5,
+        )
+    else:
+        # No baseline: fall back to indexing both measures to the shortest context.
+        style_axis(ax_a, xs, labels)
+        ax_a.axhline(100, color=INK_MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
+        ax_a.plot(xs, acc_idx, color=BLUE, linewidth=2, marker="o", markersize=8,
+                  markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3,
+                  label="Acceptance length")
+        ax_a.plot(xs, tps_idx, color=ORANGE, linewidth=2, marker="o", markersize=8,
+                  markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3,
+                  label="Decode throughput")
+        ax_a.set_title(
+            "Long-context slowdown is not an acceptance problem",
+            color=INK, fontsize=13.5, fontweight="bold", loc="left", pad=10,
+        )
+        ax_a.set_ylabel(f"% of {labels[0]} value", color=INK_2, fontsize=10)
+        ax_a.set_ylim(0, 118)
+        ax_a.set_yticks([0, 25, 50, 75, 100])
+        ax_a.set_yticklabels(["0", "25", "50", "75", "100"])
 
-    # Direct-label the endpoints (2 series, so also a legend -- identity is
-    # never carried by color alone).
-    ax_a.annotate(f"{acc_idx[-1]:.0f}%", (xs[-1], acc_idx[-1]), textcoords="offset points",
-                  xytext=(10, 4), color=BLUE, fontsize=10, fontweight="bold")
-    ax_a.annotate(f"{tps_idx[-1]:.0f}%", (xs[-1], tps_idx[-1]), textcoords="offset points",
-                  xytext=(10, -4), color=ORANGE, fontsize=10, fontweight="bold")
-    leg = ax_a.legend(loc="lower left", frameon=False, fontsize=10, handlelength=1.6)
-    for t in leg.get_texts():
-        t.set_color(INK_2)
+        # Direct-label the endpoints (2 series, so also a legend -- identity is
+        # never carried by color alone).
+        ax_a.annotate(f"{acc_idx[-1]:.0f}%", (xs[-1], acc_idx[-1]), textcoords="offset points",
+                      xytext=(10, 4), color=BLUE, fontsize=10, fontweight="bold")
+        ax_a.annotate(f"{tps_idx[-1]:.0f}%", (xs[-1], tps_idx[-1]), textcoords="offset points",
+                      xytext=(10, -4), color=ORANGE, fontsize=10, fontweight="bold")
+        leg = ax_a.legend(loc="lower left", frameon=False, fontsize=10, handlelength=1.6)
+        for t in leg.get_texts():
+            t.set_color(INK_2)
 
-    ax_a.annotate(
-        f"Over a {ctx_mult:.0f}× context increase, acceptance loses only "
-        f"{100 - acc_idx[-1]:.0f}% while throughput loses {100 - tps_idx[-1]:.0f}%.",
-        xy=(0.5, -0.20), xycoords="axes fraction", ha="center",
-        color=INK_2, fontsize=9.5,
-    )
+        ax_a.annotate(
+            f"Over a {ctx_mult:.0f}× context increase, acceptance loses only "
+            f"{100 - acc_idx[-1]:.0f}% while throughput loses {100 - tps_idx[-1]:.0f}%. "
+            "Pass --baseline to separate drafting from long-context cost.",
+            xy=(0.5, -0.20), xycoords="axes fraction", ha="center",
+            color=INK_2, fontsize=9.5,
+        )
 
     # ── absolute acceptance ──────────────────────────────────────────────────
     style_axis(ax_b, xs, labels)
@@ -221,13 +301,26 @@ def main() -> None:
 
     # ── absolute throughput (zero-based: it's a magnitude) ───────────────────
     style_axis(ax_c, xs, labels)
+    # Baseline is drawn as a dashed neutral reference rather than a third
+    # categorical hue: it is the denominator, not a peer series, and the palette
+    # above is validated as a 2-colour pair.
+    if sbase:
+        ax_c.plot(sx, sbase, color=INK_MUTED, linewidth=1.8, marker="o", markersize=6,
+                  markeredgecolor=SURFACE, markeredgewidth=1.2, zorder=2,
+                  linestyle=(0, (5, 2)), label="backbone alone")
     ax_c.plot(xs, tps, color=ORANGE, linewidth=2, marker="o", markersize=8,
-              markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3)
+              markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3,
+              label="with draft")
     ax_c.set_title("Decode throughput", color=INK, fontsize=11.5,
                    fontweight="bold", loc="left", pad=8)
     ax_c.set_xlabel("Prompt context length (tokens)", color=INK_2, fontsize=10)
     ax_c.set_ylabel("decode tok/s", color=INK_2, fontsize=10)
-    ax_c.set_ylim(0, max(tps) * 1.18)
+    ax_c.set_ylim(0, max(tps + sbase) * 1.18)
+    if sbase:
+        leg_c = ax_c.legend(loc="upper right", frameon=False, fontsize=9,
+                            handlelength=1.6)
+        for t in leg_c.get_texts():
+            t.set_color(INK_2)
     for x, v, ha, dx in ((xs[0], tps[0], "left", -4), (xs[-1], tps[-1], "right", 4)):
         ax_c.annotate(f"{v:.0f}", (x, v), textcoords="offset points",
                       xytext=(dx, 11), ha=ha, color=ORANGE, fontsize=9.5,
@@ -259,9 +352,18 @@ def main() -> None:
     fig.savefig(png, dpi=200, facecolor=SURFACE)
     fig.savefig(pdf, facecolor=SURFACE)
 
-    print(f"{'ctx':>6}{'accept_len':>12}{'idx%':>8}{'tok/s':>9}{'idx%':>8}")
+    speed_by_label = dict(zip(slabels, speedup))
+    base_by_label = dict(zip(slabels, sbase))
+    hdr = f"{'ctx':>6}{'accept_len':>12}{'idx%':>8}{'tok/s':>9}{'idx%':>8}"
+    if speedup:
+        hdr += f"{'base':>9}{'speedup':>9}"
+    print(hdr)
     for (x, lb, al, dt), ai, ti in zip(pts, acc_idx, tps_idx):
-        print(f"{lb:>6}{al:>12.3f}{ai:>8.1f}{dt:>9.1f}{ti:>8.1f}")
+        line = f"{lb:>6}{al:>12.3f}{ai:>8.1f}{dt:>9.1f}{ti:>8.1f}"
+        if speedup:
+            b, s = base_by_label.get(lb), speed_by_label.get(lb)
+            line += f"{b:>9.1f}{s:>8.2f}×" if s else f"{'-':>9}{'-':>9}"
+        print(line)
     mono = all(b <= a + 1e-9 for a, b in zip(acc, acc[1:]))
     if not mono:
         worst = max(range(1, len(acc)), key=lambda i: acc[i] - acc[i - 1])

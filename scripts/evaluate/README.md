@@ -179,6 +179,7 @@ prepare) as `mtp_server_eval/data/<name>.jsonl`. The same names are GuideLLM
 | `gsm8k`, `math500`, `humaneval`, `mbpp`, `mt-bench`, `aime26` | From `eval_datasets/` |
 | `swe-bench-pro`, `swe-rebench` | SWE-style; large — often kept off-git |
 | `aa-lcr` | Long-context (~tens of k tokens) |
+| `aa-lcr-1k` … `aa-lcr-128k` | Context-length sweep — see [Context-length sweep](#context-length-sweep) |
 | `bfcl` | BFCL v3 function calling (AST core: simple/multiple/parallel/parallel-multiple) |
 | `aa-lcr-1k` … `aa-lcr-32k` | Context-length sweep — see [Context-length sweep](#context-length-sweep) |
 
@@ -197,7 +198,9 @@ the end. Every bin therefore contains the same 100 items at a different context
 length — a paired design, so a difference across bins is attributable to length.
 
 ```bash
-python scripts/evaluate/prepare_aa_lcr_sweep.py          # ~25 MB, gitignored
+python scripts/evaluate/prepare_aa_lcr_sweep.py          # 1k–32k, ~25 MB, gitignored
+python scripts/evaluate/prepare_aa_lcr_sweep.py \
+    --lengths 65536,131072 --allow-short                 # 64k + 128k, ~69 MB
 cd scripts/evaluate/experiments
 python run_experiments.py --config gemma4-kimi-mtp-stem-code-math-900k-ctxlen-sweep.yaml
 ```
@@ -210,11 +213,21 @@ python run_experiments.py --config gemma4-kimi-mtp-stem-code-math-900k-ctxlen-sw
 | `aa-lcr-8k` | 8192–8193 | 100 |
 | `aa-lcr-16k` | 16384–16385 | 100 |
 | `aa-lcr-32k` | 32768–32769 | 100 |
+| `aa-lcr-64k` | 65536–65537 | 100 |
+| `aa-lcr-128k` | 89469–123035 (mean 107204) | 100 |
+
+`aa-lcr-128k` is the only bin that is not a fixed length. AA-LCR's document sets
+top out at ~123k tokens, so no row can reach 131072; with `--allow-short` each
+row emits its **full untruncated** document set instead of being dropped. It is
+still the same 100 questions, so it extends the curve — but plot it at its mean
+actual length, not at 131072, and expect within-bin length spread. Rows carry
+`"truncated": false` and their real `actual_tokens`.
 
 Each bin is its own benchmark, so the existing per-benchmark counter deltas give
 one `accept_length` / `accept_rate` per context length — read the curve directly
 off the `SUMMARY` table. `server.max_model_len` must cover the largest bin plus
-`eval.max_tokens` (the shipped config uses 36864 for the 32k bin + 1024).
+`eval.max_tokens` (the shipped config uses 131072 for the 128k bin + 1024; drop
+it to 36864 if you cut the 64k/128k bins).
 
 Caveat: acceptance is aggregated per benchmark from cumulative vLLM counters, so
 each bin yields a single point with no within-bin variance. For error bars, the
