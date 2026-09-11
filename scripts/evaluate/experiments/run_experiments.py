@@ -170,6 +170,7 @@ def build_eval_command(
             "RESULT_DIR": str(out_dir.resolve()),
             "MODEL": evalcfg.get("model") or backbone,
             "TEMPERATURE": str(evalcfg["temperature"]),
+            "PYTHON": sys.executable,
         }
         # Optional knobs: only pass through when set, so run_agentx.sh's own
         # defaults stay the single source of truth for what they are.
@@ -180,6 +181,7 @@ def build_eval_command(
             ("PUBLIC_DATASET", "public_dataset"),
             ("TOKENIZER", "tokenizer"),
             ("AIPERF_BIN", "aiperf_bin"),
+            ("SKIP_EXISTING", "skip_existing"),
         ):
             if evalcfg.get(cfg_key) is not None:
                 envs[key] = _as_space_sep(evalcfg[cfg_key])

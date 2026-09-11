@@ -68,6 +68,9 @@ TOKENIZER="${TOKENIZER:-${MODEL}}"
 #   python3.11 -m venv /sms-scratch/ravira/.venv-aiperf
 #   /sms-scratch/ravira/.venv-aiperf/bin/pip install aiperf
 AIPERF_BIN="${AIPERF_BIN:-/sms-scratch/ravira/.venv-aiperf/bin/aiperf}"
+PYTHON="${PYTHON:-python3}"
+# Skip a cell if result.row already exists (set SKIP_EXISTING=0 to rerun).
+SKIP_EXISTING="${SKIP_EXISTING:-1}"
 
 # GPU telemetry is off by default: aiperf polls a DCGM exporter on :9400, and a
 # host whose exporter omits fields aiperf requires (e.g. `hostname`) floods the
@@ -112,12 +115,27 @@ setup_agentx() {
 }
 
 # vLLM cumulative counters -> "drafts draft_tokens accepted" (summed over labels).
+# curl may fail (pipefail); still emit zeros so the caller can treat it as NA.
 scrape_vllm() {
     curl -sf "$BASE_URL/metrics" 2>/dev/null | awk '
         /^vllm:spec_decode_num_drafts(_total)?[{ ]/       {d  += $NF}
         /^vllm:spec_decode_num_draft_tokens(_total)?[{ ]/ {dt += $NF}
         /^vllm:spec_decode_num_accepted_tokens(_total)?[{ ]/ {a += $NF}
-        END {print (d+0), (dt+0), (a+0)}'
+        END {print (d+0), (dt+0), (a+0)}' || echo "0 0 0"
+}
+
+rebuild_matrix() {
+    # `if` (not `[[ ... ]] && cat`): on every pass but the last, the not-yet-run
+    # levels make the final test false, which under `set -e` would abort the whole
+    # sweep after the first cell.
+    {
+      echo -e "$MATRIX_HEADER"
+      for u in $USERS_LIST; do
+        if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
+          cat "$RESULT_DIR/users${u}/result.row"
+        fi
+      done
+    } > "$RESULT_DIR/matrix.tsv"
 }
 
 # Run one replay cell at concurrency=$1; write result.row + rebuild matrix.
@@ -125,6 +143,11 @@ run_cell() {
     local users="$1" out_dir="$RESULT_DIR/users${users}"
     mkdir -p "$out_dir"
     local log="$out_dir/replay.log"
+    if [[ "$SKIP_EXISTING" != "0" && -f "$out_dir/result.row" ]]; then
+        echo "==> [users=$users] skip existing $out_dir/result.row"
+        rebuild_matrix
+        return 0
+    fi
     echo "==> [users=$users] replay dur=${DURATION}s backend=$BACKEND -> $out_dir"
 
     # Acceptance: the replay client is a black-box OpenAI consumer, so read it off
@@ -169,14 +192,14 @@ run_cell() {
 
     # Pooled DECODE tok/s (excludes TTFT) + wall-clock out tok/s + validity stamp.
     local cell decode_tps out_tps valid
-    cell=$(python3 agentx_metrics.py "$out_dir/aiperf") || cell=""
+    cell=$("$PYTHON" agentx_metrics.py "$out_dir/aiperf") || cell=""
     decode_tps=$(cut -f1 <<<"$cell"); out_tps=$(cut -f2 <<<"$cell"); valid=$(cut -f3 <<<"$cell")
 
     # Acceptance (NA for baseline / no spec).
     local acc_len="NA" acc_rate="NA" acc
     if [[ "$BACKEND" == "sglang" ]]; then
         kill "$accpid" 2>/dev/null || true
-        acc=$(python3 - "$acc_file" <<'PY'
+        acc=$("$PYTHON" - "$acc_file" <<'PY'
 import sys
 L=[]; R=[]
 try:
@@ -203,7 +226,7 @@ PY
         acc_len=${acc%% *}; acc_rate=${acc##* }
     else
         local vllm_after; vllm_after="$(scrape_vllm)"
-        acc=$(python3 - "$vllm_before" "$vllm_after" <<'PY'
+        acc=$("$PYTHON" - "$vllm_before" "$vllm_after" <<'PY'
 import sys
 b = [float(x) for x in sys.argv[1].split()]
 a = [float(x) for x in sys.argv[2].split()]
@@ -222,18 +245,7 @@ PY
 
     echo "==> [users=$users] decode_tok_s=${decode_tps}  accept_len=${acc_len}  accept_rate=${acc_rate}  (wall-clock out_tok_s=${out_tps}, submission_valid=${valid})"
     echo -e "${users}\t${decode_tps}\t${acc_len}\t${acc_rate}\t${out_tps}\t${valid}" > "$out_dir/result.row"
-
-    # `if` (not `[[ ... ]] && cat`): on every pass but the last, the not-yet-run
-    # levels make the final test false, which under `set -e` would abort the whole
-    # sweep after the first cell.
-    {
-      echo -e "$MATRIX_HEADER"
-      for u in $USERS_LIST; do
-        if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
-          cat "$RESULT_DIR/users${u}/result.row"
-        fi
-      done
-    } > "$RESULT_DIR/matrix.tsv"
+    rebuild_matrix
 }
 
 echo "==> AgentX trace-replay against $BASE_URL (backend=$BACKEND, users: $USERS_LIST, ${DURATION}s/cell)"

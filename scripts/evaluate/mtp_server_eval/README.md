@@ -351,6 +351,8 @@ a 100k-token median ISL.
 | `PUBLIC_DATASET` | `semianalysis_cc_traces_weka_062126` | date-pinned corpus alias |
 | `RESULT_DIR` | `./results/agentx` | output dir |
 | `AIPERF_BIN` | `/sms-scratch/ravira/.venv-aiperf/bin/aiperf` | aiperf executable |
+| `PYTHON` | `python3` | interpreter for `agentx_metrics.py` and `/metrics` parsing (YAML runner sets this to its own python) |
+| `SKIP_EXISTING` | `1` | skip a cell if `users<N>/result.row` exists; `0` to rerun |
 
 > **`DURATION` below 900s is a smoke run only.** The scenario enforces a 900s
 > minimum; below it `run_agentx.sh` adds `--unsafe-override`, which makes aiperf

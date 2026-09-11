@@ -90,10 +90,46 @@ speedup table.
 | [`gemma4-31b-full-eagle3.yaml`](./gemma4-31b-full-eagle3.yaml) | Same suite, Eagle-3 Qwen (Ravi) k=3/5 | same doc |
 | [`gemma4-31b-full-redhat-ft.yaml`](./gemma4-31b-full-redhat-ft.yaml) | Same suite, Eagle-3 Llama (John) k=3/5 | same doc |
 | [`gemma4-31b-full-dspark-nemo782k.yaml`](./gemma4-31b-full-dspark-nemo782k.yaml) | Same suite, DSpark Qwen (Mengmeng) k=8 | same doc |
-| [`gemma4-31b-agentx.yaml`](./gemma4-31b-agentx.yaml) | AgentX concurrency 1/8/16: baseline + Assistant / Eagle-3 Qwen / Eagle-3 Llama k=5 | — |
-| [`gemma4-31b-agentx-dspark.yaml`](./gemma4-31b-agentx-dspark.yaml) | Same AgentX sweep, DSpark Qwen k=8 (vLLM 0.28) | — |
+| [`gemma4-31b-agentx.yaml`](./gemma4-31b-agentx.yaml) | AgentX concurrency 1/8/16/32/64/128: baseline + Assistant / Eagle-3 Qwen / Eagle-3 Llama k=5 | [tables below](#gemma-4-31b-agentx-results) / [full write-up](../../../docs/user_guide/tutorials/gemma4_31b_full_spec_decode_results.md#agentx-concurrency) |
+| [`gemma4-31b-agentx-dspark.yaml`](./gemma4-31b-agentx-dspark.yaml) | Same AgentX sweep, DSpark Qwen k=8 (vLLM 0.28) | same |
 | [`gemma4-31b-compare-1gpu.yaml`](./gemma4-31b-compare-1gpu.yaml) | Draft head-to-head (ours vs Google assistant vs RedHat eagle-3) on 1 GPU | — |
 | [`gemma4-31b-bfcl.yaml`](./gemma4-31b-bfcl.yaml) | Gemma-4-31B-it + assistant draft on BFCL function calling, k=3/5 | [BFCL results](../../../docs/user_guide/tutorials/gemma4_31b_assistant_bfcl_results.md) — 2.62× (k=3) / 3.48× (k=5) decode speedup, ~90–96% acceptance |
+
+## Gemma-4-31B AgentX results
+
+Claude-Code trace replay, 600s/cell, `max_model_len` 32,768, greedy, TP=4.
+Raw: [`results/gemma4-31b-agentx/comparison.tsv`](./results/gemma4-31b-agentx/comparison.tsv).
+Full write-up: [Gemma-4-31B full-suite results → AgentX](../../../docs/user_guide/tutorials/gemma4_31b_full_spec_decode_results.md#agentx-concurrency).
+
+Decode tok/s vs baseline (`sum(output) / sum(TTL − TTFT)`):
+
+| users | baseline | Google Assistant (MTP) k=5 | Eagle-3 Qwen k=5 | Eagle-3 Llama k=5 | DSpark Qwen k=8 | × Google Assistant (MTP) | × Eagle-3 Qwen | × Eagle-3 Llama | × DSpark Qwen |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 42.5 | 62.6 | 35.5 | 37.0 | 64.0 | **1.47×** | 0.84× | 0.87× | **1.51×** |
+| 8 | 22.0 | 28.3 | 17.0 | 18.5 | 30.6 | **1.29×** | 0.77× | 0.84× | **1.39×** |
+| 16 | 10.4 | 12.8 | 8.2 | 8.4 | 12.6 | **1.23×** | 0.79× | 0.81× | **1.21×** |
+| 32 | 1.8 | 4.6 | 2.4 | 2.6 | 4.1 | **2.56×** | **1.33×** | **1.44×** | **2.28×** |
+| 64 | 1.4 | 4.4 | 2.3 | 2.5 | 4.3 | **3.14×** | **1.64×** | **1.79×** | **3.07×** |
+| 128 | 1.4 | 4.4 | 2.3 | 2.5 | 4.2 | **3.14×** | **1.64×** | **1.79×** | **3.00×** |
+
+Acceptance (vLLM counters; baseline n/a):
+
+| users | Google Assistant (MTP) k=5 AL | Eagle-3 Qwen k=5 AL | Eagle-3 Llama k=5 AL | DSpark Qwen k=8 AL | Google Assistant (MTP) k=5 AR | Eagle-3 Qwen k=5 AR | Eagle-3 Llama k=5 AR | DSpark Qwen k=8 AR |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3.622 | 1.984 | 2.025 | 3.185 | 0.5244 | 0.1967 | 0.2050 | 0.2731 |
+| 8 | 3.547 | 1.872 | 2.022 | 3.202 | 0.5094 | 0.1744 | 0.2044 | 0.2752 |
+| 16 | 3.584 | 1.872 | 1.990 | 3.346 | 0.5168 | 0.1745 | 0.1980 | 0.2932 |
+| 32 | 3.409 | 1.763 | 1.908 | 2.838 | 0.4818 | 0.1526 | 0.1817 | 0.2297 |
+| 64 | 3.275 | 1.759 | 1.901 | 3.032 | 0.4551 | 0.1517 | 0.1802 | 0.2540 |
+| 128 | 3.328 | 1.778 | 1.911 | 3.025 | 0.4655 | 0.1557 | 0.1823 | 0.2531 |
+
+DSpark Qwen leads at 1 and 8 users; Google Assistant (MTP) leads from 16 up.
+Eagle-3 stays below baseline through 16 users, then wins once baseline
+collapses. Decode tok/s plateaus 32→128 (prefill-bound); acceptance stays
+roughly flat. Peak KV ~20–23% (not cache thrash). DSpark tok/s mixes vLLM 0.28
+with a 0.24 baseline — treat speedup as approximate; AL/AR are the fair
+draft-quality comparison. Re-run: `./run_gemma4_31b_agentx.sh` (skips cells
+that already have `result.row`; `SKIP_EXISTING=0` to rerun a cell).
 
 ## Config schema (`example.yaml`)
 
@@ -115,7 +151,7 @@ eval:
   backend: vllm                             # mtp_server_eval evaluator: vllm | sglang
   mode: acceptance                          # acceptance | throughput | sweep (GuideLLM) | agentx
   # AgentX-only (when mode is agentx): concurrency sweep via run_agentx.sh
-  # users_list: [1, 8, 16]
+  # users_list: [1, 8, 16, 32, 64, 128]
   # duration: 600                             # seconds per concurrency level
   # max_context: 32768                        # default: cap to server.max_model_len
   # Any name supported by mtp_server_eval (aime, gpqa, livecodebench, gsm8k,
