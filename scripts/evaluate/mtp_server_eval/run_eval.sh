@@ -123,7 +123,9 @@ for b in ${BENCHMARKS//,/ }; do
         gpqa)                 f=gpqa_diamond.jsonl ;;
         livecodebench)        f=livecodebench.jsonl ;;
         gsm8k|math500|humaneval|mbpp|mt-bench|aime26|swe-bench-pro|swe-rebench|aa-lcr) f="$b.jsonl" ;;
-        speed-coding|speed-multilingual|speed-rag|speed-qa|speed-writing|speed-low-entropy) f="$b.jsonl" ;;
+        aa-lcr-1k|aa-lcr-2k|aa-lcr-4k|aa-lcr-8k|aa-lcr-16k|aa-lcr-32k) f="$b.jsonl" ;;
+        speed-coding|speed-humanities|speed-math|speed-multilingual|speed-qa|speed-rag) f="$b.jsonl" ;;
+        speed-reasoning|speed-roleplay|speed-stem|speed-summarization|speed-writing|speed-low-entropy) f="$b.jsonl" ;;
         HumanEval|math_reasoning|qa|question|rag|summarization|tool_call|translation|writing) f="$b.jsonl" ;;
         *)                    echo "warning: unknown benchmark '$b' (eval will skip it)" >&2; continue ;;
     esac

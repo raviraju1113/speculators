@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
-import hashlib
+import contextlib
 import json
 import logging
 import os
@@ -15,46 +15,61 @@ from typing import Any, cast
 import aiohttp
 from datasets import load_dataset
 from tqdm import tqdm
-from transformers import AutoTokenizer
 
-from speculators.data_generation.configs import DATASET_CONFIGS, DatasetConfig
-from speculators.data_generation.vllm_client import (
-    DEFAULT_MAX_RETRIES,
-    InvalidResponseError,
-    with_retries,
-)
+# NOTE: `datasets` is imported lazily inside iter_input_items (HF-dataset branch
+# only). The --input-jsonl (local conversations) path does not need it, so a
+# broken/absent `datasets`/`pyarrow` install won't block regenerating a JSONL.
 
-logger = logging.getLogger(__name__)
+# Characters of each turn shown per item by --dry-run.
+DRY_RUN_PREVIEW_CHARS = 400
 
-# On-policy regeneration has no multimodal support yet; off-policy `prepare-data`
-# does, so these presets are gated here rather than dropped from the registry.
-MULTIMODAL_DATASETS = {"sharegpt4v_coco"}
-REGEN_DATASETS = [name for name in DATASET_CONFIGS if name not in MULTIMODAL_DATASETS]
-
-
-def _dataset_choice(name: str) -> str:
-    """Reject multimodal presets with a reason, not a bare invalid choice."""
-    if name in MULTIMODAL_DATASETS:
-        raise argparse.ArgumentTypeError(
-            f"{name!r} is multimodal; on-policy regeneration does not support "
-            "images yet. Use it off-policy with `prepare-data`."
-        )
-    return name
-
-
-# ---------------------------------------------------------------------------
-# CLI & run configuration
-# ---------------------------------------------------------------------------
-
-
-def ensure_parent_dirs(*paths: str) -> None:
-    """Create parent directories for output files.
-
-    open(..., "a") creates the file but not its parent directories.
-    """
-    for path in paths:
-        if parent := os.path.dirname(path):
-            os.makedirs(parent, exist_ok=True)
+# A dataset config declares EITHER `prompt_field` (single-prompt datasets: one
+# column holds the instruction) OR `messages_field` (conversation datasets: one
+# column holds a `[{role, content}]` list, regenerated turn-by-turn like
+# --input-jsonl). `min_prompt_chars` sets a per-dataset floor on total user-turn
+# length, overridable with --min-prompt-chars.
+DATASET_CONFIGS = {
+    "magpie": {
+        "id": "Magpie-Align/Magpie-Llama-3.1-Pro-300K-Filtered",
+        "prompt_field": "instruction",
+        "default_split": "train",
+    },
+    "ultrachat": {
+        "id": "HuggingFaceH4/ultrachat_200k",
+        "prompt_field": "prompt",
+        "default_split": "train_sft",
+    },
+    "gsm8k": {
+        "id": "openai/gsm8k",
+        "prompt_field": "question",
+        "default_split": "train",
+        "subset": "main",
+    },
+    # Gated: accept the terms at
+    # https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v2
+    # and export HF_TOKEN before running. Splits: stem / math / code / chat /
+    # multilingual_{de,es,fr,it,ja}.
+    #
+    # Rows are single-turn (user, assistant) with the assistant answer wrapped in
+    # a DeepSeek-R1 `<think>` block. We drop the original assistant turns and
+    # regenerate, so no R1 reasoning trace leaks into the corpus.
+    #
+    # min_prompt_chars guards against placeholder prompts: the whole v1 `code`
+    # split ships `-` as the user turn (the TACO/CodeForces statements are not
+    # redistributable). Verify with --dry-run before a full run.
+    "nemotron-v2": {
+        "id": "nvidia/Nemotron-Post-Training-Dataset-v2",
+        "messages_field": "messages",
+        "default_split": "stem",
+        "min_prompt_chars": 16,
+    },
+    "nemotron-v1": {
+        "id": "nvidia/Nemotron-Post-Training-Dataset-v1",
+        "messages_field": "messages",
+        "default_split": "stem",
+        "min_prompt_chars": 16,
+    },
+}
 
 
 def parse_args():
@@ -129,26 +144,27 @@ def parse_args():
         help="Only process rows where language==this (e.g., EN)",
     )
     parser.add_argument(
-        "--max-retries",
+        "--min-prompt-chars",
         type=int,
-        default=DEFAULT_MAX_RETRIES,
+        default=None,
         help=(
-            "Max retry attempts per request on transient failure "
-            f"(default: {DEFAULT_MAX_RETRIES})"
+            "Skip rows whose user turns total fewer than N characters. Filters "
+            "out placeholder prompts (e.g. the '-' user turns in the Nemotron "
+            "code split). Defaults to the dataset config's value, else 0."
         ),
     )
-    args = parser.parse_args()
-    if args.max_retries < 0:
-        parser.error("--max-retries must be >= 0")
-    try:
-        args.sampling_params = (
-            json.loads(args.sampling_params) if args.sampling_params else {}
-        )
-    except json.JSONDecodeError as e:
-        parser.error(f"--sampling-params is not valid JSON: {e}")
-    if not isinstance(args.sampling_params, dict):
-        parser.error("--sampling-params must be a JSON object")
-    return args
+    parser.add_argument(
+        "--dry-run",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Inspect the source instead of generating: print the first N items "
+            "(plus skip counts) and exit. No endpoints are contacted. Use this to "
+            "sanity-check prompts before spending GPU hours."
+        ),
+    )
+    return parser.parse_args()
 
 
 def sanitize_filename(name: str) -> str:
@@ -474,180 +490,130 @@ def _sample_from_response(
     """Turn one chat-completion response into a boundary sample and the assistant
     message to append to the running prefix.
 
-    Returns ``(sample, assistant_msg, tool_calls)``; ``tool_calls`` is truthy when
-    the target emitted a tool call (its content may be empty). Raises on a wholly
-    empty generation or a response missing the ``return_token_ids`` payload.
+    Returns None for unusable rows (multimodal/list content, unknown roles, or no
+    user turn) so the caller can skip them.
+
+    Turns with empty content are dropped rather than disqualifying the row: every
+    Nemotron row opens with an empty `system` turn, and rejecting the whole
+    conversation over it would discard the entire dataset. An empty turn carries
+    no context, so dropping it loses nothing; rows left without a user turn are
+    still rejected below.
     """
-    choice = data["choices"][0]
-    message = choice["message"]
-    content = message.get("content")
-    tool_calls = message.get("tool_calls")
+    if not isinstance(conv, list) or not conv:
+        return None
+    messages: list[dict[str, str]] = []
+    for turn in conv:
+        role = _ROLE_MAP.get(turn.get("from") or turn.get("role"))
+        content = turn.get("value")
+        if content is None:
+            content = turn.get("content")
+        # Reject multimodal (list content) and malformed turns.
+        if role is None or not isinstance(content, str):
+            return None
+        if not content:
+            continue
+        messages.append({"role": role, "content": content})
+    if not any(m["role"] == "user" for m in messages):
+        return None
+    return messages
 
-    # A tool call legitimately has empty content; only a wholly empty generation
-    # corrupts the next prefix and must fail the conversation.
-    if not content and not tool_calls:
-        raise ValueError(f"empty assistant generation (sample {sample_index})")
 
-    prompt_token_ids = data.get("prompt_token_ids")
-    completion_token_ids = choice.get("token_ids")
-    if not prompt_token_ids or not completion_token_ids:
-        raise ValueError(
-            "endpoint returned no token ids; it must support return_token_ids"
-        )
+def _choice_content(data: dict) -> str:
+    """Return the assistant message content, or raise a clear error.
 
-    input_ids, loss_mask = build_boundary_sample(prompt_token_ids, completion_token_ids)
-    if tool_calls:
-        # History keeps the parsed call; any generated <think> is supervised in
-        # this row's completion tokens, not re-rendered.
-        assistant_msg = {
-            "role": "assistant",
-            "content": content or "",
-            "tool_calls": tool_calls,
-        }
-    else:
-        assistant_msg = {"role": "assistant", "content": content}
-
-    sample = {
-        "id": f"{conv_id}_gen{sample_index}",
-        # Conversation-level key for --resume; the row `id` is generation-suffixed
-        # and would never match a recomputed one.
-        "primary_id": conv_id,
-        "input_ids": input_ids,
-        "loss_mask": loss_mask,
-        # Review-only decode of input_ids; ignored by training. Faithful to the
-        # tokens by construction -- system/user context, the template's <think>
-        # priming, and history with prior-turn reasoning already stripped.
-        "text": detokenize(input_ids),
-        "metadata": {
-            "idx": idx,
-            "finish_reason": choice.get("finish_reason"),
-            "is_tool_call": bool(tool_calls),
-            "usage": data.get("usage") or {},
-            "endpoint": endpoint,
-            "sampling_params": sampling_params,
-        },
-    }
-    return sample, assistant_msg, tool_calls
+    vLLM returns a body without ``choices`` on failure (e.g. a 400 when the
+    conversation exceeds ``max_model_len``); surface that instead of a cryptic
+    ``KeyError('choices')``.
+    """
+    choices = data.get("choices")
+    if not choices:
+        detail = data.get("error") or data.get("message") or data
+        raise RuntimeError(f"server returned no choices: {str(detail)[:200]}")
+    return choices[0]["message"]["content"]
 
 
 async def regenerate_conversation(
-    post_fn,
-    item: dict[str, Any],
-    *,
-    model: str,
-    max_tokens: int,
-    endpoint: str,
-    sampling_params: dict[str, Any],
-    samples: list[dict[str, Any]],
-    detokenize: Callable[[list[int]], str],
-) -> bool:
-    """Regenerate one conversation into per-generation boundary samples.
+    sem, session, endpoint, args, messages
+) -> tuple[list[dict[str, str]], dict | None, list[str | None]]:
+    """Walk a conversation and regenerate each assistant turn with the target.
 
-    Each target generation -- a tool call *or* a final answer -- is one boundary
-    row (loss_mask 0 over the prompt, 1 over the generated tokens). Tool calls
-    are not executed: the target's i-th regenerated call is paired with the i-th
-    cached result from the source row.
+    Keeps system/user turns; for every user turn, generates a fresh assistant
+    reply conditioned on the accumulated context (original assistant turns are
+    replaced). Returns (regenerated_messages, last_usage, finish_reasons).
 
-    Returns whether the conversation was truncated -- which happens when a call
-    cannot be paired 1:1 with a cached result (results exhausted, a parallel
-    call, or a different tool than the result answers). Completed rows are
-    appended to ``samples`` as they go, so the caller keeps partial progress if
-    this raises.
+    finish_reasons is per generated turn: a "length" entry means the reply hit
+    --max-tokens and is truncated mid-sentence, which is worth filtering out of a
+    training corpus. Without it, truncation is invisible in the output.
     """
-    turns = item["turns"]
-    tools = item.get("tools")
-    tool_results = deque(item.get("tool_results") or [])
-    conv_id = item["primary_id"]
-
-    prefix: list[dict[str, Any]] = []
-    truncated = False
-
-    for turn in turns:
-        if turn["role"] == "system":
-            prefix.append({"role": "system", "content": turn["content"]})
+    regenerated: list[dict[str, str]] = []
+    last_usage = None
+    finish_reasons: list[str | None] = []
+    for turn in messages:
+        if turn["role"] not in ("system", "user"):
+            continue  # drop original assistant turns; we regenerate them
+        regenerated.append(turn)
+        if turn["role"] != "user":
             continue
-
-        prefix.append({"role": "user", "content": turn["content"]})
-
-        # Tool-call loop: a tool call splices a cached result and continues;
-        # a final answer ends the turn.
-        while True:
-            payload: dict[str, Any] = {
-                # Spread first: the keys below are ours to own and must not be
-                # overridden by user-supplied sampling params.
-                **sampling_params,
-                "model": model,
-                "messages": prefix,
-                "max_tokens": max_tokens,
-                "return_token_ids": True,  # prompt_token_ids + completion token_ids
-            }
-            if tools:
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
-
-            data = await post_fn(payload)
-            sample, assistant_msg, tool_calls = _sample_from_response(
-                data,
-                detokenize=detokenize,
-                conv_id=conv_id,
-                sample_index=len(samples),
-                idx=item["idx"],
-                endpoint=endpoint,
-                sampling_params=sampling_params,
-            )
-            samples.append(sample)
-            prefix.append(assistant_msg)
-
-            if not tool_calls:
-                break  # final answer: this user turn is done
-
-            # To continue past a tool call we need exactly one call and a cached
-            # result to pair with it; otherwise keep this (committed) call row
-            # and truncate.
-            # TODO(regen): support parallel/multi tool calls -- a turn with >1
-            # call truncates here (dropped ~16/50 rows in a Hermes validation run).
-            if len(tool_calls) != 1 or not tool_results:
-                truncated = True
-                break
-
-            content, result_names = tool_results.popleft()
-            call_name = (tool_calls[0].get("function") or {}).get("name")
-            # Splice only if the regenerated call is for the tool this cached
-            # result answers; a different tool cannot be paired coherently, so
-            # keep the committed call row and truncate.
-            if result_names and call_name not in result_names:
-                truncated = True
-                break
-
-            prefix.append(_tool_result_message(tool_calls[0], content))
-
-        if truncated:
-            break
-
-    return truncated
+        payload = {
+            "model": args.model,
+            "messages": regenerated,
+            "max_tokens": args.max_tokens,
+        }
+        async with sem, session.post(endpoint, json=payload) as response:
+            data = await response.json()
+        content = _choice_content(data)
+        finish_reasons.append(data["choices"][0].get("finish_reason"))
+        regenerated.append({"role": "assistant", "content": content})
+        last_usage = data.get("usage")
+    return regenerated, last_usage, finish_reasons
 
 
-def _log_summary(stats: dict[str, Any]) -> None:
-    elapsed = time.perf_counter() - stats["start_time"]
-    n_convs = stats["ok"] + stats["errors"]
-    print(
-        f"\nPipeline complete in {elapsed:.1f}s: {n_convs} conversations "
-        f"({stats['ok']} ok, {stats['errors']} errors, "
-        f"{stats['truncated']} truncated)"
-    )
-    if stats["requests"] > 0:
-        rps = stats["requests"] / elapsed if elapsed > 0 else 0
-        tps = int(stats["completion_tokens"] / elapsed) if elapsed > 0 else 0
-        avg_latency = stats["total_request_s"] / stats["requests"] * 1000
-        print(
-            f"Throughput: {rps:.1f} req/s, {tps} tok/s | "
-            f"Avg request latency: {avg_latency:.0f} ms"
+async def _regenerate_conversation_item(
+    sem, session, queue_item, args, out_fh, err_fh, endpoint, progress, stats
+):
+    """Regenerate one conversation item and write it out (conversations mode)."""
+    idx = queue_item["idx"]
+    sample_id = queue_item.get("uuid") or f"sample_{idx}"
+    start_time = time.time()
+    try:
+        regen, usage, finish_reasons = await regenerate_conversation(
+            sem, session, endpoint, args, queue_item["messages"]
         )
-
-
-# ---------------------------------------------------------------------------
-# Worker pool & orchestration
-# ---------------------------------------------------------------------------
+        output = {
+            "id": sample_id,
+            "conversations": [
+                {"from": _TO_FROM[m["role"]], "value": m["content"]} for m in regen
+            ],
+            "metadata": {
+                "idx": idx,
+                "num_turns": len(regen),
+                "latency_s": round(time.time() - start_time, 3),
+                "usage": usage,
+                "endpoint": endpoint,
+                "finish_reasons": finish_reasons,
+                # Convenience flag: any turn that hit --max-tokens is truncated.
+                "truncated": "length" in finish_reasons,
+            },
+        }
+        out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
+        out_fh.flush()
+        stats["ok"] += 1
+        if output["metadata"]["truncated"]:
+            stats["truncated"] += 1
+    except Exception as e:  # noqa: BLE001
+        # Errors go to a sibling .errors.jsonl so the training output stays clean.
+        err_fh.write(
+            json.dumps(
+                {"id": sample_id, "metadata": {"idx": idx, "error": repr(e)}},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        err_fh.flush()
+        stats["errors"] += 1
+    finally:
+        progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
+        progress.update(1)
 
 
 async def worker(
@@ -709,11 +675,8 @@ async def worker(
                 usage = sample.get("metadata", {}).get("usage", {})
                 stats["completion_tokens"] += usage.get("completion_tokens", 0)
             out_fh.flush()
-            if samples:
-                stats["ok"] += 1
-            if truncated or any(
-                s.get("metadata", {}).get("finish_reason") == "length" for s in samples
-            ):
+            stats["ok"] += 1
+            if finish_reason == "length":
                 stats["truncated"] += 1
         except Exception as e:  # noqa: BLE001
             # Failures go to a separate error file, not the training output.
@@ -744,12 +707,286 @@ async def worker(
             queue.task_done()
 
 
+def resolve_split(args) -> str | None:
+    """Return the effective HF split (None in --input-jsonl mode)."""
+    if args.input_jsonl:
+        return None
+    cfg = DATASET_CONFIGS[args.dataset]
+    return args.split if args.split is not None else cfg["default_split"]
+
+
+def resolve_min_prompt_chars(args) -> int:
+    """Return the user-turn length floor: CLI flag, else dataset default, else 0."""
+    if args.min_prompt_chars is not None:
+        return args.min_prompt_chars
+    if args.input_jsonl:
+        return 0
+    return DATASET_CONFIGS[args.dataset].get("min_prompt_chars", 0)
+
+
+def prompt_chars(messages: list[dict[str, str]]) -> int:
+    """Total characters across the user turns of a normalized conversation."""
+    return sum(len(m["content"]) for m in messages if m["role"] == "user")
+
+
+def load_hf_dataset(dataset_id: str, subset: str | None, split: str):
+    """Stream an HF dataset, turning an auth failure into an actionable error."""
+    from datasets import load_dataset  # noqa: PLC0415  (lazy: HF path only)
+
+    try:
+        return load_dataset(dataset_id, name=subset, split=split, streaming=True)
+    except Exception as e:
+        text = str(e)
+        if any(s in text for s in ("401", "403", "gated", "restricted", "authenticat")):
+            raise SystemExit(
+                f"Cannot read {dataset_id} (split={split}): {text}\n\n"
+                f"This dataset is gated. Accept the terms at\n"
+                f"  https://huggingface.co/datasets/{dataset_id}\n"
+                f"then authenticate (`hf auth login`, or export HF_TOKEN=hf_...)."
+            ) from e
+        raise
+
+
+class _Budget:
+    """Row-examination counter shared by the source iterators.
+
+    ``max_scan`` has to be enforced inside the iterators rather than by the
+    caller: a split that filters out every row yields nothing, so a caller-side
+    check would never run and the scan would never stop.
+    """
+
+    def __init__(self, skipped: dict[str, int] | None, max_scan: int | None):
+        self.skipped = skipped
+        self.max_scan = max_scan
+        self.examined = 0
+
+    def exhausted(self) -> bool:
+        """Return True once max_scan rows have been examined; counts this row."""
+        if self.max_scan is not None and self.examined >= self.max_scan:
+            return True
+        self.examined += 1
+        return False
+
+    def skip(self, reason: str) -> None:
+        """Tally one omitted row under `reason`."""
+        if self.skipped is not None:
+            self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+
+def _iter_jsonl_items(args, budget: _Budget, min_chars: int):
+    """Yield conversation items from a local JSONL (--input-jsonl)."""
+    skip_sources = {
+        s.strip() for s in (args.skip_sources or "").split(",") if s.strip()
+    }
+    only_sources = (
+        {s.strip() for s in args.sources.split(",") if s.strip()}
+        if args.sources
+        else None
+    )
+    with open(args.input_jsonl, encoding="utf-8") as f:
+        for index, line in enumerate(f):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if budget.exhausted():
+                return
+            row = json.loads(stripped)
+            source = row.get("source")
+            if source in skip_sources:
+                budget.skip("skipped_source")
+                continue
+            if only_sources is not None and source not in only_sources:
+                budget.skip("not_in_sources")
+                continue
+            messages = normalize_input_conversation(row.get("conversations"))
+            if messages is None:
+                budget.skip("multimodal_or_malformed")
+                continue
+            if prompt_chars(messages) < min_chars:
+                budget.skip("short_prompt")
+                continue
+            yield index, row.get("id") or row.get("uuid"), {"messages": messages}
+
+
+def _hf_payload(row, cfg, budget: _Budget, min_chars: int) -> dict | None:
+    """Convert one HF row to a queue payload, or None if it should be skipped."""
+    # Conversation-shaped dataset (e.g. Nemotron `messages`): regenerate every
+    # assistant turn in-context, exactly like the --input-jsonl path.
+    messages_field = cfg.get("messages_field")
+    if messages_field:
+        messages = normalize_input_conversation(row.get(messages_field))
+        if messages is None:
+            budget.skip("multimodal_or_malformed")
+            return None
+        if prompt_chars(messages) < min_chars:
+            budget.skip("short_prompt")
+            return None
+        return {"messages": messages}
+
+    prompt = row.get(cfg["prompt_field"])
+    if not prompt:
+        budget.skip("empty_prompt")
+        return None
+    if len(prompt) < min_chars:
+        budget.skip("short_prompt")
+        return None
+    return {"prompt": prompt}
+
+
+def _iter_hf_items(args, budget: _Budget, min_chars: int):
+    """Yield items from a streamed HF dataset in DATASET_CONFIGS."""
+    cfg = DATASET_CONFIGS[args.dataset]
+    subset = args.subset if args.subset is not None else cfg.get("subset")
+    dataset = load_hf_dataset(cfg["id"], subset, resolve_split(args))
+
+    for index, row in enumerate(dataset):
+        if budget.exhausted():
+            return
+        if args.language_filter and row.get("language") != args.language_filter:
+            budget.skip("language")
+            continue
+        payload = _hf_payload(row, cfg, budget, min_chars)
+        if payload is not None:
+            yield index, row.get("uuid"), payload
+
+
+def iter_input_items(args, skipped: dict[str, int] | None = None, max_scan=None):
+    """Yield (index, id, payload) rows from the selected source.
+
+    payload is ``{"messages": [...]}`` for a conversation source (a local JSONL
+    via ``--input-jsonl``, or an HF dataset whose config declares
+    ``messages_field``) and ``{"prompt": ...}`` for a single-prompt HF dataset.
+    Rows to skip (multimodal, empty, filtered) are omitted; if ``skipped`` is
+    given, the reason for each omission is tallied into it. ``max_scan`` stops
+    after that many rows have been examined (kept + skipped).
+    """
+    budget = _Budget(skipped, max_scan)
+    min_chars = resolve_min_prompt_chars(args)
+    source = _iter_jsonl_items if args.input_jsonl else _iter_hf_items
+    yield from source(args, budget, min_chars)
+
+
+def dry_run(args) -> bool:
+    """Print the first --dry-run items and the skip tally, without generating.
+
+    Returns whether the split looks regenerable, so a driver script can gate a
+    long GPU run on `script.py --dry-run N` exiting 0.
+    """
+    limit = args.dry_run
+    # Cap rows *examined*, not just kept: if a split filters out everything (as
+    # the Nemotron v1 code split does), an uncapped scan would stream millions of
+    # rows looking for a keeper it will never find.
+    scan_cap = max(1000, 50 * limit)
+    print(
+        f"=== DRY RUN: first {limit} item(s) within {scan_cap} rows scanned; "
+        f"no requests will be sent ===\n"
+    )
+    skipped: dict[str, int] = {}
+    kept = 0
+    # closing() matters: HF streaming spawns a reader thread, and abandoning the
+    # generator mid-stream can crash the interpreter during finalization.
+    items = iter_input_items(args, skipped, max_scan=scan_cap)
+    with contextlib.closing(items):
+        for index, uuid, payload in items:
+            kept += 1
+            turns = payload.get("messages") or [
+                {"role": "user", "content": payload["prompt"]}
+            ]
+            print(f"--- item {kept} (idx={index}, id={uuid})")
+            print(f"    user chars: {prompt_chars(turns)}")
+            for turn in turns:
+                content = turn["content"]
+                preview = content[:DRY_RUN_PREVIEW_CHARS]
+                if len(content) > DRY_RUN_PREVIEW_CHARS:
+                    preview += " […]"
+                print(f"    [{turn['role']}] len={len(content)} :: {preview!r}")
+            print()
+            if kept >= limit or kept + sum(skipped.values()) >= scan_cap:
+                break
+            if index and index % 20000 == 0:
+                print(f"    ... scanned {index} rows, kept {kept} so far")
+
+    examined = kept + sum(skipped.values())
+    print(f"kept {kept} of {examined} row(s) examined")
+    if skipped:
+        print("skipped:")
+        for reason, count in sorted(skipped.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>8}  {reason}")
+    else:
+        print("skipped: none")
+
+    short = skipped.get("short_prompt", 0)
+    if short and short >= 0.5 * examined:
+        print(
+            f"\n!! WARNING: {short}/{examined} rows have placeholder user turns "
+            f"(e.g. '-') and cannot be regenerated -- the real prompts are not in "
+            f"this release. Do NOT start a full run on this split."
+        )
+        return False
+    if kept == 0:
+        print("\n!! WARNING: no usable rows found in the scanned prefix.")
+        return False
+    return True
+
+
+def default_outfile(args) -> str:
+    """Build the default output path for the current source and model."""
+    model_name = sanitize_filename(
+        args.model.split("/")[-1] if "/" in args.model else args.model
+    )
+    if args.input_jsonl:
+        stem = os.path.splitext(os.path.basename(args.input_jsonl))[0]
+        return f"{stem}_regen_{model_name}.jsonl"
+    # Include the split: one file per split keeps --resume correct and lets the
+    # splits be mixed independently downstream.
+    name = sanitize_filename(f"{args.dataset}_{resolve_split(args)}")
+    return f"{name}_{model_name}.jsonl"
+
+
+def print_run_header(args) -> None:
+    """Print the resolved source, mode, prompt floor and destination."""
+    if args.input_jsonl:
+        source, mode = args.input_jsonl, "conversations"
+    else:
+        cfg = DATASET_CONFIGS[args.dataset]
+        source = f"{cfg['id']} split={resolve_split(args)} (HF)"
+        mode = "conversations" if cfg.get("messages_field") else "single-prompt"
+    print(f"Source: {source}  [{mode} mode]")
+    print(f"Min prompt chars: {resolve_min_prompt_chars(args)}")
+    print(f"Output file: {args.outfile}")
+    print()
+
+
+def print_run_summary(
+    stats: dict[str, int], skipped: dict[str, int], outfile: str
+) -> None:
+    """Print generation counts plus why any rows never reached the model."""
+    print(f"\nDone: ok={stats['ok']} errors={stats['errors']} -> {outfile}")
+    truncated = stats.get("truncated", 0)
+    if truncated:
+        print(
+            f"  {truncated} response(s) hit --max-tokens and are truncated "
+            f"(metadata.truncated == true). Raise --max-tokens or filter them out "
+            f"before training."
+        )
+    if skipped:
+        print("Rows skipped before generation:")
+        for reason, count in sorted(skipped.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>8}  {reason}")
+
+
 async def main():
     """Main async function to process dataset through vLLM endpoints."""
     args = parse_args()
 
-    endpoint = args.endpoint
-    print(f"Using endpoint: {endpoint}")
+    # Inspect-only: never touches the endpoints, so it works before servers exist.
+    # Exits 3 on an unusable split so callers can gate a GPU run on it.
+    if args.dry_run is not None:
+        if not dry_run(args):
+            hard_exit(3)
+        return
+
+    endpoints = await resolve_endpoints(args)
 
     # Auto-detect model if not specified
     if args.model is None:
@@ -757,34 +994,9 @@ async def main():
 
     print(f"Using model: {args.model}")
 
-    # Decoder for the review-only `text` twin; see build_detokenizer.
-    detokenize = build_detokenizer(args.model)
-
-    # Get dataset configuration
-    dataset_config = DATASET_CONFIGS[args.dataset]
-    dataset_id = dataset_config.hf_path
-
-    # Use dataset-specific defaults if not provided
-    split = args.split if args.split is not None else dataset_config.split
-    subset = args.subset if args.subset is not None else dataset_config.subset
-
-    # Generate output filename if not specified
     if args.outfile is None:
-        # Extract simple model name from full path
-        model_name = args.model.split("/")[-1] if "/" in args.model else args.model
-        model_name = sanitize_filename(model_name)
-        args.outfile = f"{args.dataset}_{model_name}.jsonl"
-
-    # Failed / partial conversations are written here instead of the training file.
-    base, ext = os.path.splitext(args.outfile)
-    error_outfile = f"{base}.errors{ext or '.jsonl'}"
-
-    print(f"Using dataset: {dataset_id}")
-    print(f"Split: {split}")
-    print(f"Prompt field: {dataset_config.prompt_field}")
-    print(f"Output file: {args.outfile}")
-    print(f"Error file: {error_outfile}")
-    print()
+        args.outfile = default_outfile(args)
+    print_run_header(args)
 
     seen_ids = load_seen(args.outfile) if args.resume else set()
     dataset = load_dataset(dataset_id, name=subset, split=split, streaming=True)
@@ -815,15 +1027,9 @@ async def main():
                 dynamic_ncols=True,
             ) as progress,
         ):
-            stats = {
-                "ok": 0,
-                "errors": 0,
-                "truncated": 0,
-                "requests": 0,
-                "completion_tokens": 0,
-                "total_request_s": 0.0,
-                "start_time": time.perf_counter(),
-            }
+            stats = {"ok": 0, "errors": 0, "truncated": 0}
+            # Round-robin each worker onto an endpoint so load spreads evenly
+            # across all reachable servers.
             workers = [
                 asyncio.create_task(
                     worker(
@@ -842,7 +1048,8 @@ async def main():
             ]
 
             processed_count = 0
-            for index, row in enumerate(dataset):
+            skipped: dict[str, int] = {}
+            for index, uuid, payload in iter_input_items(args, skipped):
                 if args.limit is not None and processed_count >= args.limit:
                     break
 
@@ -900,11 +1107,27 @@ async def main():
                 await queue.put(None)
             await asyncio.gather(*workers)
 
-            _log_summary(stats)
+    print_run_summary(stats, skipped, args.outfile)
+
+
+def hard_exit(code: int) -> None:
+    """Flush and exit without running interpreter finalization.
+
+    `datasets`>=5 leaves a pyarrow reader thread behind when a streaming dataset
+    is abandoned (e.g. --limit, or any early break), and finalizing it aborts with
+    "Fatal Python error: PyGILState_Release" *after* all work is done. That noise
+    at the tail of a multi-hour log reads like a failed run, so we skip it. Safe
+    here: main() has returned, so every output file is already closed, and rows
+    are flushed as they are written regardless.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        sys.exit(130)
+        hard_exit(130)
+    hard_exit(0)

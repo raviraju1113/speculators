@@ -524,7 +524,12 @@ def main(cfg: TrainConfig):  # noqa: C901
     )
 
     # Setup distributed training
-    maybe_setup_distributed()
+    local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
+
+    # Record the run hyperparameters (e.g. to the wandb run config). The metric
+    # logger's rank0 filter ensures this only fires once in distributed runs.
+    metric_logger = logging.getLogger("speculators.metrics")
+    metric_logger.info(vars(args), extra={"hparams": True})
 
     if args.fsdp_shard and not is_distributed():
         raise ValueError(
@@ -688,6 +693,537 @@ def main(cfg: TrainConfig):  # noqa: C901
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     maybe_destroy_distributed()
+
+
+def _checkpoint_freq(value: str) -> float:
+    fvalue = float(value)
+    if fvalue <= 0:
+        raise argparse.ArgumentTypeError("--checkpoint-freq must be > 0")
+    if fvalue > 1 and not fvalue.is_integer():
+        raise argparse.ArgumentTypeError(
+            f"--checkpoint-freq={fvalue} is not an integer. Values > 1 are treated "
+            "as epoch counts and must be whole numbers."
+        )
+    return fvalue
+
+
+# CLI flags that synthesize the draft decoder shape. They conflict with both
+# --from-pretrained and --draft-config, each of which fully defines the draft.
+DECODER_SHAPING_FLAGS: dict[str, str] = {
+    "num_layers": "--num-layers",
+    "draft_arch": "--draft-arch",
+    "draft_hidden_act": "--draft-hidden-act",
+    "sliding_window": "--sliding-window",
+    "sliding_window_indices": "--sliding-window-indices",
+}
+
+
+def validate_draft_init_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    provided: set[str],
+) -> None:
+    """Enforce the draft-init contract.
+
+    The draft model may be defined in exactly one way:
+
+    * ``--from-pretrained`` -- load a complete speculator checkpoint (or a
+      config-only directory); or
+    * ``--draft-config`` -- load just the decoder config and build the rest of
+      the speculator from the other CLI args; or
+    * the decoder-shaping flags (``--num-layers`` etc.) -- synthesize everything.
+
+    ``--from-pretrained`` takes precedence over all other model-definition
+    options: it is mutually exclusive with ``--draft-config`` and with the
+    decoder-shaping flags, since those values come from the checkpoint.
+    ``--draft-config`` is likewise incompatible with the decoder-shaping flags.
+    MTP from scratch (``--speculator-type mtp`` without ``--from-pretrained``)
+    reuses the verifier's own decoder config, so ``--draft-config`` and the
+    decoder-shaping flags do not apply and are rejected.
+
+    ``provided`` is the set of decoder-shaping dests the user explicitly passed
+    (see :func:`speculators.utils.argparse_utils.explicitly_provided_dests`); a flag
+    passed at its default value still counts as a conflict.
+    """
+    shaping = [flag for dest, flag in DECODER_SHAPING_FLAGS.items() if dest in provided]
+    if args.from_pretrained:
+        conflicting = shaping + (["--draft-config"] if args.draft_config else [])
+        if conflicting:
+            parser.error(
+                "--from-pretrained loads a complete draft model and takes precedence "
+                "over all other model-definition options, so these conflict with it "
+                f"(remove them): {', '.join(conflicting)}"
+            )
+        return
+    if args.speculator_type == "mtp":
+        # MTP-from-scratch reuses the verifier's own decoder config and extracts the
+        # native MTP head weights; --draft-config and the decoder-shaping flags do not
+        # apply, so reject them rather than silently ignoring them.
+        conflicting = shaping + (["--draft-config"] if args.draft_config else [])
+        if conflicting:
+            parser.error(
+                "--speculator-type mtp reuses the verifier's decoder config, so these "
+                f"options do not apply (remove them): {', '.join(conflicting)}"
+            )
+        return
+    if args.draft_config and shaping:
+        parser.error(
+            "--draft-config defines the draft decoder, so these flags conflict with "
+            f"it (remove them): {', '.join(shaping)}"
+        )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verifier-name-or-path", type=str, required=True)
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Allow executing code from HF Hub when loading the verifier's tokenizer.",
+    )
+    parser.add_argument(
+        "--speculator-type",
+        type=str,
+        default="eagle3",
+        help="Type of speculator model to train (eagle3, dflash, peagle, mtp)",
+    )
+    parser.add_argument(
+        "--from-pretrained",
+        type=str,
+        default="",
+        help="Path or HF id of a pretrained draft. May also point to a "
+        "local directory containing only a config.json, in which case a "
+        "fresh draft is initialized from that full speculator config. Takes precedence "
+        "over and is mutually exclusive with --draft-config and the decoder-shaping "
+        "flags (--num-layers, --draft-arch, --draft-hidden-act, --sliding-window, "
+        "--sliding-window-indices).",
+    )
+    parser.add_argument(
+        "--draft-config",
+        type=str,
+        default="",
+        help="HF id, directory, or JSON path of a decoder config (LlamaConfig for "
+        "eagle3/peagle, Qwen3Config for dflash) to use as the draft "
+        "transformer_layer_config; the rest of the speculator is built from the other "
+        "CLI args. Mutually exclusive with --from-pretrained and with the "
+        "decoder-shaping flags (--num-layers, --draft-arch, --draft-hidden-act, "
+        "--sliding-window, --sliding-window-indices).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Build the speculator, initialize weights, save a checkpoint to "
+        "--save-path, then exit before training. Useful to validate the config and "
+        "weights (e.g. in vLLM) before launching a full run. Can be combined with "
+        "--draft-config or --from-pretrained.",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default="./output",
+        help=(
+            "Root data directory containing the preprocessed dataset, "
+            "vocab mappings (d2t.npy, t2d.npy), token frequencies "
+            "(token_freq.pt), and hidden states (default: ./output)"
+        ),
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        action="append",
+        default=None,
+        help=(
+            "Raw training dataset(s) to tokenize on the fly into --data-path, so "
+            "you can train directly from a HuggingFace dataset without a separate "
+            "prepare_data.py step. Accepts a built-in shortcut (sharegpt, "
+            "ultrachat, gsm8k, kimi_mtp, ...), any HF dataset name, or a local "
+            ".jsonl path; repeat to combine. Only the (cheap) tokenization + "
+            "loss-mask step runs here -- hidden states are still generated "
+            "on-demand from --vllm-endpoint. If omitted, --data-path must already "
+            "contain a preprocessed dataset."
+        ),
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Max samples to tokenize when using --data (default: all).",
+    )
+    parser.add_argument(
+        "--overwrite-data",
+        action="store_true",
+        help="Re-tokenize into --data-path even if a dataset already exists there.",
+    )
+    parser.add_argument(
+        "--hidden-states-path",
+        type=str,
+        default=None,
+        help=(
+            "The path where cached hidden states files are stored. (Default: "
+            "args.data_path / 'hidden_states')"
+        ),
+    )
+    parser.add_argument(
+        "--vllm-endpoint",
+        type=str,
+        default="http://localhost:8000/v1",
+        help=(
+            "vLLM endpoint address to use if generating hidden states on-demand."
+            " Only required if `--on-missing=generate` and samples are missing."
+            " Note: the vLLM instance must be configured to cache hidden states"
+            " to a location that is accessible from the training instance. i.e."
+            " on the same node, or a shared network drive. (Default: 'http://localhost:8000/v1')"
+        ),
+    )
+    parser.add_argument(
+        "--on-missing",
+        choices=["generate", "skip", "warn", "raise"],
+        default="generate",
+        help=(
+            "Dataloader behaviour when there are no cached hidden states for a sample."
+            "Default: 'generate', which attempts to generate the hidden states on-"
+            "demand using the provided vLLM endpoint. The other options skip the sample"
+            ", skip and warn, or raise an error respectively."
+        ),
+    )
+    parser.add_argument(
+        "--on-generate",
+        choices=["cache", "delete"],
+        default="delete",
+        help=(
+            "Dataloader behaviour when a new hidden state has been generated"
+            " (only applies if args.on_missing=='generate'). Default: 'delete', "
+            "deletes hidden states once they are loaded. 'cache' will instead store"
+            "the hidden states in the args.hidden_states_path. This can be used to "
+            "enable hybrid online/offline training, with hidden states generated on the"
+            "first epoch, and reused on subsequent epochs."
+        ),
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help=(
+            "Timeout in seconds for each individual vLLM request "
+            f"(default: {DEFAULT_REQUEST_TIMEOUT}). "
+            "Only applies if --on-missing=generate."
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=(
+            "Maximum number of retry attempts per vLLM request on failure "
+            f"(default: {DEFAULT_MAX_RETRIES}). "
+            "Only applies if --on-missing=generate."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-data",
+        action="store_true",
+        help=(
+            "DEPRECATED. Use the old data format which stores hidden states alongside "
+            "token_ids and assistant_masks, in data_i.pt files. This option will be "
+            "removed soon."
+        ),
+    )
+    parser.add_argument("--save-path", type=str, default="./output/checkpoints")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--no-resume-from-checkpoint", action="store_true")
+    parser.add_argument(
+        "--logger",
+        type=str,
+        default="",
+        help=(
+            "One of 'trackio', 'wandb', 'tensorboard', 'mlflow' or "
+            "comma separated list."
+        ),
+    )
+    parser.add_argument("--total-seq-len", type=int, default=8192)
+    parser.add_argument(
+        "--log-freq",
+        type=int,
+        default=1,
+        help="Log training metrics every N steps (default: 1)",
+    )
+    parser.add_argument("--log-dir", type=str, default="./logs")
+    parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--num-layers", type=int, default=1)
+    parser.add_argument(
+        "--draft-arch",
+        type=str,
+        default="qwen3",
+        choices=list(DRAFT_ARCH_CONFIGS.keys()),
+        help="Architecture for draft decoder layers. Defaults to 'qwen3'.",
+    )
+    parser.add_argument(
+        "--draft-hidden-act",
+        type=str,
+        default="silu",
+        help="Activation function for draft decoder layers. Defaults to 'silu' for "
+        "sigmoid linear unit. Qwen3 layers of dflash expect 'silu' activation for "
+        "vLLM deployment. If another function is desired, set as a string or leave "
+        "as None to automatically fall back to the verifier's activation function.",
+    )
+    parser.add_argument(
+        "--target-layer-ids",
+        type=int,
+        nargs="+",
+        help=(
+            "(Optional) A (space separated) list of integer layer ids. Defaults to"
+            "[2, num_hidden_layers // 2, num_hidden_layers - 3, num_hidden_layers]. "
+            "Note: must be set explicitly if custom values were used to launch vllm"
+        ),
+    )
+    parser.add_argument(
+        "--token-freq-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to token frequency distribution file (.pt). Used together with "
+            "--draft-vocab-size to build vocab mappings at training time. Falls back "
+            "to '<data-path>/token_freq.pt' if not provided. If neither that file "
+            "exists nor --draft-vocab-size is set, vocab mapping is skipped and the "
+            "full verifier vocab is used."
+        ),
+    )
+    parser.add_argument(
+        "--draft-vocab-size",
+        type=int,
+        default=None,
+        help=(
+            "Vocabulary size for the draft model. Must be provided together with a "
+            "token frequency file (--token-freq-path or '<data-path>/token_freq.pt') "
+            "to generate vocab mappings. If either is absent, vocab mapping is skipped "
+            "and the full verifier vocab is used, making this argument a no-op."
+        ),
+    )
+    parser.add_argument("--d2t-path", type=str, default=None)
+    parser.add_argument("--t2d-path", type=str, default=None)
+    parser.add_argument("--mask-token-id", type=int, default=None)
+    parser.add_argument("--ttt-steps", type=int, default=3)
+    parser.add_argument(
+        "--num-speculative-steps",
+        type=int,
+        default=3,
+        help="Number of MTP prediction steps (default: 3). Only used with MTP.",
+    )
+    parser.add_argument("--ttt-step-loss-decay", type=float, default=1.0)
+    parser.add_argument(
+        "--loss-fn",
+        type=str,
+        default="kl_div",
+        choices=["kl_div", "ce"],
+        help=(
+            "Loss function used during draft model training. "
+            "'kl_div' = KL divergence (default). "
+            "'ce' = cross-entropy."
+        ),
+    )
+    parser.add_argument(
+        "--step-weight-beta",
+        type=float,
+        default=0.6,
+        help=(
+            "Exponential decay factor for MTP step weights. "
+            "Higher values weight earlier prediction steps more heavily. "
+            "Only used with MTP algorithm."
+        ),
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--hidden-states-dtype",
+        type=str,
+        default="bfloat16",
+        help="The dtype to initialize model weights and dataloader hidden states to",
+    )
+    parser.add_argument(
+        "--deterministic-cuda",
+        action="store_true",
+        default=False,
+        help="Sets cuda to deterministic mode. This may impact performance.",
+    )
+    parser.add_argument(
+        "--use-off-policy-tokens",
+        action="store_true",
+        default=False,
+        help="Use off-policy tokens during training (required for regenerated data)",
+    )
+    # Model hyperparameters
+    parser.add_argument(
+        "--norm-before-residual",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Toggle normalization before residual connections (default: True)",
+    )
+    parser.add_argument(
+        "--embed-requires-grad",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to train embedding layer weights (default: False)",
+    )
+    parser.add_argument(
+        "--norm-before-fc",
+        action="store_true",
+        help="Use RMSNorm before fc in Eagle3 draft path "
+        "(e.g. for gpt-oss). Omit for other models.",
+    )
+    # D-Flash specific parameters
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=8,
+        help="Block size for DFlash model (default: 8)",
+    )
+    parser.add_argument(
+        "--max-anchors",
+        type=int,
+        default=256,
+        help="Maximum anchor positions for DFlash training (default: 256)",
+    )
+    parser.add_argument(
+        "--dflash-decay-gamma",
+        type=float,
+        default=4.0,
+        help="Decay gamma for DFlash loss weighting (default: 4.0)",
+    )
+    parser.add_argument(
+        "--draft-attn-impl",
+        type=str,
+        default="simple_flex_attention",
+        choices=["simple_flex_attention", "sdpa", "eager"],
+        help="Attention implementation for draft layers. "
+        "Use 'sdpa' or 'eager' for hardware that doesn't support flex attention."
+        "Not supported for MTP.",
+    )
+    # P-EAGLE specific parameters
+    parser.add_argument(
+        "--num-depths",
+        type=int,
+        default=8,
+        help="Number of parallel prediction depths for P-EAGLE (default: 8)",
+    )
+    parser.add_argument(
+        "--down-sample-ratio",
+        type=float,
+        default=0.7,
+        help="Geometric decay ratio for COD sampling in P-EAGLE (default: 0.7)",
+    )
+    parser.add_argument(
+        "--down-sample-ratio-min",
+        type=float,
+        default=0.2,
+        help="Minimum retention ratio for COD sampling in P-EAGLE (default: 0.2)",
+    )
+    parser.add_argument(
+        "--sliding-window",
+        type=int,
+        default=2048,
+        help="Sliding window size for sliding window attention layers."
+        "Must also set --sliding-window-indices.",
+    )
+    parser.add_argument(
+        "--sliding-window-indices",
+        type=int,
+        nargs="+",
+        default=[],
+        help="(Optional) A (space separated) list of draft layer indices of sliding "
+        " window layers. All other draft layers are assumed to be full attention "
+        "layers. (e.g. 0 2 4 will make the first, third, and fifth layers use "
+        "sliding window attention and the second and fourth will be full attention)."
+        "Defaults to all layers using full attention.",
+    )
+    parser.add_argument(
+        "--sliding-window-non-causal",
+        action="store_true",
+        default=False,
+        help="Use non-causal (bidirectional) masking within draft blocks for sliding "
+        "window attention layers. Full attention layers are always bidirectional, for"
+        "DFlash. Note: vLLM currently doesn't support these models",
+    )
+    # Dataloader parameters
+    parser.add_argument(
+        "--num-workers", type=int, default=12, help="Number of dataloader workers"
+    )
+    parser.add_argument(
+        "--prefetch-factor", type=int, default=4, help="Dataloader prefetch factor"
+    )
+    parser.add_argument(
+        "--noise-std",
+        type=float,
+        default=0.05,
+        help="Standard deviation for noise augmentation",
+    )
+    # Checkpoint Parameters
+    parser.add_argument(
+        "--checkpoint-freq",
+        type=_checkpoint_freq,
+        default=1.0,
+        help="Save a checkpoint every N epochs. Values < 1 enable sub-epoch "
+        "checkpointing (e.g. 0.5 = every half epoch).",
+    )
+    parser.add_argument(
+        "--save-best",
+        action="store_true",
+        default=False,
+        help="Pointing to checkpoint with lowest validation loss.",
+    )
+
+    # lr scheduler
+    parser.add_argument(
+        "--scheduler-type",
+        type=str,
+        default="linear",
+        choices=["linear", "cosine", "constant", "none"],
+    )
+    parser.add_argument("--scheduler-warmup-steps", type=int, default=None)
+    parser.add_argument("--scheduler-total-steps", type=int, default=None)
+    parser.add_argument("--scheduler-num-cosine-cycles", type=float, default=0.5)
+
+    # optimizer
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="adamw",
+        choices=["adamw", "muon"],
+        help=(
+            "Optimizer to use. 'muon' applies Muon to 2D weight matrices and AdamW to "
+            "the remaining params (norms, biases, embeddings, lm_head)."
+        ),
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=0.01,
+        help="Weight decay for the AdamW optimizer (and the AdamW group in muon mode).",
+    )
+    parser.add_argument(
+        "--muon-lr",
+        type=float,
+        default=0.02,
+        help="LR for the Muon (2D weights) group. Only used with --optimizer muon.",
+    )
+    parser.add_argument("--muon-momentum", type=float, default=0.95)
+    parser.add_argument("--muon-weight-decay", type=float, default=0.1)
+    parser.add_argument("--muon-ns-steps", type=int, default=5)
+    parser.add_argument(
+        "--muon-adjust-lr-fn",
+        type=str,
+        default="match_rms_adamw",
+        choices=["original", "match_rms_adamw"],
+        help="Muon LR adjustment. 'match_rms_adamw' matches AdamW's update RMS.",
+    )
+
+    args = parser.parse_args()
+    provided = explicitly_provided_dests(parser, DECODER_SHAPING_FLAGS)
+    validate_draft_init_args(parser, args, provided)
+    resolve_loss_fn(args.loss_fn)
+    return args
 
 
 if __name__ == "__main__":

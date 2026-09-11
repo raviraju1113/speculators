@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -41,6 +42,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 MTP_EVAL_DIR = HERE.parent / "mtp_server_eval"
 GUIDELLM_EVAL = MTP_EVAL_DIR / "run_guidellm_eval.py"
+AGENTX_EVAL = MTP_EVAL_DIR / "run_agentx.sh"
 
 # Need at least a baseline + one draft config to compute a speedup.
 MIN_EXPERIMENTS_FOR_COMPARISON = 2
@@ -56,7 +58,8 @@ DEFAULT_SERVER = {
 }
 DEFAULT_EVAL = {
     "backend": "vllm",  # which mtp_server_eval evaluator: vllm | sglang
-    # acceptance = sequential mtp_server_eval; throughput/sweep = GuideLLM
+    # acceptance = sequential mtp_server_eval; throughput/sweep = GuideLLM;
+    # agentx = AgentX agentic trace replay (run_agentx.sh)
     "mode": "acceptance",
     "benchmarks": ["aime", "gpqa", "livecodebench"],
     "num_samples": 50,
@@ -68,7 +71,19 @@ DEFAULT_EVAL = {
     "max_context": None,  # default: cap to server.max_model_len
 }
 EVAL_MODES = ("acceptance", "throughput", "sweep", "agentx")
-AGENTX_SCRIPT = MTP_EVAL_DIR / "run_agentx.sh"
+
+# Artifact each mode writes into out_dir; its presence means "this run produced results".
+MODE_ARTIFACT = {
+    "acceptance": "mtp_eval_summary.json",
+    "throughput": "acceptance.csv",
+    "sweep": "perf_results.csv",
+    "agentx": "matrix.tsv",
+}
+# Comparison script per mode (reads the artifacts above as `label=path`).
+MODE_COMPARE = {
+    "acceptance": "compare_speedup.py",
+    "agentx": "compare_agentx.py",
+}
 
 
 def deep_merge(base: dict, override: dict | None) -> dict:
@@ -129,83 +144,48 @@ def _as_csv(value) -> str:
     return str(value)
 
 
-def agentx_env_vars(
-    evalcfg: dict, server: dict, base_url: str, out_dir: Path
-) -> dict[str, str]:
-    """Env for run_agentx.sh. RESULT_DIR is absolute because the script cds."""
-    users = evalcfg.get("users_list", [1, 8, 16])
-    if isinstance(users, (list, tuple)):
-        users = " ".join(str(u) for u in users)
-    server_max = int(server["max_model_len"])
-    max_ctx = evalcfg.get("max_context")
-    max_ctx = server_max if max_ctx is None else min(int(max_ctx), server_max)
-    temp = evalcfg.get("temperature", 0)
-    try:
-        temp_s = str(int(temp)) if float(temp) == int(float(temp)) else str(temp)
-    except (TypeError, ValueError):
-        temp_s = str(temp)
-    env = {
-        "BACKEND": str(evalcfg.get("backend", "vllm")),
-        "BASE_URL": base_url,
-        "USERS_LIST": str(users),
-        "DURATION": str(evalcfg.get("duration", 600)),
-        "MAX_CONTEXT": str(max_ctx),
-        "RESULT_DIR": str(out_dir.resolve()),
-        "TEMPERATURE": temp_s,
-        "PYTHON": sys.executable,
-    }
-    if evalcfg.get("hf_dataset"):
-        env["HF_DATASET"] = str(evalcfg["hf_dataset"])
-    return env
+def _as_space_sep(value) -> str:
+    """Space-separated form, so `users_list` accepts `[1, 8]` or `"1 8"` alike."""
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(x) for x in value)
+    return str(value)
 
 
-def print_agentx_comparison(summaries: list[tuple[str, Path]]) -> None:
-    """Side-by-side concurrency matrices (one column set per experiment)."""
-    parsed: list[tuple[str, dict[str, list[str]]]] = []
-    header = None
-    for name, path in summaries:
-        rows = {}
-        for line in path.read_text().splitlines():
-            if not line.strip():
-                continue
-            cols = line.split("\t")
-            if cols[0] == "users":
-                header = cols
-                continue
-            rows[cols[0]] = cols
-        parsed.append((name, rows))
-    if not parsed or header is None:
-        return
-    users = []
-    seen = set()
-    for _, rows in parsed:
-        for u in rows:
-            if u not in seen:
-                seen.add(u)
-                users.append(u)
-    metrics = header[1:]  # decode_tok_s, accept_len, accept_rate, out_tok_s
-    names = [n for n, _ in parsed]
-    print("users\t" + "\t".join(f"{n}:{m}" for n in names for m in metrics))
-    for u in users:
-        cells = [u]
-        for _, rows in parsed:
-            row = rows.get(u, [])
-            vals = row[1:] if row else ["NA"] * len(metrics)
-            while len(vals) < len(metrics):
-                vals.append("NA")
-            cells.extend(vals[: len(metrics)])
-        print("\t".join(cells))
-
-
-def build_eval_command(evalcfg: dict, base_url: str, out_dir: Path) -> list[str]:
+def build_eval_command(
+    evalcfg: dict, base_url: str, out_dir: Path, backbone: str
+) -> list[str]:
     mode = str(evalcfg.get("mode", "acceptance")).lower()
     if mode not in EVAL_MODES:
         sys.exit(
-            f"eval.mode must be acceptance|throughput|sweep|agentx "
-            f"(got {evalcfg.get('mode')!r})"
+            f"eval.mode must be {'|'.join(EVAL_MODES)} (got {evalcfg.get('mode')!r})"
         )
     if mode == "agentx":
-        return ["bash", str(AGENTX_SCRIPT)]
+        # run_agentx.sh is env-var driven; `env K=V ... script` keeps --dry-run output
+        # copy-pasteable instead of hiding the settings in the parent environment.
+        envs = {
+            "BACKEND": evalcfg["backend"],
+            "BASE_URL": base_url,
+            # Absolute: run_agentx.sh cd's to its own dir, and an absolute path
+            # also keeps --dry-run output unambiguous about where results land.
+            "RESULT_DIR": str(out_dir.resolve()),
+            "MODEL": evalcfg.get("model") or backbone,
+            "TEMPERATURE": str(evalcfg["temperature"]),
+            "PYTHON": sys.executable,
+        }
+        # Optional knobs: only pass through when set, so run_agentx.sh's own
+        # defaults stay the single source of truth for what they are.
+        for key, cfg_key in (
+            ("USERS_LIST", "users_list"),
+            ("DURATION", "duration"),
+            ("MAX_CONTEXT", "max_context"),
+            ("PUBLIC_DATASET", "public_dataset"),
+            ("TOKENIZER", "tokenizer"),
+            ("AIPERF_BIN", "aiperf_bin"),
+            ("SKIP_EXISTING", "skip_existing"),
+        ):
+            if evalcfg.get(cfg_key) is not None:
+                envs[key] = _as_space_sep(evalcfg[cfg_key])
+        return ["env", *[f"{k}={v}" for k, v in envs.items()], str(AGENTX_EVAL)]
     if mode in ("throughput", "sweep"):
         target = base_url.rstrip("/")
         if not target.endswith("/v1"):
@@ -327,8 +307,7 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
     base_url = f"http://{server['host']}:{server['port']}"
     out_dir = out_root / exp["name"]
     serve_cmd = build_serve_command(cfg, exp, server)
-    eval_cmd = build_eval_command(evalcfg, base_url, out_dir)
-    mode = str(evalcfg.get("mode", "acceptance")).lower()
+    eval_cmd = build_eval_command(evalcfg, base_url, out_dir, cfg["backbone"])
     gpus = str(cfg.get("gpus", "")) if cfg.get("gpus") is not None else ""
 
     print(f"\n{'=' * 64}\n=== experiment: {exp['name']} ===")
@@ -339,15 +318,8 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
     else:
         print("  draft: (none — baseline)")
     print(f"  CUDA_VISIBLE_DEVICES={gpus or '(inherit)'}")
-    print(f"  serve: {' '.join(serve_cmd)}")
-    print(f"  eval : {' '.join(eval_cmd)}")
-    if mode == "agentx":
-        ax = agentx_env_vars(evalcfg, server, base_url, out_dir)
-        print(
-            "  agentx: "
-            f"USERS_LIST={ax['USERS_LIST']} DURATION={ax['DURATION']}s "
-            f"MAX_CONTEXT={ax['MAX_CONTEXT']} RESULT_DIR={ax['RESULT_DIR']}"
-        )
+    print(f"  serve: {shlex.join(serve_cmd)}")
+    print(f"  eval : {shlex.join(eval_cmd)}")
     if dry_run:
         return None
 
@@ -368,19 +340,14 @@ def run_experiment(cfg: dict, exp: dict, out_root: Path, dry_run: bool) -> Path 
             print(f"   see {out_dir / 'server.log'}", flush=True)
             return None
         print(f"  server healthy at {base_url}; running eval ...", flush=True)
-        eval_env = dict(env)
-        if mode == "agentx":
-            eval_env.update(agentx_env_vars(evalcfg, server, base_url, out_dir))
-        subprocess.run(eval_cmd, check=False, env=eval_env)
+        subprocess.run(eval_cmd, check=False, env=env)
     finally:
         stop_server(proc)
         server_log.close()
         # let GPU memory settle before the next launch
         time.sleep(10)
-    if mode == "agentx":
-        matrix = out_dir / "matrix.tsv"
-        return matrix if matrix.exists() else None
-    summary = out_dir / "mtp_eval_summary.json"
+    mode = str(evalcfg.get("mode", "acceptance")).lower()
+    summary = out_dir / MODE_ARTIFACT[mode]
     return summary if summary.exists() else None
 
 
@@ -400,6 +367,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # These runs last hours and are usually piped to a log or nohup'd, where
+    # Python would block-buffer stdout and show nothing until exit. Line-buffer
+    # so progress is followable with `tail -f`.
+    sys.stdout.reconfigure(line_buffering=True)
+
     args = parse_args()
     cfg = load_config(args.config)
     out_root = args.output_dir or Path(cfg.get("output_dir", "./results/experiments"))
@@ -427,17 +399,20 @@ def main() -> None:
     if args.dry_run or len(summaries) < MIN_EXPERIMENTS_FOR_COMPARISON:
         return
 
-    print(f"\n{'=' * 64}\n=== speedup comparison ===")
-    if all(path.name == "matrix.tsv" for _, path in summaries):
-        print_agentx_comparison(summaries)
+    # Speedup comparison (first experiment = baseline). Per-experiment `eval`
+    # overrides could in principle differ; the top-level mode picks the comparer.
+    mode = str(deep_merge(DEFAULT_EVAL, cfg.get("eval"))["mode"]).lower()
+    comparer = MODE_COMPARE.get(mode)
+    if comparer is None:
+        # throughput/sweep write CSVs for plot.py; there is no table to print.
+        print(f"\n(no comparison step for eval.mode={mode}; see {out_root})")
         return
-
-    # Speedup comparison (first experiment = baseline).
     compare = [
         sys.executable,
-        str(MTP_EVAL_DIR / "compare_speedup.py"),
+        str(MTP_EVAL_DIR / comparer),
         *[f"{name}={path}" for name, path in summaries],
     ]
+    print(f"\n{'=' * 64}\n=== speedup comparison ===")
     subprocess.run(compare, check=False)
 
 
