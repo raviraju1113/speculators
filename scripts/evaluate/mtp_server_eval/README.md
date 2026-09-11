@@ -324,6 +324,8 @@ Like `run_eval.sh`, it targets a **server you launch yourself** (spec on or off)
 | `MAX_CONTEXT` | `128000` | drop traces longer than this |
 | `HF_DATASET` | `semianalysisai/cc-traces-weka-042026` | traces dataset |
 | `RESULT_DIR` | `./results/agentx` | output dir |
+| `PYTHON` | `python3` | interpreter (YAML runner sets this to its own python) |
+| `SKIP_EXISTING` | `1` | skip a cell if `users<N>/result.row` exists; `0` to rerun |
 | `AGENTX_DIR` / `AGENTX_BRANCH` / `AGENTX_REPO` | `./.agentx/InferenceX`, `chore/agentx-integration`, SemiAnalysis repo | client checkout |
 
 > **Concurrency feasibility:** each request holds its full context in the KV

@@ -33,7 +33,9 @@ TEMPERATURE="${TEMPERATURE:-0}"             # 0 = greedy/argmax acceptance
 MAX_CONTEXT="${MAX_CONTEXT:-128000}"        # traces longer than this are filtered out
 HF_DATASET="${HF_DATASET:-semianalysisai/cc-traces-weka-042026}"
 RESULT_DIR="${RESULT_DIR:-./results/agentx}"
-POLL_INTERVAL="${POLL_INTERVAL:-0.25}"
+PYTHON="${PYTHON:-python3}"
+# Skip a cell if result.row already exists (set SKIP_EXISTING=0 to rerun).
+SKIP_EXISTING="${SKIP_EXISTING:-1}"
 # InferenceX trace-replay client checkout.
 AGENTX_DIR="${AGENTX_DIR:-./.agentx/InferenceX}"
 AGENTX_BRANCH="${AGENTX_BRANCH:-chore/agentx-integration}"
@@ -50,17 +52,29 @@ setup_agentx() {
         git clone --recurse-submodules -b "$AGENTX_BRANCH" "$AGENTX_REPO" "$AGENTX_DIR"
     fi
     [[ -f "$REPLAY" ]] || { echo "!! trace_replay_tester.py missing at $REPLAY" >&2; exit 1; }
-    python -m pip install -q -r "$AGENTX_DIR/utils/trace-replay/requirements.txt"
+    "$PYTHON" -m pip install -q -r "$AGENTX_DIR/utils/trace-replay/requirements.txt"
     hf download --repo-type dataset "$HF_DATASET" >/dev/null || true
 }
 
 # vLLM cumulative counters -> "drafts draft_tokens accepted" (summed over labels).
+# curl may fail (pipefail); still emit zeros so the caller can treat it as NA.
 scrape_vllm() {
     curl -sf "$BASE_URL/metrics" 2>/dev/null | awk '
         /^vllm:spec_decode_num_drafts(_total)?[{ ]/       {d  += $NF}
         /^vllm:spec_decode_num_draft_tokens(_total)?[{ ]/ {dt += $NF}
         /^vllm:spec_decode_num_accepted_tokens(_total)?[{ ]/ {a += $NF}
-        END {print (d+0), (dt+0), (a+0)}'
+        END {print (d+0), (dt+0), (a+0)}' || echo "0 0 0"
+}
+
+rebuild_matrix() {
+    {
+      echo -e "$MATRIX_HEADER"
+      for u in $USERS_LIST; do
+        if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
+          cat "$RESULT_DIR/users${u}/result.row"
+        fi
+      done
+    } > "$RESULT_DIR/matrix.tsv"
 }
 
 # Run one replay cell at concurrency=$1; write result.row + rebuild matrix.
@@ -68,6 +82,11 @@ run_cell() {
     local users="$1" out_dir="$RESULT_DIR/users${users}"
     mkdir -p "$out_dir"
     local log="$out_dir/replay.log"
+    if [[ "$SKIP_EXISTING" != "0" && -f "$out_dir/result.row" ]]; then
+        echo "==> [users=$users] skip existing $out_dir/result.row"
+        rebuild_matrix
+        return 0
+    fi
     echo "==> [users=$users] replay dur=${DURATION}s backend=$BACKEND -> $out_dir"
 
     # Acceptance: the replay client is a black-box OpenAI consumer, so read it off
@@ -87,7 +106,7 @@ run_cell() {
         vllm_before="$(scrape_vllm)"
     fi
 
-    python "$REPLAY" \
+    "$PYTHON" "$REPLAY" \
         --api-endpoint "$BASE_URL" \
         --hf-dataset "$HF_DATASET" \
         --output-dir "$out_dir/trace_replay" \
@@ -107,7 +126,7 @@ run_cell() {
     # Pooled DECODE tok/s -- the spec-decode-relevant number: per successful
     # request decode_time = ttlt - ttft; pool as sum(output)/sum(decode_time).
     local decode_tps
-    decode_tps=$(python - "$out_dir/trace_replay/detailed_results.csv" <<'PY'
+    decode_tps=$("$PYTHON" - "$out_dir/trace_replay/detailed_results.csv" <<'PY'
 import csv, sys
 num = den = 0.0
 try:
@@ -132,7 +151,7 @@ PY
     if [[ "$BACKEND" == "sglang" ]]; then
         kill "$accpid" 2>/dev/null || true
         local acc
-        acc=$(python3 - "$acc_file" <<'PY'
+        acc=$("$PYTHON" - "$acc_file" <<'PY'
 import sys
 L=[]; R=[]
 try:
@@ -159,7 +178,7 @@ PY
         acc_len=${acc%% *}; acc_rate=${acc##* }
     else
         local vllm_after; vllm_after="$(scrape_vllm)"
-        acc=$(python3 - "$vllm_before" "$vllm_after" <<'PY'
+        acc=$("$PYTHON" - "$vllm_before" "$vllm_after" <<'PY'
 import sys
 b = [float(x) for x in sys.argv[1].split()]
 a = [float(x) for x in sys.argv[2].split()]
@@ -178,15 +197,7 @@ PY
 
     echo "==> [users=$users] decode_tok_s=${decode_tps}  accept_len=${acc_len}  accept_rate=${acc_rate}  (wall-clock out_tok_s=${out_tps})"
     echo -e "${users}\t${decode_tps}\t${acc_len}\t${acc_rate}\t${out_tps}" > "$out_dir/result.row"
-
-    {
-      echo -e "$MATRIX_HEADER"
-      for u in $USERS_LIST; do
-        if [[ -f "$RESULT_DIR/users${u}/result.row" ]]; then
-          cat "$RESULT_DIR/users${u}/result.row"
-        fi
-      done
-    } > "$RESULT_DIR/matrix.tsv"
+    rebuild_matrix
 }
 
 echo "==> AgentX trace-replay against $BASE_URL (backend=$BACKEND, users: $USERS_LIST, ${DURATION}s/cell)"
