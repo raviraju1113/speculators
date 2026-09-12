@@ -140,3 +140,13 @@ model_classes: dict[str, base_components.ModelComponents] = {
         "qwen3", first_layer_class=Qwen3DecoderEagle3FirstLayer
     ),
 }
+
+if "mamba2" in base_components.model_classes:
+    from speculators.models.eagle3.mamba2 import Mamba2DecoderEagle3FirstLayer
+
+    # Arms B and B2 share this entry: the layer appends a SwiGLU MLP (B2) iff the
+    # config carries an ``intermediate_size``, so the arm is recoverable from the
+    # serialized config alone.
+    model_classes["mamba2"] = base_components.override_components(
+        "mamba2", first_layer_class=Mamba2DecoderEagle3FirstLayer
+    )
