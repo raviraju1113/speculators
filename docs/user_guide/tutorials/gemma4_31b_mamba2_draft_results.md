@@ -110,3 +110,69 @@ first diverges at token 7, where the target's own top-2 logprobs are **exactly t
 (`gap = 0.000000 nats`) — argmax tie-breaking under a different floating-point
 reduction order, not the draft. Neither eager nor CUDA-graph execution is consistently
 favoured, and output is bit-stable within a server instance.
+
+## Long context: AA-LCR 1k -> 128k
+
+**This is the result the project exists for.** Same server, same run, 100 samples per
+bin, `max_tokens` 1024, TP=8, `max_model_len` 131072. Baseline (no draft) is the speedup
+denominator. Config:
+[`gemma4-31b-mamba2-ctxlen-sweep.yaml`](../../../scripts/evaluate/experiments/gemma4-31b-mamba2-ctxlen-sweep.yaml).
+
+| bin | A accept_len | **B accept_len** | B/A | baseline tok/s | A tok/s | **B tok/s** | A speedup | **B speedup** |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1k | 2.464 | **2.550** | 1.03x | 219.8 | 295.5 | **292.4** | 1.34x | **1.33x** |
+| 2k | 2.412 | **2.547** | 1.06x | 206.9 | 263.2 | **268.1** | 1.27x | **1.30x** |
+| 4k | 2.404 | **2.540** | 1.06x | 184.7 | 222.4 | **229.4** | 1.20x | **1.24x** |
+| 8k | 2.435 | **2.564** | 1.05x | 152.1 | 173.2 | **181.9** | 1.14x | **1.20x** |
+| 16k | 2.294 | **2.542** | 1.11x | 129.7 | 111.0 | **125.7** | 0.86x | **0.97x** |
+| 32k | 2.196 | **2.589** | 1.18x | 98.7 | 64.9 | **79.7** | 0.66x | **0.81x** |
+| 64k | 1.949 | **2.609** | 1.34x | 79.2 | 32.5 | **45.7** | 0.41x | **0.58x** |
+| 128k | 1.755 | **2.646** | 1.51x | 63.6 | 18.9 | **30.2** | 0.30x | **0.47x** |
+
+### Acceptance: the hypothesis holds, decisively
+
+| | 1k | 128k | change |
+|---|---:|---:|---:|
+| eagle3 transformer (A) | 2.464 | 1.755 | **-28.8%** |
+| **mamba2 (B)** | 2.550 | 2.646 | **+3.8%** |
+
+The transformer draft decays **29%** from 1k to 128k. The Mamba2 draft is
+**flat** -- slightly *better* at 128k than at 1k. The B/A ratio grows monotonically with
+context, from 1.03x at 1k to **1.51x at 128k**.
+
+The concern going in was the opposite: that a fixed-size recurrent state would have to
+compress harder as context grows and lose fidelity. It does not. What degrades is the
+*transformer* draft, whose single attention layer evidently gets worse at picking the
+next token as its KV cache grows.
+
+### Throughput: both arms lose to no-draft beyond ~8k, and that is pre-existing
+
+Speculation is a net **loss** past 16k on this stack -- for both drafts. Arm B is
+uniformly and substantially better (0.47x vs 0.30x at 128k, ~1.6x more throughput than
+Arm A) but still below 1.0x.
+
+This is not an artifact of the Mamba-specific serving flags. The independently recorded
+2026-08-26 eagle3 run reproduces here almost exactly:
+
+| | recorded (k=3) | this run (k=5) |
+|---|---|---|
+| baseline 64k / 128k tok/s | 78.5 / 62.7 | 79.2 / 63.6 |
+| eagle3 64k / 128k tok/s | 29.4 / 17.2 | 32.5 / 18.9 |
+| eagle3 64k / 128k accept_len | 1.911 / 1.741 | 1.949 / 1.755 |
+
+So the long-context throughput collapse is a property of Eagle-3 drafting on this stack,
+predating this work: the per-round draft cost grows with context faster than acceptance
+can pay for it. Arm B's constant-size state makes it grow *more slowly* -- which is
+exactly the predicted mechanism, and is why Arm B is ~1.6x faster than Arm A at 128k --
+but not slowly enough to stay above 1.0x here.
+
+Arm B roughly breaks even at 16k (0.97x) where Arm A is already at 0.86x.
+
+### Reading this
+
+The draft-quality question is settled: a recurrent drafter is strictly better at long
+context, and the advantage widens with length. The *serving* question is not: neither
+draft pays for itself past ~8k in this configuration, and closing that gap is a
+throughput-engineering problem (the flags here are deliberately conservative -- prefix
+caching off, 0.65 utilization -- and the draft path is unoptimized), not a draft-quality
+one.

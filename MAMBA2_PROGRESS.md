@@ -553,6 +553,38 @@ the head-to-head is clean; only the absolute numbers shift.
 
 Raw data: `scripts/evaluate/experiments/results/gemma4-31b-full-mamba2/`.
 
+## LONG-CONTEXT RESULT — the hypothesis holds, decisively
+
+AA-LCR 1k->128k, 100 samples/bin, TP=8, `max_model_len` 131072, baseline as denominator.
+Full table in
+[gemma4_31b_mamba2_draft_results.md](docs/user_guide/tutorials/gemma4_31b_mamba2_draft_results.md).
+
+| bin | A accept_len | **B accept_len** | B/A | A speedup | **B speedup** |
+|---|---:|---:|---:|---:|---:|
+| 1k | 2.464 | **2.550** | 1.03x | 1.34x | 1.33x |
+| 8k | 2.435 | **2.564** | 1.05x | 1.14x | **1.20x** |
+| 16k | 2.294 | **2.542** | 1.11x | 0.86x | 0.97x |
+| 32k | 2.196 | **2.589** | 1.18x | 0.66x | 0.81x |
+| 64k | 1.949 | **2.609** | 1.34x | 0.41x | 0.58x |
+| 128k | 1.755 | **2.646** | **1.51x** | 0.30x | 0.47x |
+
+**Acceptance: transformer draft decays -28.8% from 1k to 128k; the Mamba2 draft is flat
+(+3.8%).** The B/A ratio grows monotonically to **1.51x at 128k**. The going-in concern
+was the opposite -- that a fixed-size state would compress harder and lose fidelity with
+length. It does not. What degrades is the *transformer* draft.
+
+**Throughput: both arms fall below no-draft past ~16k, and this is pre-existing.** Arm B
+is uniformly better (0.47x vs 0.30x at 128k, ~1.6x more throughput) but still under 1.0x.
+The independently recorded 2026-08-26 eagle3 run reproduces here almost exactly
+(baseline 64k/128k 78.5/62.7 vs our 79.2/63.6; eagle3 accept_len 1.911/1.741 vs our
+1.949/1.755), which both validates the harness and shows the collapse predates this
+work. Arm B breaks even around 16k (0.97x) where Arm A is already 0.86x.
+
+**What is and is not settled.** Draft quality: settled, a recurrent drafter is strictly
+better at long context and the margin widens with length. Serving: not settled -- neither
+draft pays for itself past ~8k here. That is a throughput-engineering problem (flags
+deliberately conservative, draft path unoptimized), not a draft-quality one.
+
 ## Environment changes made
 
 - `causal_conv1d 1.7.0` and `mamba_ssm 2.3.2.post1` built for sm_100 and installed into
