@@ -95,10 +95,12 @@ class DraftArgs(_Group):
         description="Number of draft decoder layers to synthesize. "
         "(default: 5 for dflash, 1 otherwise).",
     )
-    draft_arch: Literal["llama", "qwen3"] | None = Field(
+    draft_arch: Literal["llama", "qwen3", "mamba2"] | None = Field(
         default=None,
         description="Architecture for draft decoder layers "
-        "(default: 'llama' for eagle3, 'qwen3' otherwise).",
+        "(default: 'llama' for eagle3, 'qwen3' otherwise). 'mamba2' builds a "
+        "recurrent SSM draft block whose per-sequence state is constant in context "
+        "length instead of a KV cache; eagle3 only, and see --mamba-* for its shape.",
     )
     draft_hidden_act: str = Field(
         default="silu",
@@ -520,6 +522,43 @@ class MTPArgs(_Group):
 
 # Group attribute name -> group model. Order defines both the flatten() key order
 # (after the root scalars) and a dumped run.yaml's group layout.
+class Mamba2Args(_Group):
+    """Shape of a Mamba2 (SSM) draft block, used when ``--draft-arch mamba2``.
+
+    ``Mamba2Config`` strictly requires ``expand * hidden_size == num_heads * head_dim``,
+    so ``num_heads`` is derived from the verifier width rather than set directly.
+    """
+
+    mamba_expand: int = Field(
+        default=2, description="Inner-width multiplier: d_inner = expand * hidden_size."
+    )
+    mamba_head_dim: int = Field(
+        default=64,
+        description="SSM head dimension. Must divide expand * hidden_size.",
+    )
+    mamba_state_size: int = Field(
+        default=128, description="SSM state dimension (d_state)."
+    )
+    mamba_n_groups: int = Field(
+        default=8, description="Number of B/C groups shared across SSM heads."
+    )
+    mamba_conv_kernel: int = Field(
+        default=4, description="Width of the depthwise causal convolution."
+    )
+    mamba_chunk_size: int = Field(
+        default=256,
+        description="Chunk length of the scan. Document boundaries that are multiples "
+        "of this isolate exactly; others leave a small numerical residue in the one "
+        "chunk that straddles the boundary.",
+    )
+    mamba_mlp: bool = Field(
+        default=False,
+        description="Append a SwiGLU MLP after the mixer (the capacity-matched arm). "
+        "Without it a Mamba2-vs-transformer comparison confounds architecture with "
+        "capacity, since the bare mixer has far fewer parameters than a decoder layer.",
+    )
+
+
 _GROUPS: dict[str, type[_Group]] = {
     "verifier": VerifierArgs,
     "draft": DraftArgs,
@@ -534,6 +573,7 @@ _GROUPS: dict[str, type[_Group]] = {
     "dspark": DSparkArgs,
     "peagle": PEagleArgs,
     "mtp": MTPArgs,
+    "mamba2": Mamba2Args,
 }
 
 
@@ -643,6 +683,7 @@ class TrainConfig(BaseSettings):
     dspark: DSparkArgs = Field(default_factory=DSparkArgs)
     peagle: PEagleArgs = Field(default_factory=PEagleArgs)
     mtp: MTPArgs = Field(default_factory=MTPArgs)
+    mamba2: Mamba2Args = Field(default_factory=Mamba2Args)
 
     @model_validator(mode="after")
     def _resolve_derived_defaults(self) -> "TrainConfig":
@@ -674,6 +715,14 @@ class TrainConfig(BaseSettings):
         is_dflash = self.speculator_type == "dflash"
         if self.draft.draft_arch is None:
             self.draft.draft_arch = "llama" if is_eagle3 else "qwen3"
+        if self.draft.draft_arch == "mamba2" and not is_eagle3:
+            # Only eagle3 dispatches its draft layer through the model_classes table;
+            # dflash/dspark/mtp build Qwen3 layers directly and would silently ignore
+            # the Mamba2 config, or fail on its missing attention fields.
+            raise ValueError(
+                "--draft-arch mamba2 is only supported with --speculator-type eagle3 "
+                f"(got '{self.speculator_type}')."
+            )
         if self.draft.norm_before_fc is None:
             self.draft.norm_before_fc = is_eagle3
         if self.draft.norm_output is None:
