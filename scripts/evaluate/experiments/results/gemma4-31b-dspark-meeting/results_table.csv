@@ -1,0 +1,19 @@
+benchmark,draft,k,sample_from_anchor,accept_len,accept_rate,decode_tok_s,speedup,n,experiment
+AIME,backbone (no draft),,,,,21.0,1.00,30,baseline
+AIME,ours,8,True,3.569,0.3211,66.4,3.16,30,ours_ep0_k8
+AIME,RedHat,8,False,4.562,0.4452,84.0,4.00,30,redhat_k8
+AIME,ours,3,True,2.907,0.6356,54.8,2.61,30,ours_ep0_k3
+AIME,RedHat,3,False,2.254,0.4182,41.8,1.99,30,redhat_k3
+AIME,RedHat,7,False,4.626,0.5180,85.2,4.06,30,redhat_k7
+GPQA-Diamond,backbone (no draft),,,,,21.2,1.00,30,baseline
+GPQA-Diamond,ours,8,True,2.820,0.2276,52.9,2.50,30,ours_ep0_k8
+GPQA-Diamond,RedHat,8,False,3.920,0.3650,72.7,3.43,30,redhat_k8
+GPQA-Diamond,ours,3,True,2.460,0.4868,46.8,2.21,30,ours_ep0_k3
+GPQA-Diamond,RedHat,3,False,2.612,0.5374,48.5,2.29,30,redhat_k3
+GPQA-Diamond,RedHat,7,False,4.012,0.4303,74.8,3.53,30,redhat_k7
+LiveCodeBench,backbone (no draft),,,,,21.9,1.00,30,baseline
+LiveCodeBench,ours,8,True,3.235,0.2793,59.4,2.71,30,ours_ep0_k8
+LiveCodeBench,RedHat,8,False,3.871,0.3589,70.9,3.24,30,redhat_k8
+LiveCodeBench,ours,3,True,2.687,0.5624,50.0,2.28,30,ours_ep0_k3
+LiveCodeBench,RedHat,3,False,2.754,0.5848,50.4,2.30,30,redhat_k3
+LiveCodeBench,RedHat,7,False,3.559,0.3656,64.7,2.95,30,redhat_k7

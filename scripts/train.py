@@ -590,6 +590,7 @@ def main(cfg: TrainConfig):  # noqa: C901
 
     # Setup distributed training. This populates module-level topology state rather
     # than returning it; read it back through the getters (is_distributed, get_rank).
+    # Rebinding the getters to locals would shadow the is_distributed() call below.
     maybe_setup_distributed()
 
     # Record the run hyperparameters (e.g. to the wandb run config). The metric
@@ -741,6 +742,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         scheduler_warmup_ratio=args.scheduler_warmup_ratio,
         scheduler_total_steps=args.scheduler_total_steps,
         scheduler_num_cosine_cycles=args.scheduler_num_cosine_cycles,
+        scheduler_wsd_decay_ratio=args.scheduler_wsd_decay_ratio,
         checkpoint_freq=args.checkpoint_freq,
         save_best=args.save_best,
         hidden_states_dtype=hidden_states_dtype,
@@ -1245,11 +1247,12 @@ def parse_args():
         "--scheduler-type",
         type=str,
         default="linear",
-        choices=["linear", "cosine", "constant", "none"],
+        choices=["linear", "cosine", "constant", "wsd", "none"],
     )
     parser.add_argument("--scheduler-warmup-steps", type=int, default=None)
     parser.add_argument("--scheduler-total-steps", type=int, default=None)
     parser.add_argument("--scheduler-num-cosine-cycles", type=float, default=0.5)
+    parser.add_argument("--scheduler-wsd-decay-ratio", type=float, default=0.15)
 
     # optimizer
     parser.add_argument(

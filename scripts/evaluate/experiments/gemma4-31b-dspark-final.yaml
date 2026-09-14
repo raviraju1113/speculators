@@ -1,0 +1,64 @@
+# FINAL checkpoint of the accum23x4 run (10 epochs complete, lr schedule fully
+# decayed): epoch 9. Ours-only -- compare against the B200 rows already measured
+# under IDENTICAL server settings in results/gemma4-31b-dspark-meeting/
+# results_table_b200.csv (baseline 59.5 tok/s; redhat_k7 3.5-3.7x; ours_ep3
+# rows for the training-progress story).
+#
+# Run inside the container (see examples/train/sbatch_eval_final.sh).
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+# gpus deliberately unset -> the runner inherits CUDA_VISIBLE_DEVICES. Under
+# SLURM (srun/sbatch with --gres) that is the GPU you were ASSIGNED, so we
+# never land on someone else's card (job 29 died colliding on physical GPU 0).
+# Set e.g. gpus: "3" only for manual non-SLURM runs on a shared node.
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-final
+
+experiments:
+  # k=7 native (sample_from_anchor=False checkpoint ships speculative_tokens 7)
+  - name: ours_ep9_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/9
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: ours_ep9_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/9
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  # 15-epoch continuation result (exists once the warm-restart run on 101
+  # finishes; if it's missing the runner fails just these entries and moves on).
+  - name: ours_ep14_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/14
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: ours_ep14_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/14
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

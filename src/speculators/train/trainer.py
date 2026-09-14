@@ -113,11 +113,15 @@ class TrainerConfig(NamedTuple):
     muon_weight_decay: float = 0.1
     muon_ns_steps: int = 5
     muon_adjust_lr_fn: str = "match_rms_adamw"
-    scheduler_type: Literal["linear", "cosine", "constant", "none"] = "linear"
+    scheduler_type: Literal["linear", "cosine", "constant", "wsd", "none"] = "linear"
     scheduler_warmup_steps: int | None = None
     scheduler_warmup_ratio: float | None = None
     scheduler_total_steps: int | None = None
     scheduler_num_cosine_cycles: float = 0.5
+    # WSD only: fraction of total steps spent in the final linear decay phase
+    # (warmup -> stable plateau at peak LR -> decay). 0.15 over a 26-epoch run
+    # ~= last 4 epochs decaying.
+    scheduler_wsd_decay_ratio: float = 0.15
     checkpoint_freq: float = 1
     save_best: bool = False
     hidden_states_dtype: torch.dtype = torch.bfloat16
@@ -362,6 +366,31 @@ class Trainer:
                     num_warmup_steps=scheduler_warmup_steps,
                     num_training_steps=scheduler_total_steps,
                     last_epoch=last_epoch,
+                )
+            if self.config.scheduler_type == "wsd":
+                # Warmup-Stable-Decay: linear warmup, hold at peak, linear decay
+                # to 0 over the final scheduler_wsd_decay_ratio of total steps.
+                # The plateau makes stop/resume free (no warm-restart dip) and
+                # lets a run be extended any time before the decay phase starts.
+                decay_start = int(
+                    scheduler_total_steps
+                    * (1 - self.config.scheduler_wsd_decay_ratio)
+                )
+                warmup = scheduler_warmup_steps
+
+                def wsd_lambda(step: int) -> float:
+                    if step < warmup:
+                        return step / max(1, warmup)
+                    if step < decay_start:
+                        return 1.0
+                    return max(
+                        0.0,
+                        (scheduler_total_steps - step)
+                        / max(1, scheduler_total_steps - decay_start),
+                    )
+
+                return torch.optim.lr_scheduler.LambdaLR(
+                    opt, wsd_lambda, last_epoch=last_epoch
                 )
             if self.config.scheduler_type == "constant":
                 # Linear warmup to peak LR, then hold flat (no decay) for the
