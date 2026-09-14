@@ -523,8 +523,9 @@ def main(cfg: TrainConfig):  # noqa: C901
         loggers=args.logger, run_name=args.run_name, output_dir=args.log_dir
     )
 
-    # Setup distributed training
-    local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
+    # Setup distributed training (topology is exposed via the getter functions;
+    # unpacking the old tuple return would also shadow is_distributed()).
+    maybe_setup_distributed()
 
     # Record the run hyperparameters (e.g. to the wandb run config). The metric
     # logger's rank0 filter ensures this only fires once in distributed runs.
