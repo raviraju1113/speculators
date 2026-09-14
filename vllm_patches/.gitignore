@@ -1,0 +1,9 @@
+# Pristine copies of the patched vLLM files, kept locally to regenerate the diff or
+# revert. Not committed: they are verbatim third-party (Apache-2.0) sources and would
+# go stale against whatever vLLM version is actually installed. Recreate with:
+#   V=$(python -c 'import vllm,os;print(os.path.dirname(vllm.__file__))')
+#   mkdir -p orig && for f in v1/worker/gpu/spec_decode/speculator.py \
+#       v1/worker/gpu/spec_decode/autoregressive/speculator.py \
+#       v1/attention/backends/mamba_attn.py; do
+#     cp "$V/$f" "orig/$(echo $f | tr '/' '_')"; done
+orig/

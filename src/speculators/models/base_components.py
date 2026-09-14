@@ -27,13 +27,18 @@ class ModelComponents(NamedTuple):
         decoder_layer_class: Class for standard decoder layers used throughout
             the rest of the model.
         norm_class: Normalization layer class (e.g., LlamaRMSNorm, Qwen3RMSNorm).
-        rotary_emb_class: Rotary positional embedding class for the model.
+        rotary_emb_class: Rotary positional embedding class for the model, or None
+            for mixers that carry position implicitly (e.g. a recurrent scan).
+        uses_attention: whether the layers consume an attention mask. False for
+            recurrent mixers, which isolate packed documents via ``seq_idx`` instead
+            and would otherwise pay for an unused mask.
     """
 
     first_layer_class: type
     decoder_layer_class: type
     norm_class: type
-    rotary_emb_class: type
+    rotary_emb_class: type | None
+    uses_attention: bool = True
 
 
 model_classes: dict[str, ModelComponents] = {
@@ -95,6 +100,20 @@ try:
         Qwen3_5MoeDecoderLayer,
         Qwen3_5MoeRMSNorm,
         Qwen3_5MoeTextRotaryEmbedding,
+    )
+except ImportError:
+    pass
+
+
+try:
+    from transformers.models.mamba2.modeling_mamba2 import Mamba2Block, Mamba2RMSNorm
+
+    model_classes["mamba2"] = ModelComponents(
+        Mamba2Block,
+        Mamba2Block,
+        Mamba2RMSNorm,
+        None,  # a recurrent scan carries position through order, so no rotary
+        uses_attention=False,
     )
 except ImportError:
     pass
