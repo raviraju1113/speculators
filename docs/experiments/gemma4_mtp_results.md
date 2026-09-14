@@ -186,16 +186,16 @@ Representative repro command for the post-fix trainer run (with soft-CE enabled)
   --num-workers 4 --log-every 5 --save-every 200
 ```
 
-**Multi-draft online training** (one frozen target forward → N independent drafts,
-config-controlled): see `examples/train/gemma4_26b_mtp_online_multi.yaml`.
+**Multi-draft online training** (YAML `drafts:` list, sequential/isolated —
+config-controlled N): see `examples/train/gemma4_26b_mtp_online_multi.yaml`.
 
 ```bash
 CONFIG=examples/train/gemma4_26b_mtp_online_multi.yaml \
   bash examples/train/gemma4_26b_mtp_online.sh
 ```
 
-Each draft under `drafts:` gets its own optimizer, loss weights, and
-`<output_dir>/<name>/` checkpoints while sharing the same target signals.
+Each draft under `drafts:` is trained alone (own target signals, loss I/O,
+optimizer, `<output_dir>/<name>/` checkpoints). Drafts are not mixed in one step.
 > **Note:** runs above predate the §3 fix and produce non-inference-valid drafts.
 > Post-fix reruns supersede them.
 

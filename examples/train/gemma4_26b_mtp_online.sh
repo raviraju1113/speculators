@@ -7,7 +7,7 @@
 #   # Single draft (CLI flags):
 #   bash examples/train/gemma4_26b_mtp_online.sh
 #
-#   # Multi-draft (YAML; one target forward → N independent drafts):
+#   # Multi-draft (YAML; sequential isolated runs, not mixed I/O):
 #   CONFIG=examples/train/gemma4_26b_mtp_online_multi.yaml \
 #     bash examples/train/gemma4_26b_mtp_online.sh
 
@@ -16,7 +16,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # ============ Configuration ============
-# Optional YAML (multi-draft). When set, CLI flags below are ignored for drafts.
+# Optional YAML (N drafts trained one-by-one). When set, CLI draft flags below are unused.
 CONFIG="${CONFIG:-}"
 
 # Model paths (single-draft mode)
