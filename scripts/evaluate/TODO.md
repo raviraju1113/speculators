@@ -12,8 +12,10 @@ Lower-level server recipes: [`mtp_server_eval/README.md`](./mtp_server_eval/READ
 
 ## Suite / data gaps
 
+- [x] SPEED-Bench slices in `full-eval.yaml` / `run_eval.sh` (`speed-coding`, `speed-multilingual`, `speed-rag`, `speed-qa`, `speed-writing`, `speed-low-entropy`)
 - [ ] Confirm SPEED-Bench low-entropy ISL matches published “10k input” cards (currently `throughput_16k`)
 - [ ] Full SPEED-Bench fills after `huggingface-cli login` (NVIDIA prepare needs gated sources like `cais/hle`)
+- [x] `RedHatAI/speculator_benchmarks` nine subsets in acceptance mode + YAML
 - [x] SWE-Rebench (`swe-rebench` ← `nebius/SWE-rebench`) — wired; generate JSONL then `prepare_data.py`
 - [x] YAML full-eval template (`experiments/full-eval.yaml` + `run_full_eval.sh`) + guide / [Recent changes](./README.md#recent-changes) in [`README.md`](./README.md)
 - [ ] Optional: temperature=1.0 column (`draft_sample_method=probabilistic` as on some published cards)
@@ -26,6 +28,14 @@ Lower-level server recipes: [`mtp_server_eval/README.md`](./mtp_server_eval/READ
 - [ ] **Sample-size guidance** — defaults are small (20–50); document noise on hard sets (e.g. AIME) and/or raise recommended `num_samples`
 - [ ] **Unit tests** — cover metric scraping (`accept_stats`, Prometheus parsing), compare/tabulate helpers, and YAML→command building
 - [ ] **Research diagnostics** (DSpark / confidence) — confidence AUC/ECE and calibrated STS checks when those heads exist
+
+## AgentX (`run_agentx.sh`)
+
+- [x] Repaired onto aiperf `--scenario inferencex-agentx-mvp` — the pinned InferenceX branch/`trace_replay_tester.py` no longer exist upstream
+- [x] Wired into the YAML runner as `eval.mode: agentx` (+ `compare_agentx.py`, `agentx_metrics.py`)
+- [ ] **Per-request acceptance from aiperf** — its `SpecDecodeAcceptanceRecord` carries an `acceptance_histogram` and optional per-step accepted/drafted arrays, which is strictly richer than the aggregate `1 + Δaccepted/Δdrafts` this script scrapes off `/metrics`; would also close “Position-wise acceptance” below
+- [ ] Cross-check AgentX acceptance against a real-text long-context bench (`aa-lcr`, `swe-bench-pro`) — AgentX prompts are synthesized from token counts + KV block hashes, so its absolute acceptance is regime-specific
+- [ ] Optional: sweep `max_context` (128k vs the model's native max) as a second axis
 
 ## YAML experiment runner (`experiments/`)
 

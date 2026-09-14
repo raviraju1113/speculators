@@ -1,0 +1,14 @@
+[
+  {
+    "benchmark": "bfcl",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 4669,
+    "decode_tok_s": 55.6,
+    "e2e_tok_s": 48.5,
+    "mean_ttft_s": 0.14,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  }
+]

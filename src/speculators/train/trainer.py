@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import TqdmExperimentalWarning
 from tqdm.rich import tqdm
 from transformers import (
+    get_constant_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
     get_linear_schedule_with_warmup,
 )
@@ -112,7 +113,7 @@ class TrainerConfig(NamedTuple):
     muon_weight_decay: float = 0.1
     muon_ns_steps: int = 5
     muon_adjust_lr_fn: str = "match_rms_adamw"
-    scheduler_type: Literal["linear", "cosine", "none"] = "linear"
+    scheduler_type: Literal["linear", "cosine", "constant", "none"] = "linear"
     scheduler_warmup_steps: int | None = None
     scheduler_warmup_ratio: float | None = None
     scheduler_total_steps: int | None = None
@@ -362,6 +363,14 @@ class Trainer:
                     num_training_steps=scheduler_total_steps,
                     last_epoch=last_epoch,
                 )
+            if self.config.scheduler_type == "constant":
+                # Linear warmup to peak LR, then hold flat (no decay) for the
+                # rest of training — matches TorchSpec's decay_style="constant".
+                return get_constant_schedule_with_warmup(
+                    opt,
+                    num_warmup_steps=scheduler_warmup_steps,
+                    last_epoch=last_epoch,
+                )
             return get_cosine_schedule_with_warmup(
                 opt,
                 num_warmup_steps=scheduler_warmup_steps,
@@ -484,7 +493,10 @@ class Trainer:
                 num_tokens = int((gpu_batch["document_ids"] != -1).sum().item())
                 profile = timer.profile(num_tokens)
                 if self.is_distributed:
-                    for v in metrics.values():
+                    # Dedupe by object identity: some metrics share the same
+                    # tensor object (e.g. full_acc/cond_acc numerators), and an
+                    # in-place reduce must not run on the same buffer twice.
+                    for v in {id(v): v for v in metrics.values()}.values():
                         dist.reduce(v, dst=0, op=dist.ReduceOp.SUM)
 
                 metrics = {k: v.item() for k, v in metrics.items()}
@@ -556,6 +568,10 @@ class Trainer:
                 _draft_tokens, _loss, metrics = self.model(
                     **gpu_batch, **(self.config.val_call_kwargs or {})
                 )
+
+            if self.is_distributed:
+                for m in {id(m): m for m in metrics.values()}.values():
+                    dist.all_reduce(m, op=dist.ReduceOp.SUM)
 
             for k, v in metrics.items():
                 acc = accumulated.get(k)

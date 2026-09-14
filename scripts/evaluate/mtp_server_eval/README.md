@@ -1,14 +1,18 @@
 # Server MTP / EAGLE acceptance eval (SGLang & vLLM)
 
 A lightweight, self-contained acceptance-rate + throughput evaluator for a
-running speculative-decoding server. Unlike [`../evaluate.py`](../evaluate.py)
-(which drives GuideLLM), this sends prompts directly to the server's
-OpenAI-compatible streaming API and reads speculative-decoding metrics from the
-server's Prometheus endpoint — no GuideLLM dependency, and it supports **both
-SGLang and vLLM** backends.
+running speculative-decoding server. [`run_eval.sh`](./run_eval.sh) is the
+unified entrypoint:
 
-Only dependency beyond the stdlib is `requests` (plus `pandas` /
-`huggingface_hub` if you regenerate datasets with `prepare_data.py`).
+- **`MODE=acceptance`** (default) — sends prompts directly to the server's
+  OpenAI-compatible streaming API and reads speculative-decoding metrics from
+  `/metrics` (vLLM **or** SGLang). No GuideLLM dependency.
+- **`MODE=throughput`** / **`MODE=sweep`** — GuideLLM load driver (vLLM): HF
+  subsets, concurrency, rate sweep, `acceptance.csv` / `perf_results.csv`.
+  Needs `guidellm` (see [`../requirements.txt`](../requirements.txt)).
+
+`MODE=acceptance` needs only `requests` (plus `pandas` / `huggingface_hub` to
+regenerate datasets). `MODE=throughput`/`sweep` also needs `guidellm`.
 
 ## What it reports (per benchmark)
 
@@ -29,11 +33,16 @@ Benchmarks:
   **swe-bench-pro**, **swe-rebench**, **aa-lcr** — derived from sibling
   [`../eval_datasets/`](../eval_datasets) turns files (generate AA-LCR /
   aime26 / swe-bench-pro / swe-rebench first; see
-  [`../README.md`](../README.md#kimi-k3-dspark-acceptance-suite)).
+  [`../README.md`](../README.md#datasets--benchmark-names)).
 - **speed-coding**, **speed-multilingual**, **speed-rag**, **speed-qa**,
-  **speed-writing**, **speed-low-entropy** — NVIDIA SPEED-Bench slices via
-  [`../prepare_speedbench.py`](../prepare_speedbench.py) then
-  `prepare_data.py` (`SPEEDBENCH_DIR`).
+  **speed-writing**, **speed-low-entropy** — NVIDIA SPEED-Bench (in
+  `full-eval.yaml`). Build with [`../prepare_speedbench.py`](../prepare_speedbench.py)
+  then `prepare_data.py` (`SPEEDBENCH_DIR`). Mapping: coding / multilingual /
+  RAG / QA / writing ← qualitative; `speed-low-entropy` ← `throughput_16k` /
+  `low_entropy`.
+- **HumanEval**, **math_reasoning**, **qa**, **question**, **rag**,
+  **summarization**, **tool_call**, **translation**, **writing** —
+  `RedHatAI/speculator_benchmarks` (`prepare_data.py --only HumanEval,...`).
 - **AgentX** — an agentic **trace-replay load test** ([`run_agentx.sh`](./run_agentx.sh)),
   a different mode: it replays real Claude-Code traces at fixed concurrency
   rather than sending prompts from a file. See the [AgentX](#agentx-agentic-trace-replay-load-test)
@@ -73,13 +82,22 @@ how you run the **baseline** (spec off).
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `BACKEND` | `vllm` | `sglang` or `vllm` — selects the evaluator + metric reader |
+| `MODE` | `acceptance` | `acceptance` (sequential), `throughput` or `sweep` (GuideLLM) |
+| `BACKEND` | `vllm` | `sglang` or `vllm` — acceptance-mode metric reader |
 | `BASE_URL` | `http://127.0.0.1:8000` | server root (the eval appends `/v1/...` and `/metrics`) |
-| `BENCHMARKS` | `aime,gpqa,livecodebench` | comma-separated subset; also: `gsm8k,math500,humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy` |
-| `NUM_SAMPLES` | `20` | prompts per benchmark (`0` = all) |
-| `MAX_TOKENS` | `4096` | max generated tokens per request |
-| `TEMPERATURE` | `0.0` | `0` = greedy (canonical acceptance setting) |
-| `RESULT_DIR` | `./results` | output dir (→ `--output-dir`) |
+| `BENCHMARKS` | `aime,gpqa,livecodebench` | acceptance-mode subsets (see names below) |
+| `NUM_SAMPLES` | `20` | prompts per benchmark (`0` = all); acceptance mode |
+| `MAX_TOKENS` | `4096` | max generated tokens per request; acceptance mode |
+| `TEMPERATURE` | `0.0` | greedy = canonical; also forwarded as GuideLLM `--gen-kwargs` |
+| `RESULT_DIR` | `./results` (acceptance); unset = auto `<model>_TIMESTAMP` (GuideLLM) | output dir |
+| `DATASET` | `RedHatAI/speculator_benchmarks` | GuideLLM dataset (HF id, local dir, or `speedbench/...`) |
+| `SUBSETS` | (GuideLLM default 9) | GuideLLM comma-separated subset names |
+| `MAX_CONCURRENCY` / `MAX_REQUESTS` | 128 / 200 | GuideLLM load |
+| `MAX_TOKENS` | `4096` | max generated tokens (acceptance + GuideLLM; sweep still gen-len estimates) |
+| `GEN_LEN_RATE` / `SWEEP_RATE` | 128 / 10 | GuideLLM sweep pipeline |
+| `GEN_KWARGS` | | GuideLLM JSON gen kwargs (overrides `TEMPERATURE`) |
+| `DATA_COLUMN_MAPPER` | prompt column mapper | GuideLLM column mapping |
+| `SPEEDBENCH_DATA_DIR` | `../speedbench_data` if `DATASET=speedbench/...` | SPEED-Bench splits |
 
 ### Direct CLI args (for knobs the wrapper doesn't expose)
 
@@ -96,10 +114,13 @@ All commands run from this directory (`scripts/evaluate/mtp_server_eval/`).
 ### A. Quick start
 
 ```bash
-# vLLM server on :8000
+# vLLM server on :8000 (sequential acceptance)
 BACKEND=vllm  BASE_URL=http://127.0.0.1:8000 ./run_eval.sh
 # SGLang server on :8080
 BACKEND=sglang BASE_URL=http://127.0.0.1:8080 ./run_eval.sh
+# GuideLLM max-rate / sweep (vLLM)
+MODE=throughput BASE_URL=http://127.0.0.1:8000 SUBSETS=HumanEval ./run_eval.sh
+MODE=sweep BASE_URL=http://127.0.0.1:8000 ./run_eval.sh
 ```
 
 ### B. Speedup workflow (baseline vs spec-decoding) — the main use
@@ -204,6 +225,9 @@ python ../prepare_speedbench.py --data-dir ../speedbench_data \
     --download --configs qualitative,throughput_16k
 SPEEDBENCH_DIR=../speedbench_data python prepare_data.py --only \
   speed-coding,speed-multilingual,speed-rag,speed-qa,speed-writing,speed-low-entropy
+
+# RedHatAI/speculator_benchmarks (nine subsets; also GuideLLM default SUBSETS)
+python prepare_data.py --only HumanEval,math_reasoning,qa,question,rag,summarization,tool_call,translation,writing
 ```
 
 ### H. Full multi-benchmark suite (YAML preferred)
@@ -222,7 +246,7 @@ cd ../experiments
 **Lower-level** (server already running; same benchmark list as `full-eval.yaml`):
 
 ```bash
-BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26 \
+BENCHMARKS=gsm8k,humaneval,mbpp,speed-coding,speed-multilingual,speed-rag,math500,speed-low-entropy,swe-bench-pro,aa-lcr,mt-bench,speed-qa,speed-writing,aime26,HumanEval,math_reasoning,qa,question,rag,summarization,tool_call,translation,writing \
   NUM_SAMPLES=0 TEMPERATURE=0.0 BASE_URL=http://127.0.0.1:8000 \
   RESULT_DIR=./results/full_eval ./run_eval.sh
 ```
@@ -247,6 +271,15 @@ eval:
     - speed-qa
     - speed-writing
     - aime26
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
   num_samples: 0          # all prompts
   max_tokens: 4096
   temperature: 0.0
@@ -264,20 +297,44 @@ Notes:
 ## AgentX (agentic trace-replay load test)
 
 [`run_agentx.sh`](./run_agentx.sh) is the fourth benchmark and a **different mode
-of evaluation**: instead of sending prompts from a file, it drives SemiAnalysis's
-[InferenceX](https://github.com/SemiAnalysisAI/InferenceX) `trace_replay_tester.py`
-to replay real **Claude-Code agentic traces** against your server at a fixed
-concurrency. This measures speculative-decoding value under realistic
-long-context, multi-user load (where acceptance/throughput behave differently
-than at concurrency 1).
+of evaluation**: instead of sending prompts from a file, it replays real
+**Claude-Code agentic traces** against your server at a fixed concurrency. This
+measures speculative-decoding value under realistic long-context, multi-user load
+(where acceptance/throughput behave differently than at concurrency 1).
+
+The replay client is [aiperf](https://github.com/SemiAnalysisAI/aiperf)'s
+`--scenario inferencex-agentx-mvp`, the current upstream AgentX implementation. It
+bundles the scenario's locked replay rules (preserve trace timing, no early stop,
+cache-bust the first-turn prefix, ≥900s duration) and stamps `submission_valid`
+onto its output.
 
 Like `run_eval.sh`, it targets a **server you launch yourself** (spec on or off)
 — it does not manage the server. It sweeps one axis, **concurrency**
 (`USERS_LIST`), and reads acceptance off `/metrics` using the same backend split
 (SGLang windowed gauges vs vLLM cumulative counters).
 
-> **Network required:** on first run it clones InferenceX (the trace-replay
-> client) and downloads the traces dataset (`semianalysisai/cc-traces-weka-042026`).
+> **What AgentX acceptance does and does not tell you.** The trace corpus carries
+> no prompt *text* — only per-request token counts and 64-token KV block hashes.
+> aiperf *synthesizes* prompts reproducing each trace's length and prefix-sharing
+> structure. So AgentX measures the **serving regime** of agentic load (median
+> ~110k input, ~218 output, ~96.6% prefix reuse, concurrency), not draft quality
+> on real text. Read `decode_tok_s` and how it scales with concurrency as the
+> headline; cross-check absolute `accept_len` against the real-text benchmarks
+> above.
+
+### Setup: aiperf in its own venv
+
+aiperf is kept out of the serving env so it cannot disturb the vLLM/torch install:
+
+```bash
+python3.11 -m venv /sms-scratch/ravira/.venv-aiperf
+/sms-scratch/ravira/.venv-aiperf/bin/pip install aiperf     # needs py >=3.11,<3.14
+```
+
+Point `AIPERF_BIN` elsewhere if you install it somewhere else. On first run aiperf
+downloads the traces corpus from HuggingFace (public, no auth) and caches it;
+prompts are then rebuilt through the model's HF tokenizer, which takes a while for
+a 100k-token median ISL.
 
 ### AgentX settings
 
@@ -285,38 +342,79 @@ Like `run_eval.sh`, it targets a **server you launch yourself** (spec on or off)
 |---------|---------|---------|
 | `BACKEND` | `vllm` | `sglang`/`vllm` — acceptance reader |
 | `BASE_URL` | `http://127.0.0.1:8000` | server root |
+| `MODEL` | *(required)* | model name/path the server serves |
+| `TOKENIZER` | `$MODEL` | HF tokenizer aiperf rebuilds prompts with |
 | `USERS_LIST` | `1 8 16` | concurrency levels to sweep |
-| `DURATION` | `300` | replay seconds per level (use `1800` for a real run) |
+| `DURATION` | `1800` | replay seconds per level (**900 is the scenario minimum**) |
 | `TEMPERATURE` | `0` | greedy for comparable acceptance |
 | `MAX_CONTEXT` | `128000` | drop traces longer than this |
-| `HF_DATASET` | `semianalysisai/cc-traces-weka-042026` | traces dataset |
+| `PUBLIC_DATASET` | `semianalysis_cc_traces_weka_062126` | date-pinned corpus alias |
 | `RESULT_DIR` | `./results/agentx` | output dir |
-| `AGENTX_DIR` / `AGENTX_BRANCH` / `AGENTX_REPO` | `./.agentx/InferenceX`, `chore/agentx-integration`, SemiAnalysis repo | client checkout |
+| `AIPERF_BIN` | `/sms-scratch/ravira/.venv-aiperf/bin/aiperf` | aiperf executable |
+| `PYTHON` | `python3` | interpreter for `agentx_metrics.py` and `/metrics` parsing (YAML runner sets this to its own python) |
+| `SKIP_EXISTING` | `1` | skip a cell if `users<N>/result.row` exists; `0` to rerun |
+
+> **`DURATION` below 900s is a smoke run only.** The scenario enforces a 900s
+> minimum; below it `run_agentx.sh` adds `--unsafe-override`, which makes aiperf
+> stamp `submission_valid: false`. The matrix carries that stamp in its `valid`
+> column and `compare_agentx.py` calls it out, so a plumbing check can never be
+> mistaken for a comparable result.
+
+> **Corpus pinning.** Use a date-pinned alias. The rolling
+> `semianalysis_cc_traces_weka_with_subagents` alias advances when a new drop
+> lands, and two runs on different drops are not comparable. List what your aiperf
+> build registers with `aiperf plugins public_dataset_loader`.
 
 > **Concurrency feasibility:** each request holds its full context in the KV
 > cache, so the server holds only ~`max_total_num_tokens / MAX_CONTEXT` requests
 > at once. Beyond that the cache thrashes and throughput collapses for *every*
 > config — keep `USERS × MAX_CONTEXT` under the pool (or lower `MAX_CONTEXT` to
-> study higher concurrency).
+> study higher concurrency). Check the `GPU KV cache size: N tokens` line in the
+> server log. `MAX_CONTEXT` must also be ≤ the server's `--max-model-len`, or
+> over-length traces fail server-side and trip AgentX's 1% context-overflow
+> threshold.
 
 ### AgentX recipes
 
+**Baseline vs spec in one command** — the YAML runner does serve → replay →
+compare with identical serve flags on both sides (see
+[`../experiments/agentx-gemma4.yaml`](../experiments/agentx-gemma4.yaml)):
+
 ```bash
-# concurrency sweep against a vLLM server
-BACKEND=vllm BASE_URL=http://127.0.0.1:8000 USERS_LIST="1 8 16" ./run_agentx.sh
-
-# a real run: longer replay, against an SGLang server
-BACKEND=sglang BASE_URL=http://127.0.0.1:8080 \
-  USERS_LIST="1 8 16 24" DURATION=1800 ./run_agentx.sh
-
-# baseline vs spec: run twice against the two servers, diff the matrices
-BASE_URL=http://127.0.0.1:8000 RESULT_DIR=./results/agentx_base ./run_agentx.sh
-BASE_URL=http://127.0.0.1:8001 RESULT_DIR=./results/agentx_spec ./run_agentx.sh
+cd ../experiments
+python run_experiments.py --config agentx-gemma4.yaml --dry-run   # no GPUs needed
+python run_experiments.py --config agentx-gemma4.yaml
 ```
 
-Each concurrency level writes `results/agentx/users<N>/result.row`; all levels are
-collected into `results/agentx/matrix.tsv`
-(`users  decode_tok_s  accept_len  accept_rate  out_tok_s`).
+Lower-level, against servers you manage yourself:
+
+```bash
+# concurrency sweep against a vLLM server
+BACKEND=vllm BASE_URL=http://127.0.0.1:8000 MODEL=/path/to/backbone \
+  USERS_LIST="1 8 16" ./run_agentx.sh
+
+# a real run: longer replay, against an SGLang server
+BACKEND=sglang BASE_URL=http://127.0.0.1:8080 MODEL=/path/to/backbone \
+  USERS_LIST="1 8 16 24" DURATION=1800 ./run_agentx.sh
+
+# baseline vs spec: run twice against the two servers, then compare
+MODEL=/path/to/backbone BASE_URL=http://127.0.0.1:8000 \
+  RESULT_DIR=./results/agentx_base ./run_agentx.sh
+MODEL=/path/to/backbone BASE_URL=http://127.0.0.1:8001 \
+  RESULT_DIR=./results/agentx_spec ./run_agentx.sh
+python compare_agentx.py \
+    base=./results/agentx_base/matrix.tsv \
+    spec=./results/agentx_spec/matrix.tsv
+```
+
+Each concurrency level writes `results/agentx/users<N>/result.row` (plus that
+cell's aiperf artifacts under `users<N>/aiperf/`); all levels are collected into
+`results/agentx/matrix.tsv`
+(`users  decode_tok_s  accept_len  accept_rate  out_tok_s  valid`).
+[`compare_agentx.py`](./compare_agentx.py) turns two or more matrices into a
+per-concurrency speedup table — the AgentX counterpart of `compare_speedup.py`.
+[`agentx_metrics.py`](./agentx_metrics.py) reduces one aiperf artifact dir to a
+matrix cell; run it with `--json` to inspect a cell's full metrics.
 
 ## Output files
 
