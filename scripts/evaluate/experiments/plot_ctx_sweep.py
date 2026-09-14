@@ -6,6 +6,7 @@ Usage: python plot_ctx_sweep.py   -> results/ctx_sweep_accept_len.png
 """
 
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -21,6 +22,9 @@ SERIES = [
     ("AA-LCR real documents (TP=2)",
      R / "lcr_sweep_spec/ctx_sweep_summary.json", "#eb6834", "s", "--"),
 ]
+LCR_ONLY = "--lcr-only" in sys.argv
+if LCR_ONLY:
+    SERIES = [s for s in SERIES if "AA-LCR" in s[0]]
 SURFACE, TEXT, TEXT2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 TRAINED_LEN = 8192
 
@@ -55,9 +59,11 @@ ax.minorticks_off()
 ax.set_ylim(0, 6.2)
 ax.set_xlabel("prompt length (tokens)", color=TEXT2, fontsize=9)
 ax.set_ylabel("accept_len (k=8, scratch checkpoint_best)", color=TEXT2, fontsize=9)
-ax.set_title("DSpark acceptance vs context length: flat to 106k tokens\n"
-             "(real documents cost ~1.4 accept_len vs padding, but no length decay)",
-             color=TEXT, fontsize=11)
+title = ("DSpark acceptance on AA-LCR real documents: flat to 106k tokens\n"
+         "(scratch checkpoint_best, k=8, 30 questions/bucket, TP=2)") if LCR_ONLY else (
+         "DSpark acceptance vs context length: flat to 106k tokens\n"
+         "(real documents cost ~1.4 accept_len vs padding, but no length decay)")
+ax.set_title(title, color=TEXT, fontsize=11)
 ax.tick_params(colors=TEXT2, labelsize=9)
 ax.grid(True, color=GRID, linewidth=0.7, zorder=0)
 for s in ("top", "right"):
@@ -68,6 +74,6 @@ ax.legend(loc="lower left", fontsize=9, frameon=False, labelcolor=TEXT)
 ax.margins(x=0.14)
 
 fig.tight_layout()
-out = R / "ctx_sweep_accept_len.png"
+out = R / ("lcr_accept_len.png" if LCR_ONLY else "ctx_sweep_accept_len.png")
 fig.savefig(out, dpi=150, facecolor=SURFACE)
 print(f"wrote {out}")

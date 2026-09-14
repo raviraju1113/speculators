@@ -57,6 +57,9 @@ DATA_FILES = {
     "aa-lcr-8k": "aa-lcr-8k.jsonl",
     "aa-lcr-16k": "aa-lcr-16k.jsonl",
     "aa-lcr-32k": "aa-lcr-32k.jsonl",
+    "aa-lcr-64k": "aa-lcr-64k.jsonl",
+    "aa-lcr-96k": "aa-lcr-96k.jsonl",
+    "aa-lcr-112k": "aa-lcr-112k.jsonl",
     # SPEED-Bench qualitative: all 11 categories x 80 prompts (see ../README.md)
     "speed-coding": "speed-coding.jsonl",
     "speed-humanities": "speed-humanities.jsonl",
