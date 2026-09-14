@@ -357,12 +357,15 @@ def training_step_from_cache(
     ONLY on supervised positions (inside _step_loss, after masking). lm_head is
     frozen (tied to embed), so this is a cheap matmul and gives the FULL target
     distribution. Only the assistant is trained.
+
+    Hidden alignment matches ``training_step``: step-0 consumes shifted
+    ``h_{t-1}``; feature-distillation labels use the UNSHIFTED target hidden.
     """
     import torch
 
     input_ids = batch["input_ids"]
     loss_mask = batch["loss_mask"]
-    last_hidden = batch["last_hidden"]
+    last_hidden = batch["last_hidden"]  # UNSHIFTED target h_t (for labels/feat)
     shared_kv_states = batch["shared_kv_states"]
     B, T = input_ids.shape
 
@@ -370,7 +373,8 @@ def training_step_from_cache(
     K = cfg.ttt_steps
     total_loss = torch.zeros((), device=input_ids.device)
     metrics: dict[str, object] = {}
-    hidden = last_hidden
+    # Draft step-0 input = shifted h_{t-1} (same as online training_step).
+    hidden = _shift_right(last_hidden)
 
     for k in range(K):
         L = T - k - 1
@@ -384,10 +388,7 @@ def training_step_from_cache(
         hard_targets_k = input_ids[:, k + 1 : k + 1 + L]
         mask_k = loss_mask[:, k + 1 : k + 1 + L]
 
-        # Target soft labels: lm_head over the TARGET's cached hidden at the
-        # supervised positions [k, k+L) — NOT the recurrent draft hidden. This
-        # mirrors the online path (target_logits[:, k:k+L]). Cheap frozen matmul;
-        # _step_loss then gathers mask==1 rows.
+        # Target soft labels from UNSHIFTED cached hidden at [k, k+L).
         with torch.no_grad():
             tgt_hidden_k = last_hidden[:, k : k + L, :]  # (B, L, H)
             tgt_logits_k = target_lm_head(tgt_hidden_k)  # (B, L, V)
@@ -395,10 +396,17 @@ def training_step_from_cache(
         step_loss, sm = _step_loss(
             draft_logits, tgt_logits_k, hard_targets_k, mask_k, cfg
         )
+        if cfg.feature_l1_weight > 0:
+            feat_label = last_hidden[:, k : k + L, :]
+            feat_loss = _feature_l1(backbone_hidden, feat_label, mask_k, cfg)
+            step_loss = step_loss + cfg.feature_l1_weight * feat_loss
+            sm["feat_l1"] = feat_loss.detach()
         total_loss = total_loss + weights[k] * step_loss
         metrics[f"step{k}_soft_ce"] = sm["soft_ce"]
         if "hard_ce" in sm:
             metrics[f"step{k}_hard_ce"] = sm["hard_ce"]
+        if "feat_l1" in sm:
+            metrics[f"step{k}_feat_l1"] = sm["feat_l1"]
 
         if k + 1 < K:
             pad = last_hidden[:, L:, :]

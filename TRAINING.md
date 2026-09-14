@@ -317,3 +317,76 @@ for the config schema.
   persistent storage before the job ends.
 - **`WANDB_API_KEY`** is read from your shell env and only baked into the git-ignored
   inner script — rotate it rather than committing it.
+
+---
+
+## 7. Kimi K3 (branch `feature/kimi-k3`)
+
+Work-in-progress port of this flow to Kimi K3 as the target. Status: assets staged
+locally, training **not** started yet.
+
+### Target model
+
+- `/import/ml-sc-scratch5/chenw/models/Kimi-K3-patched` — weights symlinked from
+  raghup's read-only checkpoint (~1.5 TB mxfp4, 96 shards); modeling code copied +
+  HF-patched. Built by `MoEInfer/kimi_k3/scripts/prepare_model.sh`
+  (`/import/snvm-sc-scratch1/chenw/MoEInfer/kimi_k3/`).
+- Architecture (`KimiK3ForConditionalGeneration` → text `KimiLinearForCausalLM`,
+  trust_remote_code): 93 layers, hidden 7168, 896 routed experts, vocab 163 840,
+  1M ctx. Hybrid attention: KDA linear layers with a full MLA layer every 4th
+  (`linear_attn_config.full_attn_layers`); MLA `q_lora_rank` 1536 / `kv_lora_rank` 512.
+  `num_nextn_predict_layers = 0` — **no MTP head ships with the checkpoint**.
+- Serving: TP8 on the 8×B300 node via the `kimi_k3` conda env
+  (`/import/ml-sc-scratch6/chenw/conda_env/kimi_k3`: vLLM 0.24, torch 2.13+cu130,
+  fla-core) with the KDA recurrent-state patch from
+  `MoEInfer/kimi_k3/patches/vllm/apply_vllm_patch.py`. The target needs the whole
+  node, so hidden-state generation and training must run as separate phases.
+
+### Existing EAGLE3 draft (baseline to beat)
+
+Trained by fengluh with **TorchSpec** (3-node B200 run, `kimi_k3_eagle3_mla`); all
+assets copied under `/import/ml-sc-scratch5/chenw/models/kimi-k3-draft-torchspec/`:
+
+| item | path (relative to that dir) |
+|---|---|
+| distcp checkpoint (iter 39388, model+optimizer) | `iter_0039388/` |
+| draft config | `kimi_k3_eagle3_mla.json` |
+| TorchSpec run config | `config.yaml` |
+| TorchSpec source (the training code) | `TorchSpec/` |
+| on-policy regen train data (~2.4 GB jsonl) | `data/train_regen_code_math_merged_converted.jsonl` |
+| eval conversations | `data/eval_conversations.jsonl` |
+| converted HF / vLLM exports | `hf/`, `hf-vllm/` |
+
+Draft = 1-layer **DeepSeek-V3-style MLA** EAGLE3 head (`Eagle3DeepseekV2ForCausalLM`,
+`model_type: deepseek_v3`), full 163 840 vocab (no t2d/d2t pruning), aux hidden-state
+layers `[48, 68, 88]`, TTT length 4. Reported at iter 39388: eval token-acc 0.594,
+simulated acceptance length **1.44**.
+
+Convert distcp → HF (CPU, kimi_k3 env):
+
+```bash
+cd /import/ml-sc-scratch5/chenw/models/kimi-k3-draft-torchspec/TorchSpec
+PYTHONPATH=. /import/ml-sc-scratch6/chenw/conda_env/kimi_k3/bin/python tools/convert_to_hf.py \
+    --input-dir ../iter_0039388 --config ../kimi_k3_eagle3_mla.json \
+    --output-dir ../hf --force            # add --vllm for the vLLM-shaped export
+```
+
+### Training data staged
+
+- `lightseekorg/kimi-mtp-dataset` (HF hub) — the `kimi_mtp` entry in
+  `src/speculators/data_generation/configs.py` (~477k ShareGPT-style rows, has
+  multimodal turns; see the note there).
+- `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/kimi-mtp-nemotron-stem-code-math/`
+  — ravira's 5.9 GB HF-arrow nemotron STEM/code/math mix.
+- The on-policy regen jsonl above (what the TorchSpec baseline was trained on).
+
+### Planned (not started)
+
+1. **MTP speculator via this repo**: add a `kimi_linear` entry to the MTP registry
+   (`src/speculators/models/mtp/model_definitions.py`). The draft layer can reuse
+   transformers' `deepseek_v3` MLA decoder layer (same trick TorchSpec used) instead
+   of the trust_remote_code Kimi classes.
+2. **DSpark draft** for K3; evaluate with the Kimi-K3-DSpark acceptance suite already
+   wired into `scripts/evaluate/mtp_server_eval/`.
+3. Baseline-eval the converted TorchSpec EAGLE3 draft with vLLM spec-decode on the
+   B300 node before training anything new.

@@ -6,18 +6,24 @@ running on the same GPU(s) as training (not on a separate vLLM server).
 This is the "online" variant where target forward passes happen live during
 training (not from precomputed cache).
 
-Key differences from train.py (offline cache):
-  - Target forward passes happen live each step (no cache generation phase)
-  - Both target and assistant fit on 4x80GB for Gemma4-26B-MoE
-  - Uses training_step() from training_step.py directly
+A YAML ``drafts:`` list can name N recipes. Each draft is trained **in
+isolation** (own target signals, own loss I/O, own optimizer, own
+``<output_dir>/<name>/`` checkpoints). Drafts are never mixed in one step —
+different drafts can require different inputs/outputs, so we do not share a
+target-signal cache across them.
 
 Usage:
-    bash examples/train/gemma4_26b_mtp_online.sh              # both stages
-    STAGE=train bash examples/train/gemma4_26b_mtp_online.sh  # only train
+    # Multi-draft config (sequential, isolated runs):
+    python scripts/gemma4_mtp/train_online.py \\
+        --config examples/train/gemma4_26b_mtp_online_multi.yaml
+
+    # Single-draft CLI (backward compatible):
+    bash examples/train/gemma4_26b_mtp_online.sh
 
 Prerequisites:
     - Regenerated training data (JSONL with conversations)
     - conda env: speculator
+    - pyyaml (for --config)
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from __future__ import annotations
 import argparse
 import copy
 import os
+from typing import Any
 
 # Silence/avoid HF fast-tokenizer fork deadlock when DataLoader workers tokenize
 # on the fly (workers fork after the tokenizer has been used in the main proc).
@@ -42,10 +49,17 @@ def parse_args():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--target", required=True, help="target model path")
-    ap.add_argument("--assistant", required=True, help="assistant/draft model path")
-    ap.add_argument("--data", required=True, help="regenerated conversations JSONL")
-    ap.add_argument("--output", required=True, help="output dir for checkpoints")
+    ap.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="YAML config with target/data + drafts: list (dynamic N drafts)",
+    )
+    # Single-draft CLI (ignored when --config is set, except as fallback fields).
+    ap.add_argument("--target", default=None, help="target model path")
+    ap.add_argument("--assistant", default=None, help="assistant/draft model path")
+    ap.add_argument("--data", default=None, help="regenerated conversations JSONL")
+    ap.add_argument("--output", default=None, help="output dir for checkpoints")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=8)
@@ -53,14 +67,22 @@ def parse_args():
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--warmup-steps", type=int, default=100)
     ap.add_argument("--max-length", type=int, default=8192)
-    ap.add_argument("--num-workers", type=int, default=4,
-                    help="DataLoader workers for on-the-fly tokenization (0 = main process)")
+    ap.add_argument(
+        "--num-workers",
+        type=int,
+        default=4,
+        help="DataLoader workers for on-the-fly tokenization (0 = main process)",
+    )
     ap.add_argument("--ttt-steps", type=int, default=5)
     ap.add_argument("--step-weight-beta", type=float, default=0.8)
     ap.add_argument("--soft-ce-weight", type=float, default=0.5)
     ap.add_argument("--hard-ce-weight", type=float, default=0.0)
-    ap.add_argument("--feature-l1-weight", type=float, default=0.0,
-                    help="EAGLE/DSpark feature (hidden) smooth-L1 distillation weight")
+    ap.add_argument(
+        "--feature-l1-weight",
+        type=float,
+        default=0.0,
+        help="EAGLE/DSpark feature (hidden) smooth-L1 distillation weight",
+    )
     ap.add_argument("--bf16", action="store_true", help="load models in bfloat16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--log-every", type=int, default=10)
@@ -74,7 +96,118 @@ def parse_args():
     return ap.parse_args()
 
 
-def set_trainable(target, assistant):
+def _load_yaml(path: str) -> dict[str, Any]:
+    try:
+        import yaml
+    except ImportError as e:
+        raise SystemExit(
+            "pyyaml is required for --config; pip install pyyaml"
+        ) from e
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"config must be a mapping: {path}")
+    return cfg
+
+
+def resolve_train_config(args: argparse.Namespace) -> dict[str, Any]:
+    """Build a normalized train config from --config YAML and/or CLI flags.
+
+    Normalized shape::
+
+        {
+          target, data, output_dir, epochs, batch_size, ...,
+          drafts: [{name, assistant, lr, soft_ce_weight, ...}, ...]
+        }
+    """
+    if args.config:
+        cfg = _load_yaml(args.config)
+    else:
+        cfg = {}
+
+    # Shared fields: YAML wins if present, else CLI.
+    def shared(key: str, cli_attr: str | None = None, default=None):
+        if key in cfg and cfg[key] is not None:
+            return cfg[key]
+        if cli_attr is not None:
+            return getattr(args, cli_attr, default)
+        return default
+
+    output_dir = shared("output_dir", None, None) or shared("output", "output", None)
+    if output_dir is None and args.output:
+        output_dir = args.output
+
+    out: dict[str, Any] = {
+        "target": shared("target", "target"),
+        "data": shared("data", "data"),
+        "output_dir": output_dir,
+        "epochs": int(shared("epochs", "epochs", 3)),
+        "batch_size": int(shared("batch_size", "batch_size", 2)),
+        "grad_accum": int(shared("grad_accum", "grad_accum", 8)),
+        "max_length": int(shared("max_length", "max_length", 8192)),
+        "max_samples": int(shared("max_samples", "max_samples", 0)),
+        "bf16": bool(shared("bf16", "bf16", False)),
+        "num_workers": int(shared("num_workers", "num_workers", 4)),
+        "log_every": int(shared("log_every", "log_every", 10)),
+        "save_every": int(shared("save_every", "save_every", 0)),
+        "device": shared("device", "device", "cuda"),
+        "warmup_steps": int(shared("warmup_steps", "warmup_steps", 100)),
+        "weight_decay": float(shared("weight_decay", "weight_decay", 0.0)),
+    }
+
+    defaults = dict(cfg.get("defaults") or {})
+    # CLI single-draft defaults fill gaps when no YAML defaults block.
+    cli_defaults = {
+        "assistant": args.assistant,
+        "lr": args.lr,
+        "ttt_steps": args.ttt_steps,
+        "step_weight_beta": args.step_weight_beta,
+        "soft_ce_weight": args.soft_ce_weight,
+        "hard_ce_weight": args.hard_ce_weight,
+        "feature_l1_weight": args.feature_l1_weight,
+        "random_init": bool(args.random_init),
+        "weight_decay": args.weight_decay,
+        "warmup_steps": args.warmup_steps,
+    }
+    for k, v in cli_defaults.items():
+        defaults.setdefault(k, v)
+
+    raw_drafts = cfg.get("drafts")
+    if raw_drafts is None:
+        # Single-draft CLI mode.
+        if not args.assistant and not defaults.get("assistant"):
+            raise SystemExit(
+                "provide --config with drafts:, or --assistant for single-draft mode"
+            )
+        raw_drafts = [{"name": "assistant"}]
+
+    if not isinstance(raw_drafts, list) or not raw_drafts:
+        raise SystemExit("config.drafts must be a non-empty list")
+
+    drafts = []
+    names_seen: set[str] = set()
+    for i, entry in enumerate(raw_drafts):
+        if not isinstance(entry, dict):
+            raise SystemExit(f"drafts[{i}] must be a mapping")
+        name = str(entry.get("name") or f"draft{i}")
+        if name in names_seen:
+            raise SystemExit(f"duplicate draft name: {name!r}")
+        names_seen.add(name)
+        merged = {**defaults, **{k: entry[k] for k in entry if k != "name"}}
+        merged["name"] = name
+        if not merged.get("assistant"):
+            raise SystemExit(f"draft {name!r}: assistant path required")
+        drafts.append(merged)
+
+    out["drafts"] = drafts
+
+    missing = [k for k in ("target", "data", "output_dir") if not out.get(k)]
+    if missing:
+        raise SystemExit(f"missing required config fields: {missing}")
+    return out
+
+
+def set_trainable(target, assistant, log=print):
     """Apply freeze policy: target frozen, assistant partial freeze."""
     for p in target.parameters():
         p.requires_grad_(False)
@@ -100,12 +233,11 @@ def set_trainable(target, assistant):
     trainable = [p for p in assistant.parameters() if p.requires_grad]
     n_train = sum(p.numel() for p in trainable)
     n_total = sum(p.numel() for p in assistant.parameters())
-    print(f"[freeze] target: fully frozen", flush=True)
-    print(f"[freeze] assistant frozen submodules: {frozen_names}", flush=True)
-    print(
+    log("[freeze] target: fully frozen")
+    log(f"[freeze] assistant frozen submodules: {frozen_names}")
+    log(
         f"[freeze] trainable params: {n_train:,} / {n_total:,} "
-        f"({100.0 * n_train / max(n_total, 1):.1f}%)",
-        flush=True,
+        f"({100.0 * n_train / max(n_total, 1):.1f}%)"
     )
     if n_train == 0:
         raise RuntimeError("no trainable params after freeze")
@@ -129,8 +261,6 @@ def build_dataset(data_path, tokenizer, max_length, max_samples=0):
 
     print(f"[data] loaded {len(conversations)} conversations from {data_path}")
 
-    # Convert from {"from": "human"/"gpt", "value": "..."} to
-    # {"role": "user"/"assistant", "content": "..."} format
     def convert_conversation(conv_list):
         result = []
         for msg in conv_list:
@@ -142,12 +272,8 @@ def build_dataset(data_path, tokenizer, max_length, max_samples=0):
                 result.append({"role": "assistant", "content": val})
             elif fr == "system":
                 result.append({"role": "system", "content": val})
-            # skip unknown roles
         return result
 
-    # Cheap pre-pass: convert role format and drop empties only (NO tokenization).
-    # Tokenization is deferred to __getitem__ so it runs in DataLoader workers,
-    # in parallel and overlapped with GPU compute (see LazyTokenizedDataset).
     converted_convs = []
     for conv in conversations:
         convs = conv.get("conversations", conv.get("messages", []))
@@ -156,17 +282,12 @@ def build_dataset(data_path, tokenizer, max_length, max_samples=0):
             continue
         converted_convs.append(converted)
 
-    print(f"[data] {len(converted_convs)} conversations ready (lazy tokenization in dataloader workers)")
+    print(
+        f"[data] {len(converted_convs)} conversations ready "
+        "(lazy tokenization in dataloader workers)"
+    )
 
     class LazyTokenizedDataset(torch.utils.data.Dataset):
-        """Tokenizes on the fly in __getitem__ (runs inside DataLoader workers).
-
-        Avoids the ~50 min single-threaded upfront tokenization (4x redundant
-        under DDP). A conversation whose parse returns None (e.g. no valid
-        assistant label) is skipped by deterministically advancing to the next
-        index, keeping __len__ stable for DistributedSampler.
-        """
-
         def __init__(self, convs, parser):
             self.convs = convs
             self.parser = parser
@@ -192,36 +313,17 @@ def collate_fn(batch, pad_token_id):
     return base_collate(batch, pad_token_id=pad_token_id)
 
 
-def training_step_split(
-    target,
-    assistant,
-    target_embed_a,
-    target_lm_head_a,
-    batch,
-    cfg,
-    target_device,
-    asst_device,
-):
-    """Device-split TTT step: backbone on one GPU, draft on another.
+def build_target_cache_batch(target, batch, target_device, asst_device):
+    """Frozen target forward → tensors for ``training_step_from_cache``.
 
-    The frozen target forward runs on ``target_device`` (produces last_hidden +
-    shared_kv_states, no grad); those signals are copied to ``asst_device`` and
-    the assistant is trained there via ``training_step_from_cache`` (backward and
-    optimizer state stay on the draft GPU). ``target_embed_a`` / ``target_lm_head_a``
-    are frozen copies of the target's embed / lm_head placed on ``asst_device``.
+    Built per micro-batch for **one** draft only (never shared across drafts).
     """
-    from speculators.models.gemma4_mtp.training_step import (
-        locate_target_parts,
-        training_step_from_cache,
-    )
+    from speculators.models.gemma4_mtp.training_step import locate_target_parts
 
     input_ids = batch["input_ids"].to(target_device, non_blocking=True)
     attn = batch.get("attention_mask")
     attn_t = attn.to(target_device, non_blocking=True) if attn is not None else None
 
-    # Backbone forward on target_device -> last_hidden + shared_kv_states only.
-    # (Soft labels are recomputed on the draft GPU inside training_step_from_cache,
-    # so we skip the full [B,T,V] target_logits matmul here.)
     target_base, _, _, _ = locate_target_parts(target)
     with torch.no_grad():
         base_out = target_base(
@@ -238,34 +340,18 @@ def training_step_split(
     def to_a(t):
         return t.to(asst_device, non_blocking=True)
 
-    cache_batch = {
+    return {
         "input_ids": batch["input_ids"].to(asst_device, non_blocking=True),
         "loss_mask": batch["loss_mask"].to(asst_device, non_blocking=True),
         "last_hidden": to_a(last_hidden),
         "shared_kv_states": {
-            k: (to_a(kv[0]), to_a(kv[1]))
-            for k, kv in shared_kv_states.items()
+            k: (to_a(kv[0]), to_a(kv[1])) for k, kv in shared_kv_states.items()
         },
     }
-    return training_step_from_cache(
-        assistant, target_embed_a, target_lm_head_a, cache_batch, cfg
-    )
 
 
 def patch_causal_shared_kv_masks(assistant, log=print):
-    """Replace the assistant's *bidirectional* shared-KV mask with a block-CAUSAL
-    one, fixing the training-time future-KV label leak.
-
-    The stock ``create_attention_masks`` builds an all-ones (bidirectional) mask
-    over the target's full teacher-forced KV. With q_len>1 (TTT training) that
-    lets query row t attend the target KV of the token it is predicting -> leak.
-    (At inference it is harmless: q_len==1 and the KV cache holds only the past.)
-
-    Fix: query row t is absolute position k+t and may attend target KV j only for
-    j <= k+t (full-attn layers) or k+t-window < j <= k+t (sliding layers). The
-    step offset k need not be passed: in the loop kv_len == full seq length T and
-    q_len == T-k-1, so k = kv_len - q_len - 1.
-    """
+    """Replace the assistant's bidirectional shared-KV mask with block-causal."""
     import types
 
     holder = None
@@ -284,21 +370,13 @@ def patch_causal_shared_kv_masks(assistant, log=print):
         neg = torch.finfo(dtype).min
 
         def build(kv_len, win=None):
-            # Query row t is a draft rollout that started at target position t
-            # (its recurrent hidden traces back to target_hidden[t]); at inference
-            # such a rollout attends only the VERIFIED prefix KV[0..t] with a
-            # CONSTANT position/KV-range across draft steps (constant_draft_positions).
-            # So row t attends KV[0..t] -- offset 0, i.e. query-pos t attends
-            # KV-pos <= t, the SAME for every TTT step k. (Using offset=k would let
-            # row t attend KV[t+1..k+t] = the target's KV for the tokens being
-            # drafted -> a leak not available at inference.)
-            qpos = torch.arange(q_len, device=device)  # row t -> position t
-            kv = torch.arange(kv_len, device=device)  # kv index == target position
-            allow = kv[None, :] <= qpos[:, None]  # attend verified prefix only
+            qpos = torch.arange(q_len, device=device)
+            kv = torch.arange(kv_len, device=device)
+            allow = kv[None, :] <= qpos[:, None]
             if win is not None:
-                allow = allow & (kv[None, :] > qpos[:, None] - win)  # + SWA window
+                allow = allow & (kv[None, :] > qpos[:, None] - win)
             m = torch.zeros(q_len, kv_len, dtype=dtype, device=device)
-            return m.masked_fill(~allow, neg)[None, None]  # (1,1,q_len,kv_len)
+            return m.masked_fill(~allow, neg)[None, None]
 
         kv_full = shared_kv_states["full_attention"][0][:, 0].shape[1]
         kv_swa = shared_kv_states["sliding_attention"][0][:, 0].shape[1]
@@ -310,51 +388,207 @@ def patch_causal_shared_kv_masks(assistant, log=print):
     holder.create_attention_masks = types.MethodType(
         causal_create_attention_masks, holder
     )
-    # NOTE: do NOT inject advancing RoPE positions here. vLLM inference uses
-    # `constant_draft_positions=True` (all draft steps in a rollout share the
-    # last target-model position), and the stock training default
-    # (position_ids=None -> arange(L), i.e. row t -> position t, constant across
-    # TTT step k) already matches that. Advancing positions (k+t) would create a
-    # train/inference RoPE mismatch. Mask fix only.
-    log(f"[mask-fix] patched {type(holder).__name__}.create_attention_masks -> "
-        f"block-causal (sliding_window={window})")
+    log(
+        f"[mask-fix] patched {type(holder).__name__}.create_attention_masks -> "
+        f"block-causal (sliding_window={window})"
+    )
     return holder
 
 
 def patch_hidden_shift(log=print):
-    """Fix the train/inference HIDDEN-STATE alignment (root cause of the vLLM
-    accept-length collapse for from-scratch drafts).
-
-    vLLM / the EAGLE-MTP recipe feed the draft the target hidden of the PREVIOUS
-    position plus the current token embedding:  (h_{t-1}, embed(x_t)) -> x_{t+1}.
-    But build_target_signals returns h_t, so training aligned the draft to h_t
-    (same position). A from-scratch draft then collapses when vLLM feeds h_{t-1}
-    (accept ~1.0), even though HF looks perfect. Empirically: trained draft
-    step-0 argmax-match on held-out AIME is 0.94 with h_t but 0.06 with h_{t-1}
-    (= vLLM); vanilla prefers h_{t-1} (0.92).
-
-    Fix: shift the draft's INPUT hidden right by one (row t -> h_{t-1}) WITHOUT
-    touching target_logits (labels stay computed from the unshifted hidden).
-    training_step uses last_hidden only as the step-0 draft input + recurrent
-    pad, so patching build_target_signals' return is safe and needs no edit to
-    training_step.py. The TTT recurrence is self-consistent after this fix.
-    """
-    # The h_{t-1} shift is now folded DIRECTLY into training_step.py (the draft's
-    # step-0 input uses the shifted target hidden; feature-distillation labels use
-    # the UNSHIFTED hidden). Patching build_target_signals here too would
-    # DOUBLE-shift, so this is a no-op now (kept so launchers don't break).
+    """No-op: hidden shift is folded into training_step / training_step_from_cache."""
     log("[hidden-shift] folded into training_step.py (no-op here)")
 
 
-def main():
-    import json
+def load_assistant(path: str, dtype, device, random_init: bool, log=print):
+    if random_init:
+        from transformers import AutoConfig
+
+        cfg = AutoConfig.from_pretrained(path, trust_remote_code=True)
+        assistant = AutoModelForCausalLM.from_config(cfg, dtype=dtype)
+
+        def init_weights(mod):
+            if hasattr(mod, "_init_weights"):
+                try:
+                    mod._init_weights(mod)
+                except TypeError:
+                    pass
+
+        assistant.apply(init_weights)
+        log(f"[random-init] {path} initialized from scratch")
+    else:
+        assistant = AutoModelForCausalLM.from_pretrained(
+            path, dtype=dtype, trust_remote_code=True
+        )
+    return assistant.to(device)
+
+
+def _make_target_heads(target, asst_device):
+    """Frozen embed / lm_head on the draft device (for one draft's training)."""
+    from speculators.models.gemma4_mtp.training_step import locate_target_parts
+
+    _, tgt_lm_head, tgt_embed, _ = locate_target_parts(target)
+    target_embed_a = copy.deepcopy(tgt_embed).to(asst_device).eval()
+    for p in target_embed_a.parameters():
+        p.requires_grad_(False)
+    if tgt_lm_head is not None:
+        target_lm_head_a = copy.deepcopy(tgt_lm_head).to(asst_device).eval()
+        for p in target_lm_head_a.parameters():
+            p.requires_grad_(False)
+    else:
+        import torch.nn.functional as _F
+
+        _w = target_embed_a.weight
+        target_lm_head_a = lambda h: _F.linear(h, _w)  # noqa: E731
+    return target_embed_a, target_lm_head_a
+
+
+def _train_one_draft(
+    *,
+    dcfg: dict[str, Any],
+    cfg: dict[str, Any],
+    target,
+    target_embed_a,
+    target_lm_head_a,
+    loader,
+    sampler,
+    tokenizer,
+    dtype,
+    target_device: str,
+    asst_device: str,
+    ddp: bool,
+    local_rank: int,
+    is_main: bool,
+    log,
+):
+    """Full isolated train loop for a single draft (own I/O, never mixed)."""
     from transformers import get_cosine_schedule_with_warmup
     from speculators.models.gemma4_mtp.training_step import (
         MTPLossConfig,
-        training_step,
+        training_step_from_cache,
     )
 
+    name = dcfg["name"]
+    out_dir = os.path.join(cfg["output_dir"], name)
+    if is_main:
+        os.makedirs(out_dir, exist_ok=True)
+
+    log(
+        f"=== [{name}] start === assistant={dcfg['assistant']} "
+        f"random_init={dcfg.get('random_init')} lr={dcfg['lr']} "
+        f"soft={dcfg['soft_ce_weight']} hard={dcfg['hard_ce_weight']} "
+        f"feat={dcfg['feature_l1_weight']} ttt={dcfg['ttt_steps']} -> {out_dir}"
+    )
+
+    assistant = load_assistant(
+        dcfg["assistant"],
+        dtype,
+        asst_device,
+        bool(dcfg.get("random_init", False)),
+        log=log,
+    )
+    patch_causal_shared_kv_masks(assistant, log=log)
+    patch_hidden_shift(log=log)
+    trainable = set_trainable(target, assistant, log=log)
+    module = assistant
+    model = assistant
+    if ddp:
+        model = DDP(
+            assistant,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            broadcast_buffers=False,
+            find_unused_parameters=False,
+        )
+
+    loss_cfg = MTPLossConfig(
+        ttt_steps=int(dcfg["ttt_steps"]),
+        step_weight_beta=float(dcfg["step_weight_beta"]),
+        soft_ce_weight=float(dcfg["soft_ce_weight"]),
+        hard_ce_weight=float(dcfg["hard_ce_weight"]),
+        feature_l1_weight=float(dcfg["feature_l1_weight"]),
+    )
+    total_steps = (len(loader) // max(cfg["grad_accum"], 1)) * cfg["epochs"]
+    optim = torch.optim.AdamW(
+        trainable,
+        lr=float(dcfg["lr"]),
+        weight_decay=float(dcfg.get("weight_decay", cfg["weight_decay"])),
+    )
+    sched = get_cosine_schedule_with_warmup(
+        optim,
+        num_warmup_steps=int(dcfg.get("warmup_steps", cfg["warmup_steps"])),
+        num_training_steps=max(total_steps, 1),
+    )
+    module.train()
+    optim.zero_grad()
+
+    step = 0
+    run: dict[str, float] = {}
+
+    for epoch in range(cfg["epochs"]):
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+
+        for i, batch in enumerate(loader):
+            # Target signals are built for THIS draft only — not reused elsewhere.
+            cache_batch = build_target_cache_batch(
+                target, batch, target_device, asst_device
+            )
+
+            use_no_sync = (
+                ddp
+                and isinstance(model, DDP)
+                and (i + 1) % cfg["grad_accum"] != 0
+            )
+            ctx = model.no_sync() if use_no_sync else torch.enable_grad()
+            with ctx:
+                loss, metrics = training_step_from_cache(
+                    module if not ddp else model,
+                    target_embed_a,
+                    target_lm_head_a,
+                    cache_batch,
+                    loss_cfg,
+                )
+                (loss / cfg["grad_accum"]).backward()
+
+            for _k, _v in metrics.items():
+                run[_k] = run.get(_k, 0.0) + float(_v)
+            run["_n"] = run.get("_n", 0) + 1
+
+            if (i + 1) % cfg["grad_accum"] == 0:
+                step += 1
+                torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+                optim.step()
+                sched.step()
+                optim.zero_grad()
+
+                if step % cfg["log_every"] == 0:
+                    n = run.pop("_n", 1)
+                    avg = {k: run[k] / n for k in run}
+                    run = {}
+                    lr = sched.get_last_lr()[0]
+                    msg = " ".join(f"{k}={v:.4f}" for k, v in avg.items())
+                    log(
+                        f"[{name}] epoch {epoch} step {step}/{total_steps} "
+                        f"lr={lr:.2e} {msg} (mean/{n})"
+                    )
+
+                if is_main and cfg["save_every"] and step % cfg["save_every"] == 0:
+                    _save(module, tokenizer, os.path.join(out_dir, f"step{step}"))
+
+    if is_main:
+        _save(module, tokenizer, out_dir)
+
+    # Free this draft before the next one (different I/O; do not keep co-resident).
+    del model, module, assistant, optim, sched, trainable
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    log(f"=== [{name}] done ===")
+
+
+def main():
     args = parse_args()
+    cfg = resolve_train_config(args)
 
     # --- Distributed setup ---
     ddp = int(os.environ.get("WORLD_SIZE", 1)) > 1
@@ -369,7 +603,7 @@ def main():
         local_rank = 0
         rank = 0
         world_size = 1
-        device = args.device
+        device = cfg["device"]
 
     is_main = rank == 0
 
@@ -377,24 +611,33 @@ def main():
         if is_main:
             print(*a, **k, flush=True)
 
-    os.makedirs(args.output, exist_ok=True)
-    dtype = torch.bfloat16 if args.bf16 else torch.float32
+    os.makedirs(cfg["output_dir"], exist_ok=True)
+    if is_main and args.config:
+        try:
+            import shutil
 
-    # Device placement: backbone (target) and draft (assistant) on separate
-    # GPUs when >=2 are visible and we are single-process. The frozen target
-    # forward runs on target_device; the assistant is trained on asst_device.
+            shutil.copy2(args.config, os.path.join(cfg["output_dir"], "train_config.yaml"))
+        except OSError:
+            pass
+
+    dtype = torch.bfloat16 if cfg["bf16"] else torch.float32
+
+    # Device placement: backbone on one GPU, current draft on another when possible.
     split = (not ddp) and torch.cuda.device_count() >= 2
     if split:
         target_device = "cuda:0"
         asst_device = "cuda:1"
     else:
         target_device = asst_device = device
-    log(f"=== device placement: backbone={target_device} draft={asst_device} "
-        f"(split={split}) ===")
+    n_drafts = len(cfg["drafts"])
+    log(
+        f"=== device placement: backbone={target_device} draft={asst_device} "
+        f"(split={split}, n_drafts={n_drafts}, sequential/isolated) ==="
+    )
 
     log("=== Loading target model ===")
     target = AutoModelForCausalLM.from_pretrained(
-        args.target,
+        cfg["target"],
         dtype=dtype,
         trust_remote_code=True,
     ).to(target_device)
@@ -402,85 +645,17 @@ def main():
     for p in target.parameters():
         p.requires_grad_(False)
 
-    log("=== Loading assistant model ===")
-    if args.random_init:
-        from transformers import AutoConfig
-        cfg = AutoConfig.from_pretrained(args.assistant, trust_remote_code=True)
-        assistant = AutoModelForCausalLM.from_config(cfg, dtype=dtype)
-
-        def init_weights(mod):
-            if hasattr(mod, "_init_weights"):
-                try:
-                    mod._init_weights(mod)
-                except TypeError:
-                    pass
-
-        assistant.apply(init_weights)
-        log("[random-init] assistant initialized from scratch (proper _init_weights)")
-    else:
-        assistant = AutoModelForCausalLM.from_pretrained(
-            args.assistant,
-            dtype=dtype,
-            trust_remote_code=True,
-        )
-    assistant = assistant.to(asst_device)
-
-    # Fix the training-time future-KV label leak: make the assistant's shared-KV
-    # attention block-causal (query t attends target KV j <= k+t only).
-    patch_causal_shared_kv_masks(assistant, log=log)
-
-    # Fix the train/inference hidden-state alignment (draft must consume h_{t-1},
-    # not h_t) — the root cause of the from-scratch vLLM accept-length collapse.
-    patch_hidden_shift(log=log)
-
-    trainable = set_trainable(target, assistant)
-    assistant_module = assistant  # raw module: mask holder, .train(), save_pretrained
-
-    # Data-parallel across GPUs: wrap the (trainable) assistant in DDP so its
-    # gradients all-reduce across ranks. Each rank holds a full frozen target +
-    # trained draft co-resident on cuda:local_rank (both fit in 80GB), so there
-    # is no device split and no cross-GPU ping-pong. The frozen target is not
-    # DDP-wrapped (no grads). broadcast_buffers=False: the assistant has no
-    # buffers requiring sync; find_unused_parameters=False: every trainable param
-    # is used in each TTT forward.
-    if ddp:
-        assistant = DDP(
-            assistant,
-            device_ids=[local_rank],
-            output_device=local_rank,
-            broadcast_buffers=False,
-            find_unused_parameters=False,
-        )
-
-    # For the device-split path, place frozen copies of the target's embedding
-    # and lm_head on the draft GPU so the assistant's input construction and
-    # soft-label matmul run entirely on asst_device (no per-op cross-device).
-    target_embed_a = target_lm_head_a = None
-    if split:
-        from speculators.models.gemma4_mtp.training_step import locate_target_parts
-
-        _, tgt_lm_head, tgt_embed, _ = locate_target_parts(target)
-        target_embed_a = copy.deepcopy(tgt_embed).to(asst_device).eval()
-        for p in target_embed_a.parameters():
-            p.requires_grad_(False)
-        if tgt_lm_head is not None:
-            target_lm_head_a = copy.deepcopy(tgt_lm_head).to(asst_device).eval()
-            for p in target_lm_head_a.parameters():
-                p.requires_grad_(False)
-        else:
-            # Tied head: reuse the (frozen) embedding weight on asst_device.
-            import torch.nn.functional as _F
-
-            _w = target_embed_a.weight
-            target_lm_head_a = lambda h: _F.linear(h, _w)  # noqa: E731
+    # Embed/lm_head copies for the MTP draft path (rebuilt only if needed later).
+    target_embed_a, target_lm_head_a = _make_target_heads(target, asst_device)
 
     log("=== Loading tokenizer ===")
-    tokenizer = AutoTokenizer.from_pretrained(args.target, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(cfg["target"], trust_remote_code=True)
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     log("=== Building dataset ===")
-    dataset = build_dataset(args.data, tokenizer, args.max_length, args.max_samples)
-
+    dataset = build_dataset(
+        cfg["data"], tokenizer, cfg["max_length"], cfg["max_samples"]
+    )
     if len(dataset) == 0:
         raise RuntimeError("empty dataset")
 
@@ -489,122 +664,43 @@ def main():
         if ddp
         else None
     )
-
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg["batch_size"],
         shuffle=(sampler is None),
         sampler=sampler,
         collate_fn=lambda b: collate_fn(b, pad_id),
-        num_workers=args.num_workers,
-        persistent_workers=(args.num_workers > 0),
-        prefetch_factor=(4 if args.num_workers > 0 else None),
+        num_workers=cfg["num_workers"],
+        persistent_workers=(cfg["num_workers"] > 0),
+        prefetch_factor=(4 if cfg["num_workers"] > 0 else None),
         pin_memory=True,
     )
 
-    log(f"=== Training: {len(dataset)} samples, {len(loader)} batches/epoch ===")
     log(
-        f"[loss-config] soft_ce_weight={args.soft_ce_weight} "
-        f"hard_ce_weight={args.hard_ce_weight} "
-        f"feature_l1_weight={args.feature_l1_weight}"
+        f"=== Training {n_drafts} draft(s) sequentially "
+        f"({len(dataset)} samples, {len(loader)} batches/epoch) ==="
     )
+    for di, dcfg in enumerate(cfg["drafts"]):
+        log(f"--- draft {di + 1}/{n_drafts}: {dcfg['name']} ---")
+        _train_one_draft(
+            dcfg=dcfg,
+            cfg=cfg,
+            target=target,
+            target_embed_a=target_embed_a,
+            target_lm_head_a=target_lm_head_a,
+            loader=loader,
+            sampler=sampler,
+            tokenizer=tokenizer,
+            dtype=dtype,
+            target_device=target_device,
+            asst_device=asst_device,
+            ddp=ddp,
+            local_rank=local_rank,
+            is_main=is_main,
+            log=log,
+        )
 
-    loss_cfg = MTPLossConfig(
-        ttt_steps=args.ttt_steps,
-        step_weight_beta=args.step_weight_beta,
-        soft_ce_weight=args.soft_ce_weight,
-        hard_ce_weight=args.hard_ce_weight,
-        feature_l1_weight=args.feature_l1_weight,
-    )
-    optim = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
-    total_steps = (len(loader) // max(args.grad_accum, 1)) * args.epochs
-    sched = get_cosine_schedule_with_warmup(
-        optim,
-        num_warmup_steps=args.warmup_steps,
-        num_training_steps=max(total_steps, 1),
-    )
-
-    assistant_module.train()
-    step = 0
-    run = {}  # accumulates micro-batch metrics for a windowed (readable) log
-    optim.zero_grad()
-
-    log("=== Starting training ===")
-
-    def to_device(batch):
-        out = {}
-        for k, v in batch.items():
-            if k == "shared_kv_states":
-                out[k] = {
-                    kt: (kv[0].to(device), kv[1].to(device))
-                    for kt, kv in v.items()
-                }
-            else:
-                out[k] = v.to(device)
-        return out
-
-    for epoch in range(args.epochs):
-        if sampler is not None:
-            sampler.set_epoch(epoch)
-
-        for i, batch in enumerate(loader):
-            if split:
-                # batch stays on CPU; training_step_split moves each piece to
-                # target_device (backbone) / asst_device (draft).
-                loss, metrics = training_step_split(
-                    target, assistant_module, target_embed_a, target_lm_head_a,
-                    batch, loss_cfg, target_device, asst_device,
-                )
-                (loss / args.grad_accum).backward()
-            elif ddp and (i + 1) % args.grad_accum != 0:
-                batch = to_device(batch)
-                # no_sync: skip the all-reduce on grad-accumulation micro-steps.
-                # Pass the DDP-wrapped `assistant` so the forward/backward sync.
-                with assistant.no_sync():
-                    loss, metrics = training_step(
-                        target, assistant, batch, loss_cfg
-                    )
-                    (loss / args.grad_accum).backward()
-            else:
-                batch = to_device(batch)
-                # `assistant` is the DDP wrapper (ddp) or the raw model (1-GPU);
-                # either way calling it runs the (mask-patched) forward.
-                loss, metrics = training_step(
-                    target, assistant, batch, loss_cfg
-                )
-                (loss / args.grad_accum).backward()
-
-            # Accumulate EVERY micro-batch's metrics so the log reports a mean
-            # over the window, not one (batch-size-1) conversation's loss.
-            for _k, _v in metrics.items():
-                run[_k] = run.get(_k, 0.0) + float(_v)
-            run["_n"] = run.get("_n", 0) + 1
-
-            if (i + 1) % args.grad_accum == 0:
-                torch.nn.utils.clip_grad_norm_(trainable, 1.0)
-                optim.step()
-                sched.step()
-                optim.zero_grad()
-                step += 1
-
-                if step % args.log_every == 0:
-                    # mean over all micro-batches since the last log -> smooth,
-                    # representative curve (vs. a single noisy conversation)
-                    n = run.pop("_n", 1)
-                    avg = {k: run[k] / n for k in run}
-                    run = {}
-                    lr = sched.get_last_lr()[0]
-                    msg = " ".join(f"{k}={v:.4f}" for k, v in avg.items())
-                    log(f"epoch {epoch} step {step}/{total_steps} "
-                        f"lr={lr:.2e} {msg} (mean/{n})")
-
-                if is_main and args.save_every and step % args.save_every == 0:
-                    _save(assistant_module, tokenizer, os.path.join(args.output, f"step{step}"))
-
-    if is_main:
-        _save(assistant_module, tokenizer, args.output)
-
-    log("=== Done ===")
+    log("=== Done (all drafts) ===")
     if ddp:
         dist.barrier()
         dist.destroy_process_group()
