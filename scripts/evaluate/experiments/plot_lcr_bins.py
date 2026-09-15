@@ -23,7 +23,8 @@ R = Path(__file__).resolve().parent / "results"
 SURFACE, TEXT, TEXT2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 # color follows the CHECKPOINT (entity); k is marker+linestyle.
 CKPT_COLOR = {"scratch_best": "#2a78d6", "fullattn2_ep15": "#eb6834",
-              "fullattn2_ep25": "#1baf7a", "redhat_dflash": "#8e5bd1"}
+              "fullattn2_ep25": "#1baf7a", "redhat_dflash": "#8e5bd1",
+              "fullattn2_ep25_yarn": "#c23f92"}
 # k7 = RedHat DFlash's native max k (block 8, no anchor sampling) -- same
 # "max-k" role as our k8, so same solid style.
 K_STYLE = {"k8": ("o", "-", 2.4), "k7": ("o", "-", 2.4), "k3": ("^", "--", 1.8)}
@@ -55,7 +56,8 @@ for d in sorted(R.glob("lcr_bins_*")):
     names = {"scratch_best": "all-sliding (scratch ep25)",
              "fullattn2_ep15": "fullattn2 (ep15)",
              "fullattn2_ep25": "fullattn2 (ep25)",
-             "redhat_dflash": "RedHat DFlash (all-full-attn)"}
+             "redhat_dflash": "RedHat DFlash (all-full-attn)",
+             "fullattn2_ep25_yarn": "fullattn2 (ep25) + YaRN@serve"}
     label = f"{names[ckpt]} {ktag}"
     ax.plot(xs, ys, color=color, marker=mark, markersize=7, linewidth=lw,
             linestyle=ls, label=label, zorder=3 + (ckpt == "fullattn2_ep25"))
