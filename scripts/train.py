@@ -745,6 +745,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         scheduler_wsd_decay_ratio=args.scheduler_wsd_decay_ratio,
         checkpoint_freq=args.checkpoint_freq,
         save_best=args.save_best,
+        early_stop_patience=args.early_stop_patience,
         hidden_states_dtype=hidden_states_dtype,
         log_freq=args.log_freq,
         fsdp_shard=args.fsdp_shard,

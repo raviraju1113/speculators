@@ -400,6 +400,12 @@ class TrainerArgs(_Group):
         default=False,
         description="Also point a checkpoint at the lowest validation loss.",
     )
+    early_stop_patience: int | None = Field(
+        default=None,
+        ge=1,
+        description="Stop training after this many consecutive epochs without "
+        "validation-loss improvement (checkpoint_best is kept). Default: disabled.",
+    )
     no_resume_from_checkpoint: bool = Field(
         default=False, description="Do not resume training from an existing checkpoint."
     )

@@ -124,6 +124,9 @@ class TrainerConfig(NamedTuple):
     scheduler_wsd_decay_ratio: float = 0.15
     checkpoint_freq: float = 1
     save_best: bool = False
+    # Stop training after this many consecutive epochs whose validation loss
+    # does not improve on the best seen so far. None disables early stopping.
+    early_stop_patience: int | None = None
     hidden_states_dtype: torch.dtype = torch.bfloat16
     log_freq: int = 1
     fsdp_shard: bool = False
@@ -683,6 +686,7 @@ class Trainer:
     @with_graceful_shutdown()
     def run_training(self):
         n_epochs = self.config.num_epochs
+        epochs_without_improvement = 0
         for epoch in range(self.current_epoch, n_epochs):
             root_logger.info(f"Training epoch {epoch + 1}/{n_epochs} started")
             self.train_epoch(epoch)
@@ -708,7 +712,27 @@ class Trainer:
             if self.is_distributed:
                 dist.barrier()
 
+            best_before = self.best_val_loss
             self.maybe_update_best(epoch, val_metrics)
 
             if self.is_distributed:
                 dist.barrier()
+
+            # Early stopping: val_metrics are all-reduced, so every rank sees the
+            # same loss and takes this branch together (no desync).
+            if (
+                self.config.early_stop_patience is not None
+                and val_metrics is not None
+                and "loss_epoch" in val_metrics
+            ):
+                if self.best_val_loss < best_before:
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+                    if epochs_without_improvement >= self.config.early_stop_patience:
+                        root_logger.info(
+                            f"Early stopping after epoch {epoch}: validation loss "
+                            f"has not improved for {epochs_without_improvement} "
+                            f"epoch(s) (best={self.best_val_loss:.6f})"
+                        )
+                        break
