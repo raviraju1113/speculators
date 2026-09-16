@@ -1,9 +1,13 @@
-# Gemma-4 MTP / speculative-decoding experiments
+# Gemma-4-26B-A4B (MoE) speculative-decoding experiments
 
-Consolidated results for Gemma-4 speculative-decoding drafts (MTP assistant &
-EAGLE3), the acceptance/throughput evals, and two training-time bugs found & fixed
-here: the **shared-KV attention leak** (§3) and a **hidden-state off-by-one** (§5),
-plus the **feature-distillation** quality push and a full multi-domain eval (§5).
+Consolidated results for **`gemma-4-26B-A4B-it` (MoE)** speculative-decoding
+drafts (MTP assistant, EAGLE3, DFlash, DSpark, P-EAGLE), the acceptance/throughput
+evals, and two training-time bugs found & fixed here: the **shared-KV attention
+leak** (§2) and a **hidden-state off-by-one** (§4), plus the feature-distillation
+quality push and the six-way 25-benchmark profile (§5).
+
+The dense 31B sibling has its own doc:
+[gemma4_31b_results.md](gemma4_31b_results.md).
 
 All evals: single-stream (batch=1), greedy (`temperature=0`), vLLM 0.24.0+cu129,
 via `scripts/evaluate/mtp_server_eval/run_vllm_eval.py`. Metrics:
@@ -16,7 +20,7 @@ via `scripts/evaluate/mtp_server_eval/run_vllm_eval.py`. Metrics:
 
 ---
 
-## 1. Gemma-4-26B-A4B (MoE) — draft comparison + k-depth sweep (1×A100)
+## 1. Draft comparison + k-depth sweep (1×A100)
 
 Target: `gemma-4-26B-A4B-it`. Drafts (vanilla MTP assistant, EAGLE3, DFlash)
 compared against the same target, sweeping speculative depth k.
@@ -61,7 +65,7 @@ compared against the same target, sweeping speculative depth k.
 | | featdistill (ours), **k=5** | 2.439 | 28.8% | 126.0 | 125.0 | 1.00× |
 
 `featdistill (ours)` = our from-scratch feature-distilled draft
-(`assistant_featdistill/step3200`, §5); its own matched baseline (aime 126.9, gpqa 127.5,
+(`assistant_featdistill/step3200`, §4); its own matched baseline (aime 126.9, gpqa 127.5,
 lcb 125.5 tok/s) matches the row above, so speedups are directly comparable.
 
 **Takeaways** (k-sweep now covers k = 3 / 5 / 7 (/15 for DFlash))
@@ -81,39 +85,15 @@ lcb 125.5 tok/s) matches the row above, so speedups are directly comparable.
   (batch=1) caveats, **k≈5 is the pragmatic operating point** for MTP/DFlash.
 - k is the method's speculative depth; each method's natural config differs, so
   compare achieved speedup across the k-sweep, not raw k.
-- **Our from-scratch feature-distilled draft (`featdistill`, §5)** is now in the table
+- **Our from-scratch feature-distilled draft (`featdistill`, §4)** is now in the table
   for comparison — markedly weaker than the stock drafts: aime **1.12× (k3) / 1.23× (k5)**
   vs vanilla MTP's 1.56–2.03×, and *net-negative* on gpqa/lcb at k=3 (0.88–0.95×, because
   accept < the ~2.0 break-even), reaching only break-even by k=5. Deeper k still helps it
-  (aime accept 2.54→2.92). See §5 for the full multi-domain picture and why (data coverage).
+  (aime accept 2.54→2.92). See §4 for the full multi-domain picture and why (data coverage).
 
 ---
 
-## 2. Gemma-4-31B-it — MTP assistant, k sweep (4×A100, tp=4)
-
-Target: `gemma-4-31b-it`, draft: `gemma-4-31B-it-assistant`. Baseline = backbone alone.
-
-| benchmark | config | accept_len | accept_rate | decode tok/s | speedup |
-|---|---|--:|--:|--:|--:|
-| aime | baseline | — | — | 54.4 | 1.00× |
-| | assistant k=3 | 3.549 | 85.0% | 133.3 | 2.45× |
-| | assistant k=5 | 4.788 | 75.8% | 165.3 | **3.04×** |
-| gpqa | assistant k=5 | 4.465 | 69.3% | 155.6 | 2.84× |
-| gsm8k | assistant k=5 | 5.074 | 81.5% | 199.3 | **3.58×** |
-| humaneval | assistant k=5 | 5.155 | 83.1% | 195.4 | 3.53× |
-| livecodebench | assistant k=5 | 4.523 | 70.5% | 151.1 | 2.78× |
-| math500 | assistant k=5 | 5.045 | 80.9% | 185.7 | 3.36× |
-| mbpp | assistant k=5 | 4.510 | 70.2% | 170.7 | 3.08× |
-
-(baseline ≈ 54–56 tok/s across benchmarks; k=3 rows omitted for brevity — see
-`scripts/evaluate/experiments/results/gemma4-31b/results_table.md`.)
-
-**Takeaways:** k=5 > k=3 everywhere (longer accepted runs beat higher per-token
-accept rate); **2.8–3.6× speedup**, best on short-output math/code (gsm8k 3.58×).
-
----
-
-## 3. Training-time shared-KV attention leak (root-caused & fixed)
+## 2. Training-time shared-KV attention leak (root-caused & fixed)
 
 **Symptom.** Fine-tuning the MTP assistant with the in-repo online trainer
 (`scripts/gemma4_mtp/train_online.py`) *destroyed* it: accept_len collapsed from
@@ -156,7 +136,7 @@ RoPE; checking the inference code showed that *creates* a mismatch — reverted.
 
 ---
 
-## 4. Training runs
+## 3. Training runs
 
 | run | init | mask | data | lr | status / result |
 |---|---|---|---|---|---|
@@ -196,7 +176,7 @@ CONFIG=examples/train/gemma4_26b_mtp_online_multi.yaml \
 
 Each draft under `drafts:` is trained alone (own target signals, loss I/O,
 optimizer, `<output_dir>/<name>/` checkpoints). Drafts are not mixed in one step.
-> **Note:** runs above predate the §3 fix and produce non-inference-valid drafts.
+> **Note:** runs above predate the §2 fix and produce non-inference-valid drafts.
 > Post-fix reruns supersede them.
 
 **Post-fix findings (mask-only, correct):**
@@ -216,24 +196,23 @@ optimizer, `<output_dir>/<name>/` checkpoints). Drafts are not mixed in one step
   is ordinary fine-tuning drift on the regen data, not a correctness issue. **The
   mask-fixed `train_online.py` is sound.**
 - **Random-init from scratch** first looked "undertrained" (~1% accept) — but that
-  was a **second, separate bug** (§5), not data volume: a hidden-state off-by-one
+  was a **second, separate bug** (§4), not data volume: a hidden-state off-by-one
   (train fed `h_t`, vLLM feeds `h_{t-1}`). After that fix, from-scratch reaches
-  accept **~2.2**, and feature distillation lifts it to **~2.5** (§5).
+  accept **~2.2**, and feature distillation lifts it to **~2.5** (§4).
 - **Takeaway:** the trainer is now *correct* on both counts (mask fix **and** the
-  hidden shift, §5). A *deployable general* draft is now a **training-data-coverage**
-  problem (§5), not a correctness one. The stock assistant / DFlash (§1) remain the
+  hidden shift, §4). A *deployable general* draft is now a **training-data-coverage**
+  problem (§4), not a correctness one. The stock assistant / DFlash (§1) remain the
   drafts to deploy today.
 
-_Raw results: `scripts/evaluate/mtp_server_eval/results/26b_compare/results_table.{md,csv}`
-and `scripts/evaluate/experiments/results/gemma4-31b/results_table.{md,csv}`._
+_Raw results: `scripts/evaluate/mtp_server_eval/results/26b_compare/results_table.{md,csv}`._
 
 ---
 
-## 5. Second bug + quality push: hidden-state off-by-one → feature distillation
+## 4. Second bug + quality push: hidden-state off-by-one → feature distillation
 
 Full write-up: `gemma4_mtp_vllm_hidden_shift_bug.md`.
 
-**Bug (distinct from §3's mask leak).** Even with the mask fix, *from-scratch* drafts
+**Bug (distinct from §2's mask leak).** Even with the mask fix, *from-scratch* drafts
 collapsed to **accept_len ~1.07 in vLLM** while scoring ~0.94 next-token agreement in HF.
 Cause: a **hidden-state off-by-one** — the trainer fed the draft `hidden[t]`
 (`build_target_signals`), but vLLM (EAGLE/MTP convention) feeds `hidden[t-1]` + `embed(x_t)`.
@@ -265,3 +244,86 @@ soft03 ckpt; `step3200` clears break-even on lcb/gpqa and would be net-positive 
 
 _Results: `scripts/evaluate/experiments/results/full-eval-soft03-step1400/`;
 `scripts/evaluate/mtp_server_eval/results/eval3_*`._
+
+---
+
+## 5. Six-way draft comparison — 25-benchmark profile
+
+All five supported draft types trained **simultaneously on one 4×A100 node**
+(shared frozen-target hidden-states server + shared feature cache; see
+[`examples/train/gemma4_26b_penta_draft_online.sh`](../../examples/train/gemma4_26b_penta_draft_online.sh)
+and `docs/TRAINING.md` → "Simultaneous multi-draft training"). Identical budget:
+**30k samples × 2 epochs** from the merged regen pool (686k rows: 26B-MoE
+kimi-regen + 31B kimi-regen + 31B tool regen, deduped/shuffled), seq 4096,
+draft vocab 32k. MTP-ft = fine-tune of the official assistant at lr 5e-5 (the
+rinit lr 6e-4 *degrades* it much harder: aime accept 4.83 → 2.98 — §4 lesson
+re-confirmed). The official **vanilla assistant** is the reference column.
+
+Eval: vLLM 0.28, 1×A100 tp=1, greedy, 30 prompts/benchmark, same-config
+baseline (~126 tok/s). P-EAGLE serves via `speculative_config: {method:
+eagle3}` — vLLM 0.28's method auto-detection has no peagle branch and
+otherwise routes it to the hidden-state-less `draft_model` proposer, which
+crashes at warmup (upstream bug; the eagle3 path picks up `pard_token`).
+
+### Per-benchmark decode speedup / accept_len (rows sorted easiest→hardest; bold = best per row)
+
+| benchmark | DSpark k=8 | DFlash k=7 | MTP-ft k=5 | EAGLE3 k=5 | P-EAGLE k=4 | vanilla asst k=5 |
+|---|---|---|---|---|---|---|
+| math_reasoning | **2.51 / 4.67** | 2.44 / 4.56 | 1.87 / 4.01 | 2.11 / 3.86 | 1.08 / 2.02 | 2.37 / 5.11 |
+| gsm8k | **2.53 / 4.76** | 2.44 / 4.61 | 1.79 / 3.88 | 2.07 / 3.82 | 1.07 / 2.01 | 2.32 / 5.03 |
+| math500 | 2.22 / 4.23 | **2.24 / 4.29** | 1.94 / 4.38 | 1.85 / 3.54 | 1.01 / 2.00 | 2.24 / 5.02 |
+| humaneval | 2.01 / 3.83 | 2.06 / 3.93 | 1.88 / 4.14 | 1.78 / 3.34 | 1.02 / 1.99 | **2.26 / 4.99** |
+| bfcl | 1.65 / 3.18 | 1.78 / 3.47 | 2.26 / 5.32 | 1.37 / 2.62 | 0.95 / 1.88 | **2.39 / 5.75** |
+| aime26 | 1.90 / 3.83 | 1.87 / 3.83 | 1.88 / 4.35 | 1.68 / 3.35 | 0.95 / 1.98 | **2.10 / 4.90** |
+| HumanEval | 1.92 / 3.69 | 1.90 / 3.65 | 1.67 / 3.69 | 1.69 / 3.19 | 1.01 / 1.94 | **2.20 / 4.78** |
+| aime | 1.84 / 3.67 | 1.86 / 3.75 | 1.82 / 4.18 | 1.60 / 3.18 | 0.95 / 1.97 | **2.10 / 4.86** |
+| mbpp | 1.83 / 3.53 | 1.81 / 3.49 | 1.56 / 3.43 | 1.67 / 3.15 | 0.98 / 1.90 | **2.03 / 4.46** |
+| livecodebench | 1.60 / 3.28 | 1.66 / 3.40 | 1.60 / 3.77 | 1.46 / 2.93 | 0.90 / 1.91 | **1.92 / 4.52** |
+| speed-coding | 1.43 / 2.93 | 1.52 / 3.12 | 1.53 / 3.57 | 1.32 / 2.64 | 0.91 / 1.90 | **1.93 / 4.46** |
+| gpqa | 1.46 / 2.89 | 1.46 / 2.94 | 1.56 / 3.60 | 1.33 / 2.63 | 0.88 / 1.82 | **1.89 / 4.36** |
+| tool_call | 1.29 / 2.44 | 1.35 / 2.54 | 1.36 / 3.01 | 1.23 / 2.28 | 0.88 / 1.70 | **1.78 / 3.93** |
+| translation | 1.31 / 2.44 | 1.32 / 2.43 | 1.23 / 2.64 | 1.25 / 2.29 | 0.93 / 1.70 | **1.83 / 3.89** |
+| swe-bench-pro | 1.26 / 2.55 | 1.32 / 2.69 | 1.36 / 3.17 | 1.16 / 2.33 | 0.84 / 1.77 | **1.79 / 4.18** |
+| speed-rag | 1.21 / 2.50 | 1.23 / 2.56 | 1.26 / 3.00 | 1.16 / 2.35 | 0.84 / 1.74 | **1.77 / 4.16** |
+| rag | 1.19 / 2.42 | 1.18 / 2.42 | 1.14 / 2.69 | 1.15 / 2.28 | 0.82 / 1.68 | **1.68 / 3.89** |
+| writing | 1.28 / 2.44 | 1.26 / 2.41 | 1.04 / 2.28 | 1.22 / 2.28 | 0.87 / 1.68 | **1.47 / 3.18** |
+| question | 1.28 / 2.44 | 1.26 / 2.40 | 1.04 / 2.28 | 1.22 / 2.28 | 0.87 / 1.68 | **1.47 / 3.17** |
+| speed-multilingual | 0.97 / 1.76 | 0.97 / 1.76 | 1.60 / 3.44 | 0.93 / 1.71 | 0.76 / 1.44 | **1.89 / 4.03** |
+| mt-bench | 1.28 / 2.45 | 1.26 / 2.41 | 1.04 / 2.28 | 1.22 / 2.28 | 0.86 / 1.68 | **1.44 / 3.16** |
+| speed-qa | 1.14 / 2.09 | 1.14 / 2.10 | 0.98 / 2.08 | 1.13 / 2.04 | 0.88 / 1.61 | **1.42 / 2.98** |
+| qa | 1.14 / 2.09 | 1.14 / 2.10 | 0.98 / 2.08 | 1.13 / 2.04 | 0.88 / 1.61 | **1.42 / 2.98** |
+| speed-writing | 1.04 / 2.15 | 1.04 / 2.16 | 0.91 / 2.14 | 1.01 / 2.04 | 0.77 / 1.62 | **1.27 / 2.96** |
+| summarization | 0.97 / 1.98 | 0.99 / 2.02 | 0.96 / 2.27 | 0.93 / 1.86 | 0.76 / 1.58 | **1.37 / 3.20** |
+| **MEAN** | **1.53×** | **1.54×** | **1.45×** | **1.39×** | **0.91×** | **1.85×** |
+
+### Takeaways
+
+- **The vanilla Google assistant wins overall (mean 1.85×) and is the
+  deploy-today draft.** None of the same-budget trained drafts beat it in the
+  mean; the from-scratch drafts approach or edge past it **only in math**
+  (DSpark gsm8k 2.53× / math_reasoning 2.51× vs vanilla 2.32× / 2.37×).
+- **Fine-tuning the assistant was net-harmful on ALL 25 benchmarks**
+  (mean 1.85× → 1.45×), even at the gentle lr 5e-5. Its apparent bfcl /
+  multilingual "strengths" vs the from-scratch drafts are inherited from
+  vanilla (bfcl 2.39×, multilingual 1.89×), merely degraded less than other
+  domains. Fine-tune the assistant only with genuinely in-domain data for a
+  narrow deployment — never as a general upgrade.
+- **DSpark ≈ DFlash (1.53/1.54× mean)** lead the from-scratch field and
+  dominate structured domains; EAGLE3 trails (1.39×); **P-EAGLE is below
+  break-even at this budget (0.91× mean)** — accept 1.4–2.0 matches its
+  training simulation, so it is served correctly and simply needs a bigger
+  budget or recipe work.
+- **The multilingual/summarization hole of the pruned-vocab drafts (<1.0×) is
+  the 32k draft vocab, not data volume** — the full-vocab assistant is immune.
+  Fix = larger `--draft-vocab-size`, not more samples.
+- Chat/QA-style outputs (short, high-entropy) are the intrinsic hard case:
+  even vanilla only reaches 1.3–1.5× there.
+- DSpark caveat: this checkpoint trains `sample_from_anchor=True` (native
+  k=8); it needs a vLLM whose speculators loader reads that field (0.28+
+  here). Later runs use `--no-sample-from-anchor` for stock-vLLM portability
+  (k=7).
+
+_Configs: `scripts/evaluate/experiments/gemma4-26b-penta-eval.yaml`,
+`gemma4-26b-pre400k-eval.yaml`. Raw results + generated tables:
+`scripts/evaluate/experiments/results/gemma4-26b-{penta-eval,pre400k-eval}/`
+(`results_table.md` / `.csv`)._
