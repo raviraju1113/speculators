@@ -449,6 +449,224 @@ the 7 draft slots. The DSpark aa-lcr 8k/16k bins have not been run yet.
   (eagle3 and dspark corrupt the target identically). All AL/AR numbers above
   are offline/analytical, not live-served.
 
+## Ablation: drafting fewer tokens than trained (block_size 7 → 3)
+
+Question: DSpark was trained with `block_size=7` (K=7 draft tokens/step) —
+if it were served drafting only 3 tokens/step instead, does per-token quality
+drop, or does it just cap the ceiling?
+
+Implemented as a real architectural change, not post-hoc pooling:
+`model.block_size` is a plain runtime int (no weight tensor is shaped by it —
+`MarkovHead`/`ConfidenceHead` operate per-token, block_size-agnostic), read
+fresh at every forward call by the anchor-selection, same-block attention
+mask (`create_anchor_block_mask_mod`, `dflash/attention.py` — draft slots
+attend to each other **non-causally** within a block for full-attention
+layers), and target-gathering logic. Overriding it to 3 genuinely shrinks the
+synthetic block to 3 slots (1 anchor-seeded + 2 real `[MASK]` positions) —
+slots 3-6 are never instantiated, not masked out of an existing 7. Reuses the
+already-collected hidden states; no new server or collection needed.
+`--block-size-override` in `run_dspark_eval.py`. Verified `n` (sample count)
+is identical between the block=7 and block=3 run for all 24 sets — same
+sample files, same target generations, only `model.block_size` differs.
+
+One confound checked and ruled out: anchor selection (`select_anchors`,
+`dflash/utils.py`) excludes only the last `block_size` sequence positions
+from eligibility, and since `max_anchors=3072` always exceeds the actual
+pool of loss-masked positions in these samples, *every* eligible position
+becomes an anchor regardless of block_size (`k = min(max_anchors, pool) =
+pool`) — so block=7 and block=3 select the same anchor positions almost
+everywhere, differing only by a few extra tail positions block=3 newly makes
+eligible. Slot 0 always predicts `anchor+1` regardless of block_size, so the
+two runs are, for the vast majority of positions, scoring the *identical*
+(anchor, target-token) pairs — the attention-window width is close to the
+only real variable.
+
+| dataset | AR@7 | AR@3 | AL@7 | AL@3 | full_acc@7 | full_acc@3 |
+|---|---|---|---|---|---|---|
+| bfcl | 0.570 | 0.667 | 4.58 | 3.67 | 0.625 | 0.720 |
+| math500 | 0.551 | 0.638 | 4.47 | 3.61 | 0.611 | 0.690 |
+| aa-lcr-4k | 0.496 | 0.613 | 4.26 | 3.55 | 0.549 | 0.659 |
+| aa-lcr-1k | 0.486 | 0.607 | 4.20 | 3.53 | 0.539 | 0.650 |
+| tool_call | 0.491 | 0.586 | 4.19 | 3.45 | 0.550 | 0.645 |
+| mbpp | 0.502 | 0.590 | 4.18 | 3.45 | 0.568 | 0.653 |
+| aime26 | 0.469 | 0.545 | 4.02 | 3.31 | 0.520 | 0.598 |
+| gsm8k | 0.475 | 0.567 | 3.98 | 3.37 | 0.544 | 0.627 |
+| translation | 0.420 | 0.519 | 3.73 | 3.28 | 0.474 | 0.572 |
+| speed-multilingual | 0.410 | 0.499 | 3.63 | 3.18 | 0.479 | 0.567 |
+| writing | 0.415 | 0.511 | 3.58 | 3.19 | 0.474 | 0.565 |
+| qa | 0.422 | 0.511 | 3.57 | 3.18 | 0.481 | 0.572 |
+| mt-bench | 0.398 | 0.481 | 3.55 | 3.12 | 0.467 | 0.545 |
+| chat64 | 0.445 | 0.554 | 3.48 | 3.27 | 0.448 | 0.559 |
+| speed-coding | 0.389 | 0.476 | 3.48 | 3.12 | 0.449 | 0.533 |
+| swe-rebench | 0.389 | 0.473 | 3.45 | 3.07 | 0.464 | 0.544 |
+| speed-writing | 0.372 | 0.468 | 3.39 | 3.09 | 0.440 | 0.525 |
+| rag | 0.345 | 0.423 | 3.29 | 2.95 | 0.403 | 0.481 |
+| aime | 0.346 | 0.411 | 3.27 | 2.92 | 0.408 | 0.475 |
+| speed-rag | 0.325 | 0.410 | 3.16 | 2.92 | 0.369 | 0.461 |
+| livecodebench | 0.335 | 0.427 | 3.13 | 2.94 | 0.394 | 0.492 |
+| summarization | 0.327 | 0.420 | 3.00 | 2.87 | 0.397 | 0.499 |
+| swe-bench-pro | 0.301 | 0.381 | 2.93 | 2.80 | 0.358 | 0.443 |
+| gpqa | 0.262 | 0.343 | 2.85 | 2.72 | 0.304 | 0.390 |
+
+**The direction is unanimous across all 24 sets**: AR and full_acc both go
+*up* at block=3 (only scoring the easier early slots), AL goes *down*
+(structurally fewer slots to accumulate acceptance across) — no set
+contradicts this pattern, and no set shows a genuine per-token quality
+regression. **AL retention (AL@3 ÷ AL@7) ranges 0.80–0.96, mean 0.88** across
+domains — bfcl/math500 (the highest-AL domains) lose the most in absolute
+and relative terms (retain ~80%), while gpqa (the lowest-AL domain) retains
+~96%, since it wasn't extracting much value from the deeper slots anyway.
+
+Practical reading: **block=3 is not "3/7 as good"** — the model doesn't
+degrade at the token level when asked to draft less, it simply forgoes the
+long tail of increasingly-unlikely-to-be-accepted later slots. If serving
+overhead per drafted token is non-trivial (verification cost, draft-head
+compute), trading K=7 for K=3 gives back ~88% of the accept-length benefit
+for ~43% of the draft width — a real lever worth considering, distinct from
+retraining a shorter-block draft from scratch (which this checkpoint was
+never asked to do, so this is strictly a serving-time knob, not a
+training-time one).
+
+### Projected throughput, block=7 vs block=3
+
+Same projection method as the main sweep table (`108 tok/s baseline × AL ×
+0.90`), applied to both block sizes — **still a projection, not a
+measurement** (blocked by the same vLLM bug). One important asymmetry this
+doesn't capture: the `0.90` discount is a flat assumption applied to both
+columns; in real serving, block=3 does genuinely less draft-forward compute
+per step (a smaller Markov-head pass over 3 slots vs 7), so its true overhead
+fraction would plausibly be *lower*, meaning real block=3 throughput could
+sit somewhat higher than shown here. Ratio column is therefore exactly the
+AL-retention ratio from the table above, just rescaled to a tok/s baseline —
+it carries no independent information, shown for convenience only.
+
+| dataset | proj@7 (tok/s) | proj@3 (tok/s) | ratio |
+|---|---|---|---|
+| bfcl | 445.2 | 356.7 | 0.80 |
+| math500 | 434.5 | 350.9 | 0.81 |
+| aa-lcr-4k | 414.1 | 345.1 | 0.83 |
+| aa-lcr-1k | 408.2 | 343.1 | 0.84 |
+| tool_call | 407.3 | 335.3 | 0.82 |
+| mbpp | 406.3 | 335.3 | 0.82 |
+| aime26 | 390.7 | 321.7 | 0.82 |
+| gsm8k | 386.9 | 327.6 | 0.85 |
+| translation | 362.6 | 318.8 | 0.88 |
+| speed-multilingual | 352.8 | 309.1 | 0.88 |
+| writing | 348.0 | 310.1 | 0.89 |
+| qa | 347.0 | 309.1 | 0.89 |
+| mt-bench | 345.1 | 303.3 | 0.88 |
+| chat64 | 338.3 | 317.8 | 0.94 |
+| speed-coding | 338.3 | 303.3 | 0.90 |
+| swe-rebench | 335.3 | 298.4 | 0.89 |
+| speed-writing | 329.5 | 300.3 | 0.91 |
+| rag | 319.8 | 286.7 | 0.90 |
+| aime | 317.8 | 283.8 | 0.89 |
+| speed-rag | 307.2 | 283.8 | 0.92 |
+| livecodebench | 304.2 | 285.8 | 0.94 |
+| summarization | 291.6 | 279.0 | 0.96 |
+| swe-bench-pro | 284.8 | 272.2 | 0.96 |
+| gpqa | 277.0 | 264.4 | 0.95 |
+
+### Per-position accept_rate (AR), block=7 vs block=3
+
+The pooled AR above (mean over all slots) hides the decay shape. This adds a
+per-position AR breakdown (TV-overlap acceptance, not argmax) at both block
+sizes — extends the earlier `full_acc` per-slot table with the metric this
+whole ablation is actually about. Metric added to `compute_metrics`
+(`position_{k}_accept_rate_sum/total`, mirroring the pre-existing per-position
+`full_acc` pattern); verified via direct tensor-shape instrumentation that
+block=3 only ever computes 3 positions (see chat: `logits.shape=[1,9216,...]`
+= 3072 anchors × 3, no position_3-6 keys exist in the output at all — not
+masked out of a wider computation, never instantiated).
+
+| dataset | AR@7, pos-0..6 | AR@3, pos-0..2 |
+|---|---|---|
+| bfcl | 0.704 / 0.675 / 0.619 / 0.552 / 0.524 / 0.485 / 0.433 | 0.714 / 0.674 / 0.614 |
+| math500 | 0.666 / 0.642 / 0.594 / 0.554 / 0.510 / 0.451 / 0.437 | 0.681 / 0.651 / 0.582 |
+| aa-lcr-4k | 0.663 / 0.616 / 0.548 / 0.491 / 0.428 / 0.377 / 0.345 | 0.680 / 0.619 / 0.540 |
+| aa-lcr-1k | 0.651 / 0.610 / 0.547 / 0.471 / 0.421 / 0.371 / 0.335 | 0.664 / 0.617 / 0.540 |
+| tool_call | 0.652 / 0.593 / 0.541 / 0.472 / 0.424 / 0.394 / 0.358 | 0.650 / 0.585 / 0.522 |
+| mbpp | 0.623 / 0.600 / 0.527 / 0.499 / 0.458 / 0.427 / 0.381 | 0.632 / 0.610 / 0.529 |
+| aime26 | 0.587 / 0.554 / 0.503 / 0.448 / 0.435 / 0.396 / 0.358 | 0.587 / 0.554 / 0.494 |
+| gsm8k | 0.616 / 0.598 / 0.520 / 0.444 / 0.435 / 0.381 / 0.331 | 0.618 / 0.579 / 0.505 |
+| translation | 0.585 / 0.529 / 0.466 / 0.415 / 0.367 / 0.312 / 0.267 | 0.595 / 0.517 / 0.445 |
+| speed-multilingual | 0.550 / 0.503 / 0.431 / 0.387 / 0.354 / 0.344 / 0.304 | 0.564 / 0.512 / 0.422 |
+| writing | 0.554 / 0.499 / 0.450 / 0.383 / 0.363 / 0.338 / 0.320 | 0.565 / 0.519 / 0.450 |
+| qa | 0.542 / 0.501 / 0.458 / 0.397 / 0.376 / 0.357 / 0.326 | 0.552 / 0.515 / 0.466 |
+| mt-bench | 0.519 / 0.461 / 0.425 / 0.378 / 0.353 / 0.337 / 0.313 | 0.530 / 0.488 / 0.423 |
+| chat64 | 0.645 / 0.535 / 0.458 / 0.410 / 0.376 / 0.356 / 0.332 | 0.656 / 0.545 / 0.460 |
+| speed-coding | 0.500 / 0.486 / 0.411 / 0.366 / 0.351 / 0.325 / 0.281 | 0.525 / 0.495 / 0.409 |
+| swe-rebench | 0.507 / 0.478 / 0.432 / 0.371 / 0.345 / 0.308 / 0.281 | 0.520 / 0.481 / 0.419 |
+| speed-writing | 0.516 / 0.472 / 0.391 / 0.341 / 0.316 / 0.296 / 0.270 | 0.524 / 0.479 / 0.400 |
+| rag | 0.456 / 0.431 / 0.372 / 0.339 / 0.305 / 0.266 / 0.249 | 0.473 / 0.429 / 0.368 |
+| aime | 0.429 / 0.400 / 0.380 / 0.333 / 0.319 / 0.292 / 0.270 | 0.439 / 0.418 / 0.376 |
+| speed-rag | 0.465 / 0.421 / 0.334 / 0.305 / 0.273 / 0.254 / 0.224 | 0.485 / 0.424 / 0.321 |
+| livecodebench | 0.508 / 0.423 / 0.351 / 0.319 / 0.267 / 0.239 / 0.236 | 0.511 / 0.422 / 0.348 |
+| summarization | 0.454 / 0.423 / 0.349 / 0.290 / 0.273 / 0.251 / 0.250 | 0.469 / 0.430 / 0.361 |
+| swe-bench-pro | 0.429 / 0.374 / 0.324 / 0.289 / 0.245 / 0.231 / 0.217 | 0.435 / 0.375 / 0.333 |
+| gpqa | 0.404 / 0.352 / 0.287 / 0.236 / 0.207 / 0.181 / 0.171 | 0.409 / 0.346 / 0.274 |
+
+### Isolated pos-0/1/2 comparison: block=7's first 3 slots vs block=3
+
+AR decays monotonically position-to-position in every single row at block=7
+(no exceptions) — the earliest slot is always the most reliable, consistent
+with the full_acc-based decay finding above. But the question actually being
+asked here is narrower and more useful: **holding the slot fixed at 0, 1, or
+2, does having 4 more mask tokens further out in the same block (block=7)
+change that slot's AR at all, versus not having them (block=3)?** Isolate
+just positions 0-2 from the block=7 run (discard 3-6) and diff them directly
+against block=3's positions 0-2 — same slots, one variable (whether the rest
+of the block exists).
+
+| dataset | pos0@7 | pos0@3 | Δ0 | pos1@7 | pos1@3 | Δ1 | pos2@7 | pos2@3 | Δ2 |
+|---|---|---|---|---|---|---|---|---|---|
+| bfcl | 0.704 | 0.714 | +0.009 | 0.675 | 0.674 | -0.001 | 0.619 | 0.614 | -0.004 |
+| math500 | 0.666 | 0.681 | +0.014 | 0.642 | 0.651 | +0.008 | 0.594 | 0.582 | -0.013 |
+| aa-lcr-4k | 0.663 | 0.680 | +0.017 | 0.616 | 0.619 | +0.003 | 0.548 | 0.540 | -0.008 |
+| aa-lcr-1k | 0.651 | 0.664 | +0.013 | 0.610 | 0.617 | +0.007 | 0.547 | 0.540 | -0.007 |
+| tool_call | 0.652 | 0.650 | -0.002 | 0.593 | 0.585 | -0.008 | 0.541 | 0.522 | -0.019 |
+| mbpp | 0.623 | 0.632 | +0.009 | 0.600 | 0.610 | +0.010 | 0.527 | 0.529 | +0.002 |
+| aime26 | 0.587 | 0.587 | +0.001 | 0.554 | 0.554 | +0.001 | 0.503 | 0.494 | -0.009 |
+| gsm8k | 0.616 | 0.618 | +0.002 | 0.598 | 0.579 | -0.019 | 0.520 | 0.505 | -0.015 |
+| translation | 0.585 | 0.595 | +0.010 | 0.529 | 0.517 | -0.012 | 0.466 | 0.445 | -0.022 |
+| speed-multilingual | 0.550 | 0.564 | +0.014 | 0.503 | 0.512 | +0.009 | 0.431 | 0.422 | -0.009 |
+| writing | 0.554 | 0.565 | +0.011 | 0.499 | 0.519 | +0.021 | 0.450 | 0.450 | -0.001 |
+| qa | 0.542 | 0.552 | +0.010 | 0.501 | 0.515 | +0.014 | 0.458 | 0.466 | +0.008 |
+| mt-bench | 0.519 | 0.530 | +0.011 | 0.461 | 0.488 | +0.027 | 0.425 | 0.423 | -0.002 |
+| chat64 | 0.645 | 0.656 | +0.011 | 0.535 | 0.545 | +0.010 | 0.458 | 0.460 | +0.002 |
+| speed-coding | 0.500 | 0.525 | +0.025 | 0.486 | 0.495 | +0.009 | 0.411 | 0.409 | -0.002 |
+| swe-rebench | 0.507 | 0.520 | +0.013 | 0.478 | 0.481 | +0.003 | 0.432 | 0.419 | -0.012 |
+| speed-writing | 0.516 | 0.524 | +0.008 | 0.472 | 0.479 | +0.007 | 0.391 | 0.400 | +0.008 |
+| rag | 0.456 | 0.473 | +0.016 | 0.431 | 0.429 | -0.003 | 0.372 | 0.368 | -0.005 |
+| aime | 0.429 | 0.439 | +0.010 | 0.400 | 0.418 | +0.018 | 0.380 | 0.376 | -0.005 |
+| speed-rag | 0.465 | 0.485 | +0.019 | 0.421 | 0.424 | +0.003 | 0.334 | 0.321 | -0.012 |
+| livecodebench | 0.508 | 0.511 | +0.003 | 0.423 | 0.422 | -0.001 | 0.351 | 0.348 | -0.003 |
+| summarization | 0.454 | 0.469 | +0.015 | 0.423 | 0.430 | +0.008 | 0.349 | 0.361 | +0.012 |
+| swe-bench-pro | 0.429 | 0.435 | +0.007 | 0.374 | 0.375 | +0.001 | 0.324 | 0.333 | +0.009 |
+| gpqa | 0.404 | 0.409 | +0.005 | 0.352 | 0.346 | -0.005 | 0.287 | 0.274 | -0.013 |
+| **mean Δ** | | | **+0.0105** | | | **+0.0046** | | | **-0.0050** |
+| **max \|Δ\|** | | | 0.025 | | | 0.027 | | | 0.022 |
+
+A real, small, directional pattern emerges — not just noise:
+
+- **Slot 0 is unanimously (23/24 sets) higher at block=3**, by a small but
+  consistent margin (mean +0.011, up to +0.025). The single exception,
+  tool_call, is a near-zero -0.002.
+- **Slot 1 is mostly higher too** (17/24), but noisier and closer to zero
+  (mean +0.0046) — some sets (gsm8k, translation) show a real negative shift.
+- **Slot 2 flips sign**: mostly *lower* at block=3 (16/24 negative, mean
+  -0.0050) — the opposite direction from slot 0.
+
+Interpretation: shrinking the block very slightly *helps* the earliest slot
+(marginally less to attend to / less competition for attention mass from
+far-away masks it doesn't need) and very slightly *hurts* the slot furthest
+from the anchor (slot 2 is relatively "deeper" in a 3-wide block than it is
+in a 7-wide one, changing its position-relative context slightly). Both
+effects are small — max absolute shift across all 72 (dataset × slot) cells
+is 2.7 percentage points — so the earlier "near-independent" characterization
+still holds as the dominant effect, but this isolates a second-order,
+consistent-in-direction pattern underneath it, rather than pure noise.
+
 ## Open follow-ups
 
 Roughly in priority order:
