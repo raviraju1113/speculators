@@ -4,7 +4,8 @@ Consolidated results for **`gemma-4-26B-A4B-it` (MoE)** speculative-decoding
 drafts (MTP assistant, EAGLE3, DFlash, DSpark, P-EAGLE), the acceptance/throughput
 evals, and two training-time bugs found & fixed here: the **shared-KV attention
 leak** (§2) and a **hidden-state off-by-one** (§4), plus the feature-distillation
-quality push and the six-way 25-benchmark profile (§5).
+quality push, the six-way 25-benchmark profile (§5), and the 400k DSpark
+scale-up (§6).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -327,3 +328,57 @@ _Configs: `scripts/evaluate/experiments/gemma4-26b-penta-eval.yaml`,
 `gemma4-26b-pre400k-eval.yaml`. Raw results + generated tables:
 `scripts/evaluate/experiments/results/gemma4-26b-{penta-eval,pre400k-eval}/`
 (`results_table.md` / `.csv`)._
+
+---
+
+## 6. Scaling DSpark to 400k samples (in progress)
+
+Follow-up to §5: give the best from-scratch draft (DSpark) ~13x the data and let
+validation decide the epoch count. Started 2026-09-16.
+
+| Parameter | Value |
+|---|---|
+| Data | 400k of the merged regen pool (686k rows), seq 4096 |
+| Layout | 3-GPU DDP trainer (GPUs 1-3) + shared hidden-states server (GPU 0) |
+| Features | **streaming** (`--on-generate delete`) — no feature cache, flat disk |
+| Epochs | up to 3, `--early-stop-patience 1` (stop 1 epoch after val loss plateaus) |
+| Checkpoints | `--checkpoint-freq 0.25` (quarter-epoch) |
+| Convention | **`--no-sample-from-anchor`** — portable on stock vLLM, native k=7 |
+| Other | lr 3e-4, 3 layers, block 8, markov_rank 256, confidence head, ce 0.1/tv 0.9 |
+
+### Epoch 0 validation (40,240 steps, ~1 day)
+
+| metric | 400k epoch 0 (k=7 slots) | 30k x 2ep, §5 (k=8 slots) |
+|---|---|---|
+| **accept_len** | **2.937** | 2.889 |
+| full_acc | 0.520 | 0.496 |
+| first slot acc | 0.696 | 0.688 |
+| last slot acc | 0.406 | 0.386 |
+| loss_epoch | 0.585 | 0.542 |
+
+**Read this comparison carefully:** the two runs use different block conventions,
+so the columns are not strictly like-for-like. The 400k run trains
+`sample_from_anchor=False` (1+N bonus-anchor fill, **7** predicted slots,
+reported as `position_1..7`); the §5 run trained `True` (**8** slots,
+`position_0..7`). The 400k draft therefore reaches a *higher* accept_len from
+*fewer* draft slots after *one* epoch — a real improvement — while `loss_epoch`
+is not comparable across conventions (different loss I/O and Markov
+conditioning). The serving numbers are what will settle it.
+
+### Status / next
+
+- Epoch 0 is `checkpoint_best`; epoch 1 is running. If its val loss does not
+  beat 0.585, early stopping ends the run there.
+- On completion: evaluate on the same 25-benchmark suite as §5 and add the
+  column. Open question: whether a properly-fed DSpark closes the gap to the
+  **vanilla assistant's 1.85x mean** (it already wins the math columns at 30k).
+- Operational note: three separate session-boundary `SIGTERM`s killed trainers
+  during this work (the parent shell's process group is reaped). The run is now
+  launched via
+  [`examples/train/_resume_400k_detached.sh`](../../examples/train/_resume_400k_detached.sh),
+  which `setsid`s the server and trainer into their own sessions and records
+  PIDs under `<output>/pids/`. Sub-epoch checkpoints capped the largest loss at
+  ~1.6% of an epoch.
+
+_Config/logs: `output/gemma4_26b_dspark_400k/` (`logs/`, `dspark/checkpoints/`,
+`data_prep/`)._
