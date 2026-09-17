@@ -910,10 +910,20 @@ def load_and_preprocess_dataset(
     log.subsection("Loading processor")
     processor = load_processor(target_model_path, trust_remote_code=trust_remote_code)
 
-    if not hasattr(processor, "apply_chat_template") or processor.chat_template is None:
+    # Some trust-remote-code tokenizers (e.g. Kimi K3) render their chat template
+    # in Python: apply_chat_template works but the chat_template attribute is None.
+    # Those require an explicit --assistant-pattern since HF assistant-token masks
+    # and template-based marker auto-detection both need the template source.
+    if not hasattr(processor, "apply_chat_template"):
         raise ValueError(
             f"Processor for {target_model_path} does not support chat templates. "
             "Please use a model with a pre-configured chat template."
+        )
+    if getattr(processor, "chat_template", None) is None and assistant_pattern is None:
+        raise ValueError(
+            f"Processor for {target_model_path} has a Python-rendered chat template "
+            "(no template source available), so the assistant-response pattern "
+            "cannot be auto-detected. Pass --assistant-pattern explicitly."
         )
 
     processed_datasets = []

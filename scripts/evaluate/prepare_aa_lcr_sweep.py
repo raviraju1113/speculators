@@ -208,7 +208,7 @@ def main() -> None:
 
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(args.tokenizer)
+    tok = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
 
     csv_path, zip_path = _download()
     args.out_dir.mkdir(parents=True, exist_ok=True)

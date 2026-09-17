@@ -59,8 +59,17 @@ def compute_metrics(
     per_position_loss_weight: str = "fixed-exp-decay",
     dpace_alpha: float = 0.5,
     sample_from_anchor: bool = True,
+    truncate_k: int | None = None,
 ) -> tuple[torch.Tensor, dict]:
-    """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
+    """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs).
+
+    :param truncate_k: if set, also report ``accept_rate_trunc``/``accept_len_trunc``
+        restricted to the first ``truncate_k`` draft slots -- an ablation for
+        "what if this draft were only ever asked to propose k < block_size
+        tokens". Slot-independence (each slot conditions on ground-truth
+        history, not on other slots) makes this a simple post-hoc slice of the
+        already-computed per-block tensors; no separate forward pass needed.
+    """
 
     device = logits.device
     seq_len = logits.shape[1]
@@ -140,6 +149,16 @@ def compute_metrics(
         metrics["accept_rate_sum"] = (accept_rate * mask_f).sum()
         metrics["accept_rate_total"] = mask_f.sum().clamp_min(1.0)
 
+        # Per-position breakdown of the same TV-overlap accept_rate (mirrors
+        # the per-position full_acc breakdown below, but for AR not argmax).
+        for pos in range(start_pos, block_size):
+            metrics[f"position_{pos}_accept_rate_sum"] = (
+                accept_blocks[:, pos] * draft_mask[:, pos - start_pos]
+            ).sum()
+            metrics[f"position_{pos}_accept_rate_total"] = draft_mask[
+                :, pos - start_pos
+            ].sum().clamp_min(1.0)
+
     # Expected accepted draft length per block (DSpark's tau): the cumulative
     # acceptance product summed over draft slots, plus the always-emitted anchor.
     with torch.no_grad():
@@ -147,6 +166,22 @@ def compute_metrics(
         block_valid = (draft_mask.sum(dim=-1) > 0).to(accept_rate.dtype)
         metrics["accept_len_sum"] = (per_block_len * block_valid).sum()
         metrics["accept_len_total"] = block_valid.sum().clamp_min(1.0)
+
+        if truncate_k is not None:
+            # Same quantities, but only the first truncate_k draft slots count
+            # -- both the cumprod (nonlinear, so must be resliced pre-sum, not
+            # derived from the already-pooled accept_len above) and the flat
+            # per-position mean.
+            trunc_prefix = accept_prefix[:, :truncate_k]
+            trunc_mask = draft_mask[:, :truncate_k]
+            trunc_block_valid = (trunc_mask.sum(dim=-1) > 0).to(accept_rate.dtype)
+            trunc_len = trunc_prefix.sum(dim=-1) + 1.0
+            metrics["accept_len_trunc_sum"] = (trunc_len * trunc_block_valid).sum()
+            metrics["accept_len_trunc_total"] = trunc_block_valid.sum().clamp_min(1.0)
+
+            trunc_rate_blocks = accept_blocks[:, start_pos : start_pos + truncate_k]
+            metrics["accept_rate_trunc_sum"] = (trunc_rate_blocks * trunc_mask).sum()
+            metrics["accept_rate_trunc_total"] = trunc_mask.sum().clamp_min(1.0)
 
     # Per-position greedy accuracy
     pred_ids = torch.argmax(logits, dim=-1)

@@ -267,10 +267,22 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
 
         from speculators.convert.mtp.converter import MTPConverter  # noqa: PLC0415
 
-        state_dict = MTPConverter().convert_to_state_dict(
-            verifier_name_or_path  # type: ignore[arg-type]
-        )
-        model.load_state_dict(state_dict, strict=False)
+        try:
+            state_dict = MTPConverter().convert_to_state_dict(
+                verifier_name_or_path  # type: ignore[arg-type]
+            )
+            model.load_state_dict(state_dict, strict=False)
+        except ValueError as e:
+            # Verifiers without a native MTP head (e.g. Kimi K3 ships
+            # num_nextn_predict_layers=0) train the MTP layer from scratch:
+            # keep the random init from cls(config) and only pull
+            # embed_tokens/lm_head from the verifier below.
+            logger.warning(
+                "Verifier '%s' has no native MTP weights (%s); "
+                "training the MTP layer from randomly initialized weights.",
+                verifier_name_or_path,
+                e,
+            )
 
         model.load_verifier_weights()
         return model
