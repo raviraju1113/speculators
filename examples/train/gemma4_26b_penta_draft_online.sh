@@ -43,6 +43,11 @@ EAGLE3_LR=1e-4
 DSPARK_LR=3e-4; BLOCK_SIZE=8; MAX_ANCHORS=3072; DSPARK_NUM_LAYERS=3
 MARKOV_RANK=256; MARKOV_HEAD_TYPE="vanilla"
 DSPARK_LOSS_FN='{"ce": 0.1, "tv": 0.9}'; CONFIDENCE_HEAD_ALPHA=1.0
+# DSpark trains with --no-sample-from-anchor (the 1+N bonus-anchor convention):
+# stock vLLM hardcodes that convention and silently serves a
+# sample_from_anchor=True checkpoint at ~half its real acceptance. Costs one
+# draft token per block (native k = block_size - 1 = 7). See
+# .claude/skills/dspark-train-serve-parity.
 DFLASH_LR=3e-4; DFLASH_NUM_LAYERS=5
 PEAGLE_LR=6e-4; PEAGLE_NUM_LAYERS=4; NUM_DEPTHS=4
 DOWN_SAMPLE_RATIO=0.7; DOWN_SAMPLE_RATIO_MIN=0.2
@@ -127,6 +132,7 @@ CUDA_VISIBLE_DEVICES=2 torchrun --standalone --nproc_per_node 1 scripts/train.py
     --markov-rank "$MARKOV_RANK" --markov-head-type "$MARKOV_HEAD_TYPE" \
     --enable-confidence-head --confidence-head-with-markov \
     --loss-fn "$DSPARK_LOSS_FN" --confidence-head-alpha "$CONFIDENCE_HEAD_ALPHA" \
+    --no-sample-from-anchor \
     > "$LOGS/dspark.log" 2>&1 &
 PIDS+=($!); echo "  dspark  pid=${PIDS[-1]}  gpu=2"
 
@@ -169,6 +175,7 @@ CUDA_VISIBLE_DEVICES=3 python scripts/gemma4_mtp/train_online.py \
     --max-samples "$MAX_SAMPLES" \
     --bf16 \
     --log-every 10 \
+    --save-every 1000 \
     > "$LOGS/mtp.log" 2>&1 &
 PIDS+=($!); echo "  mtp     pid=${PIDS[-1]}  gpu=3"
 

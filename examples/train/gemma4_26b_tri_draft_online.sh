@@ -147,6 +147,7 @@ CUDA_VISIBLE_DEVICES="$DSPARK_GPU" torchrun --standalone --nproc_per_node 1 \
     --confidence-head-with-markov \
     --loss-fn "$DSPARK_LOSS_FN" \
     --confidence-head-alpha "$CONFIDENCE_HEAD_ALPHA" \
+    --no-sample-from-anchor \
     --on-missing generate \
     --on-generate cache \
     > "$LOGS/dspark.log" 2>&1 &
@@ -169,6 +170,7 @@ CUDA_VISIBLE_DEVICES="$MTP_GPU" python \
     --max-samples "$MAX_SAMPLES" \
     --bf16 \
     --log-every 10 \
+    --save-every 1000 \
     > "$LOGS/mtp.log" 2>&1 &
 PIDS+=($!)
 echo "  mtp    pid=${PIDS[-1]}  log=$LOGS/mtp.log"
