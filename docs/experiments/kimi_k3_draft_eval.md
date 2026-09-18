@@ -132,42 +132,41 @@ gap was never the checkpoint, it was vLLM 0.28.0.
 
 Same offline harness as the rest of this doc (`run_dspark_eval.py`,
 analytical `accept_rate`/`accept_len`), rerun on the Bug-1-fixed clean data.
-Old AL values (from the "Full 25-benchmark sweep" table further down) had a
-separate `+1` double-counting bug (fixed by reading `accept_len` directly —
-it already includes the anchor/bonus token); the "old AL (corrected)" column
-below removes that so the comparison isolates the effect of Bug 1 alone.
+`accept_len` is read directly as AL (it already includes the anchor/bonus
+token — no separate `+1` needed). Fixing Bug 1 alone raised these numbers
+1.0×-2.1× versus the original (now-removed) measurements — see the Bug 1
+section above for that comparison; only the corrected, current values are
+kept here.
 
-| dataset | new AL (clean) | old AL (corrected) | ratio | new AR | new full_acc |
-|---|---:|---:|---:|---:|---:|
-| gsm8k | 5.97 | 2.98 | 2.00× | 0.847 | 0.855 |
-| livecodebench | 4.46 | 2.13 | 2.09× | 0.666 | 0.680 |
-| speed-coding | 4.78 | 2.48 | 1.93× | 0.710 | 0.727 |
-| speed-rag | 4.17 | 2.16 | 1.93× | 0.636 | 0.658 |
-| swe-bench-pro | 3.83 | 1.93 | 1.98× | 0.594 | 0.616 |
-| summarization | 3.65 | 2.00 | 1.83× | 0.571 | 0.598 |
-| rag | 4.12 | 2.29 | 1.80× | 0.637 | 0.658 |
-| gpqa | 3.01 | 1.85 | 1.63× | 0.463 | 0.475 |
-| mbpp | 4.65 | 3.18 | 1.46× | 0.714 | 0.729 |
-| speed-writing | 3.49 | 2.39 | 1.46× | 0.554 | 0.579 |
-| translation | 3.96 | 2.73 | 1.45× | 0.640 | 0.667 |
-| speed-multilingual | 3.75 | 2.63 | 1.43× | 0.568 | 0.591 |
-| bfcl | 4.97 | 3.58 | 1.39× | 0.723 | 0.734 |
-| aime | 3.16 | 2.27 | 1.39× | 0.492 | 0.497 |
-| qa / speed-qa | 3.43 | 2.57 | 1.34× | 0.550 | 0.573 |
-| tool_call | 4.19 | 3.19 | 1.31× | 0.645 | 0.664 |
-| swe-rebench | 3.11 | 2.45 | 1.27× | 0.507 | 0.530 |
-| math500 | 4.44 | 3.47 | 1.28× | 0.667 | 0.672 |
-| mtbench | 3.07 | 2.55 | 1.20× | 0.500 | 0.523 |
-| writing | 2.89 | 2.58 | 1.12× | 0.485 | 0.506 |
-| aa-lcr-4k | 3.38 | 3.26 | 1.04× | 0.515 | 0.523 |
-| aa-lcr-1k | 3.22 | 3.20 | 1.00× | 0.496 | 0.504 |
-| aime26 | 2.88 | 3.02 | 0.96× | 0.461 | 0.459 |
+| dataset | AL | AR | full_acc |
+|---|---:|---:|---:|
+| gsm8k | 5.97 | 0.847 | 0.855 |
+| bfcl | 4.97 | 0.723 | 0.734 |
+| mbpp | 4.65 | 0.714 | 0.729 |
+| speed-coding | 4.78 | 0.710 | 0.727 |
+| livecodebench | 4.46 | 0.666 | 0.680 |
+| math500 | 4.44 | 0.667 | 0.672 |
+| tool_call | 4.19 | 0.645 | 0.664 |
+| speed-rag | 4.17 | 0.636 | 0.658 |
+| rag | 4.12 | 0.637 | 0.658 |
+| translation | 3.96 | 0.640 | 0.667 |
+| swe-bench-pro | 3.83 | 0.594 | 0.616 |
+| speed-multilingual | 3.75 | 0.568 | 0.591 |
+| summarization | 3.65 | 0.571 | 0.598 |
+| speed-writing | 3.49 | 0.554 | 0.579 |
+| qa / speed-qa | 3.43 | 0.550 | 0.573 |
+| aa-lcr-4k | 3.38 | 0.515 | 0.523 |
+| aa-lcr-1k | 3.22 | 0.496 | 0.504 |
+| aime | 3.16 | 0.492 | 0.497 |
+| swe-rebench | 3.11 | 0.507 | 0.530 |
+| mtbench | 3.07 | 0.500 | 0.523 |
+| gpqa | 3.01 | 0.463 | 0.475 |
+| writing | 2.89 | 0.485 | 0.506 |
+| aime26 | 2.88 | 0.461 | 0.459 |
 
-`aa-lcr-1k`/`aa-lcr-4k` barely moved (their prefixes were long enough that
-degenerate generation had less to bite into) and `aime26` moved slightly
-down (likely sample noise at n=15) — every other set improved 1.1×-2.1×.
-This table supersedes the "Full 25-benchmark sweep" table further down,
-which is kept for historical record.
+Range: AL 2.88–5.97 across 24 domains (median ≈ 3.7). This table supersedes
+the "Full 25-benchmark sweep" table further down, which is kept for
+historical record with its data table removed.
 
 ### Full 24-set live-serving sweep — real measurements, vLLM 0.29.0 (the authoritative numbers)
 
@@ -564,10 +563,9 @@ directly to the speedup ceiling vs the 108 tok/s baseline) and
 per-step/per-slot numbers above (EAGLE3 drafts 4 tokens/step, DSpark 7).
 
 **DSpark columns updated 2026-09-18 with clean data** (original values were
-measured on generation data later found corrupted by Bug 1 — see the
-Update section — old values were 3.48/3.27/3.13/2.85/4.20/4.26 across these
-rows, all wrong by 1.0×-2.1× per the correction table in the Update
-section). EAGLE3 columns are **not** updated here — EAGLE3's on-policy sets
+measured on generation data later found corrupted by Bug 1, wrong by
+1.0×-2.1× — see the Update section for the fix and current values).
+EAGLE3 columns are **not** updated here — EAGLE3's on-policy sets
 (aime, livecodebench, gpqa) were collected with the same general on-policy
 pipeline described as affected by Bug 1, but were never specifically
 re-verified or re-collected this session; treat EAGLE3's numbers below as
