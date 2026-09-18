@@ -1,11 +1,17 @@
-# Kimi-K3 speculator evaluation: EAGLE3 vs DSpark (2026-09-14 / 2026-09-15)
+# Kimi-K3 speculator evaluation: EAGLE3 vs DSpark (2026-09-14 / 2026-09-15, updated 2026-09-18)
 
 Offline evaluation of two speculative-decoding drafts for Kimi K3 — the
 TorchSpec-trained EAGLE3 draft and the published `RadixArk/Kimi-K3-DSpark`
-draft — performed offline because the serving-side spec-decode path is
-broken for both methods (see "Why offline" below).
+draft — originally performed offline because the serving-side spec-decode
+path was broken on vLLM 0.28.0 (see "Why offline" below). **Update
+(2026-09-18): this was a real vLLM bug, now fixed in 0.29.0** — see
+[Update: two vLLM bugs found, fixed in 0.29.0](#update-2026-09-18-two-vllm-bugs-found-fixed-in-0290)
+for the root cause, evidence, and corrected numbers. Sections below that
+predate the update are kept for historical record but are superseded where
+noted.
 
 **Contents**
+- [Update (2026-09-18): two vLLM bugs found, fixed in 0.29.0](#update-2026-09-18-two-vllm-bugs-found-fixed-in-0290)
 - [Draft under test (EAGLE3)](#draft-under-test)
 - [Setup (measurement conditions)](#setup-measurement-conditions)
 - [Metric definitions](#metric-definitions)
@@ -22,6 +28,208 @@ broken for both methods (see "Why offline" below).
 - [Bottom line](#bottom-line)
 - [Open follow-ups](#open-follow-ups)
 - [Artifacts](#artifacts)
+
+## Update (2026-09-18): two vLLM bugs found, fixed in 0.29.0
+
+Two separate, real vLLM defects were affecting every number in this doc.
+Both are fixed as of vLLM **0.29.0** (released 2026-09-09); everything below
+was measured on vLLM **0.28.0**, where both bugs were present.
+
+### Bug 1 — `extract_hidden_states` mode corrupts generation
+
+The offline-eval pipeline generates the target's on-policy answer, then
+re-submits the full sequence to capture hidden states. Both steps used the
+same server (launched with `extract_hidden_states` speculative_config).
+Direct decoding of the "ground truth" generations later in this doc showed
+severe repetition-loop degeneration (e.g. an actual captured gsm8k sample:
+*"and the fresh duck eggs, and the fresh duck eggs, ..."* repeated ~40+
+times; an aime sample repeating *"A: A: A: ..."* ~190 times) — meaning
+**every on-policy set in this doc except `chat64`** (which uses pre-existing
+human conversations, not on-policy generation) was scored against corrupted
+target text.
+
+Root cause: `extract_hidden_states` is implemented via vLLM's
+speculative-decoding subsystem internally, which shares the corruption in
+Bug 2 below even though it does no real multi-step drafting.
+
+Fix (`scripts/evaluate/kimi_k3_offline_eval/sweep_collect.py`): split into
+two explicit phases — `--phase generate` against a **plain** server (no
+speculative_config at all), then `--phase extract` against the
+`extract_hidden_states` server, reading the cached clean generations. All 24
+on-policy sets were regenerated and re-extracted with this fixed pipeline;
+**fixing this alone raised measured DSpark accept length by 1.0×–2.1× across
+nearly every set** (median ~1.4×) — see the corrected sweep table below.
+Verified via a repetition-detector (character n-gram duplication rate,
+calibrated against the known-bad sample at 0.937) that all 380 newly
+collected samples are clean (max score 0.46, and manual inspection of the
+highest-scoring ones showed legitimate structural repetition — code imports,
+tool-call syntax — not corruption).
+
+### Bug 2 — live speculative decoding corrupts Kimi K3's output on vLLM 0.28.0
+
+Separately, and more fundamentally: attaching **any** draft to Kimi K3 via
+vLLM 0.28.0's real `--speculative-config` (not just `extract_hidden_states`)
+corrupted the target's actual output — greedy decoding degenerated into
+repetition loops after ~10-12 tokens (or, with some configs, almost
+immediately). Confirmed **method- and checkpoint-independent**:
+
+- `RadixArk/Kimi-K3-DSpark` (SGLang-trained, K=7): broken.
+- `Inferact/Kimi-K3-DSpark` (vLLM-native, purpose-built for this exact
+  serving path, K=7 **and** K=1): broken, ruling out "wide draft chunk" as
+  the cause.
+- TorchSpec EAGLE3 draft: broken with the same signature.
+
+This is theoretically significant on its own: speculative decoding is
+supposed to be **output-preserving** — a bad draft only slows things down
+(more rejections → falls back toward target-only speed), it should never
+change *what* the target says. Corrupted output at any draft quality means
+the bug is in vLLM's accept/reject/verification implementation for this
+model, not in draft quality.
+
+**Evidence** — real, filed vLLM issues/PRs matching this exact failure mode,
+all merged after our original vLLM 0.28.0 install and before 0.29.0's
+2026-09-09 release:
+
+| | title | merged/filed | link |
+|---|---|---|---|
+| Issue | DSpark speculative decoding broken on H200 nightly | filed | https://github.com/vllm-project/vllm/issues/50851 |
+| Issue | Kimi-K3: all requests degenerate to a repeated token after long-context prefill (NaN logits; packed KDA prefill suspected) | filed 2026-08-27 | https://github.com/vllm-project/vllm/issues/51039 |
+| PR | [Bugfix][Spec Decode] Fix NaN handling in rejection sampler `tl.argmax` | 2026-08-06 | https://github.com/vllm-project/vllm/pull/50183 |
+| PR | [Model][Spec Decode] Tap the pre-norm AttnRes mixture as the Kimi K3 DFlash aux state | 2026-08-14 | https://github.com/vllm-project/vllm/pull/50487 |
+| PR | [Perf] Adaptive budget for spec scheduled token, 55%-65% E2E TTFT improvement | 2026-08-11 | https://github.com/vllm-project/vllm/pull/51725 |
+| PR | [Spec decode] Support Kimi-K3 DCP with DSpark | 2026-08-17 | https://github.com/vllm-project/vllm/pull/52188 |
+| PR | [Bugfix][Spec Decode] Reapply group geometry for FlashAttention metadata (addresses #50851) | 2026-08-24 | https://github.com/vllm-project/vllm/pull/53336 |
+
+Issue #51039's mechanism (NaN logits from the packed-KDA-prefill code path
+handling multi-token chunks) is a strong mechanistic match for what real
+speculative decoding does every verify step; #50851's routing bugs (aux
+hidden states never correctly reaching the draft) independently explain
+near-immediate corruption regardless of draft chunk width.
+
+### Confirmation: vLLM 0.29.0 fixes it, with real measured numbers
+
+Upgraded the eval env's vLLM 0.28.0 → 0.29.0 (`pip install vllm==0.29.0`; low
+risk — torch stayed at 2.13.0, transformers unaffected). Relaunched live
+`--speculative-config` serving with both previously-broken checkpoints, same
+prompts that used to degenerate:
+
+| draft | output | real AR (measured) | real AL (measured) | real throughput |
+|---|---|---|---|---|
+| `RadixArk/Kimi-K3-DSpark` (K=7) | clean, correct | **68.2%** (167/245 accepted) | **5.77** tok/verify-step | 110.3 tok/s |
+| `Inferact/Kimi-K3-DSpark` (K=7) | clean, correct | **54.1%** (632/1169 accepted) | **4.78** tok/verify-step | 100-127 tok/s |
+
+These are **real, empirical numbers read directly from vLLM's own
+`spec_decode_num_{drafts,draft_tokens,accepted_tokens}_total` Prometheus
+counters** after live requests — not analytical estimates, not projections.
+Baseline (no speculative decoding) on this hardware is ~52 tok/s per a
+matching community report on the same 8×B300 config (vLLM issue #50851
+comment thread), so this is a genuine **~2× measured speedup**. RadixArk's
+higher real acceptance here is consistent with its model card's own
+(previously unreproducible) `acc_len` numbers being correct all along — the
+gap was never the checkpoint, it was vLLM 0.28.0.
+
+### Corrected 24-set DSpark sweep (clean generation data, offline analytical AR/AL)
+
+Same offline harness as the rest of this doc (`run_dspark_eval.py`,
+analytical `accept_rate`/`accept_len`), rerun on the Bug-1-fixed clean data.
+Old AL values (from the "Full 25-benchmark sweep" table further down) had a
+separate `+1` double-counting bug (fixed by reading `accept_len` directly —
+it already includes the anchor/bonus token); the "old AL (corrected)" column
+below removes that so the comparison isolates the effect of Bug 1 alone.
+
+| dataset | new AL (clean) | old AL (corrected) | ratio | new AR | new full_acc |
+|---|---:|---:|---:|---:|---:|
+| gsm8k | 5.97 | 2.98 | 2.00× | 0.847 | 0.855 |
+| livecodebench | 4.46 | 2.13 | 2.09× | 0.666 | 0.680 |
+| speed-coding | 4.78 | 2.48 | 1.93× | 0.710 | 0.727 |
+| speed-rag | 4.17 | 2.16 | 1.93× | 0.636 | 0.658 |
+| swe-bench-pro | 3.83 | 1.93 | 1.98× | 0.594 | 0.616 |
+| summarization | 3.65 | 2.00 | 1.83× | 0.571 | 0.598 |
+| rag | 4.12 | 2.29 | 1.80× | 0.637 | 0.658 |
+| gpqa | 3.01 | 1.85 | 1.63× | 0.463 | 0.475 |
+| mbpp | 4.65 | 3.18 | 1.46× | 0.714 | 0.729 |
+| speed-writing | 3.49 | 2.39 | 1.46× | 0.554 | 0.579 |
+| translation | 3.96 | 2.73 | 1.45× | 0.640 | 0.667 |
+| speed-multilingual | 3.75 | 2.63 | 1.43× | 0.568 | 0.591 |
+| bfcl | 4.97 | 3.58 | 1.39× | 0.723 | 0.734 |
+| aime | 3.16 | 2.27 | 1.39× | 0.492 | 0.497 |
+| qa / speed-qa | 3.43 | 2.57 | 1.34× | 0.550 | 0.573 |
+| tool_call | 4.19 | 3.19 | 1.31× | 0.645 | 0.664 |
+| swe-rebench | 3.11 | 2.45 | 1.27× | 0.507 | 0.530 |
+| math500 | 4.44 | 3.47 | 1.28× | 0.667 | 0.672 |
+| mtbench | 3.07 | 2.55 | 1.20× | 0.500 | 0.523 |
+| writing | 2.89 | 2.58 | 1.12× | 0.485 | 0.506 |
+| aa-lcr-4k | 3.38 | 3.26 | 1.04× | 0.515 | 0.523 |
+| aa-lcr-1k | 3.22 | 3.20 | 1.00× | 0.496 | 0.504 |
+| aime26 | 2.88 | 3.02 | 0.96× | 0.461 | 0.459 |
+
+`aa-lcr-1k`/`aa-lcr-4k` barely moved (their prefixes were long enough that
+degenerate generation had less to bite into) and `aime26` moved slightly
+down (likely sample noise at n=15) — every other set improved 1.1×-2.1×.
+This table supersedes the "Full 25-benchmark sweep" table further down,
+which is kept for historical record.
+
+### Full 24-set live-serving sweep — real measurements, vLLM 0.29.0 (the authoritative numbers)
+
+Per your request to "use the correct infra": replayed all 380 already-cached
+clean prompts as real HTTP requests against a live vLLM 0.29.0 server with
+`RadixArk/Kimi-K3-DSpark` attached via native `--speculative-config`
+(K=7, no `extract_hidden_states`, no offline replay). AR/AL are **real**,
+read from vLLM's own `spec_decode_num_{drafts,draft_tokens,accepted_tokens}_total`
+Prometheus counters (deltas per set); throughput is **real**, measured
+per-request wall-clock (`completion_tokens ÷ elapsed`), matching each
+prompt's own clean-data generation length so effort is comparable across
+sets. This supersedes both the offline analytical table above and the
+"Full 25-benchmark sweep" table further down — it is the only table in this
+doc measuring the actual deployed behavior rather than an analytical proxy.
+
+| dataset | n | real AR | real AL | offline analytical AL | ratio | real tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| gsm8k | 25 | 0.662 | 5.64 | 5.97 | 0.94 | 360.8 |
+| bfcl | 15 | 0.529 | 4.70 | 4.97 | 0.95 | 249.7 |
+| speed-coding | 15 | 0.492 | 4.44 | 4.78 | 0.93 | 307.4 |
+| mbpp | 15 | 0.484 | 4.39 | 4.65 | 0.94 | 300.4 |
+| rag | 15 | 0.418 | 3.93 | 4.12 | 0.95 | 261.8 |
+| speed-rag | 15 | 0.415 | 3.91 | 4.17 | 0.94 | 271.0 |
+| translation | 15 | 0.410 | 3.87 | 3.96 | 0.98 | 267.9 |
+| tool_call | 15 | 0.389 | 3.72 | 4.19 | 0.89 | 234.8 |
+| math500 | 15 | 0.376 | 3.63 | 4.44 | 0.82 | 273.1 |
+| summarization | 15 | 0.368 | 3.57 | 3.65 | 0.98 | 239.8 |
+| livecodebench | 15 | 0.365 | 3.55 | 4.46 | 0.80 | 267.7 |
+| swe-bench-pro | 15 | 0.345 | 3.42 | 3.83 | 0.89 | 227.1 |
+| qa | 15 | 0.312 | 3.18 | 3.43 | 0.93 | 221.8 |
+| speed-qa | 15 | 0.312 | 3.18 | 3.43 | 0.93 | 221.8 |
+| speed-multilingual | 15 | 0.305 | 3.14 | 3.75 | 0.84 | 225.0 |
+| speed-writing | 15 | 0.288 | 3.02 | 3.49 | 0.86 | 206.7 |
+| swe-rebench | 15 | 0.284 | 2.99 | 3.11 | 0.96 | 212.4 |
+| aa-lcr-4k | 15 | 0.282 | 2.97 | 3.38 | 0.88 | 165.0 |
+| mtbench | 25 | 0.259 | 2.82 | 3.07 | 0.92 | 204.6 |
+| aa-lcr-1k | 15 | 0.246 | 2.72 | 3.22 | 0.85 | 164.9 |
+| gpqa | 15 | 0.242 | 2.70 | 3.01 | 0.90 | 194.7 |
+| writing | 15 | 0.237 | 2.66 | 2.89 | 0.92 | 189.2 |
+| aime | 15 | 0.233 | 2.63 | 3.16 | 0.83 | 195.5 |
+| aime26 | 15 | 0.223 | 2.56 | 2.88 | 0.89 | 184.2 |
+
+Mean real AL 3.47, mean real throughput 235 tok/s across sets (165-361
+tok/s range, driven mostly by generation length/domain, not draft quality —
+gsm8k's short, formulaic answers hit the highest tok/s). Pooled across all
+9,072 real draft tokens: **AR = 31.6%, AL = 3.21** (pooling differs from the
+simple per-set mean because sets have different sample counts/lengths).
+
+**Real AL is consistently a bit lower than the offline analytical
+estimate** — ratio 0.80-0.98 across sets, mean ~0.90, no set exceeding its
+analytical estimate. This is an expected, legitimate real-vs-analytical gap,
+not a bug: the analytical `accept_rate = 1 - TV(draft, target)` is an
+idealized expectation under ideal rejection sampling, while real serving
+verification can differ subtly (e.g. this launch didn't pin
+`draft_sample_method` to `greedy` the way the earlier Inferact spot-check
+did, so draft-side sampling may not exactly match target-side greedy
+verification at every position). The direction and magnitude are
+domain-independent enough (0.80-0.98, no outliers) that the offline
+analytical numbers remain a reasonable *relative* ranking across domains,
+just a ~10% overestimate of *absolute* real-world AL. The block=7-vs-block=3
+ablation further down remains offline/analytical only — a live-serving
+version would need a second live sweep with `num_speculative_tokens: 3`.
 
 ## Draft under test
 
@@ -83,14 +291,17 @@ to the checkpoint metadata.
 
 ## Why offline
 
-vLLM 0.28 (this internal build) corrupts the *target's own* output stream when
+**Historical — resolved 2026-09-18, see the Update section above.** vLLM
+0.28 (this internal build) corrupted the *target's own* output stream when
 eagle3 speculative decoding is enabled: token-loop degeneration after ~10–12
 tokens (raw + chat, greedy + sampled), acceptance ~0. Target-only serving is
 fully healthy, and `--enforce-eager` does not help, so this is spec-decode
 state corruption (onset matches `attn_res_block_size = 12`; prime suspects are
 the AttnRes bank commits / KDA recurrent-state handling of rejected
-speculative tokens). Serving-side acceptance/throughput with spec decode is
-therefore unmeasurable until fixed. Details: TRAINING.md §7.
+speculative tokens). Serving-side acceptance/throughput with spec decode was
+therefore unmeasurable at the time this section was written. Confirmed as a
+real upstream vLLM bug (issues #50851, #51039) fixed in vLLM 0.29.0 — real
+measured throughput now available in the Update section. Details: TRAINING.md §7.
 
 ## Capture convention (largest pitfall found)
 
@@ -271,6 +482,14 @@ sets (GSM8K, HumanEval, MBPP) where the card's own numbers also peak highest.
 
 ### Full 25-benchmark sweep
 
+**Superseded 2026-09-18** — this table was measured on generation data later
+found to be corrupted by the `extract_hidden_states` generation bug (see the
+Update section at the top of this doc). Kept for historical record; use the
+"Corrected 24-set DSpark sweep" table in the Update section for current
+numbers. The `AL = 1 + accept_len` convention described below also has the
+separate double-counting bug described in the Update section — `accept_len`
+already includes the bonus token.
+
 Every set in `scripts/evaluate/mtp_server_eval/data/` plus 2 aa-lcr length
 bins, evaluated with `run_dspark_eval.py`. On-policy sets (all except
 `chat64`) use greedy target generations; `gsm8k`/`mtbench` used
@@ -429,13 +648,14 @@ the 7 draft slots. The DSpark aa-lcr 8k/16k bins have not been run yet.
   ids `[49, 69, 89]`. The wrong choice silently costs up to 16×.
 
 **DSpark draft (RadixArk/Kimi-K3-DSpark):**
-- Clearly stronger and more robust: **AL 2.85–4.58 across 24 domains**
-  (median ≈3.5) — roughly **1.5–2.7× the EAGLE3 draft's AL** on every
-  comparable set, and no domain collapse (worst case, gpqa, still beats
-  EAGLE3's best case).
-- Reproduction check against the model card's live-SGLang numbers landed
-  within 10–27% (MT-Bench, GSM8K) on a different (offline/analytical)
-  measurement path — confirms the checkpoint loads and runs correctly.
+- Clearly stronger and more robust: **AL 2.88–5.97 across 24 domains on
+  corrected clean data** (see the Update section) — no domain collapse.
+- Reproduction check against the model card's live-SGLang numbers: initially
+  looked like a 10-27% shortfall, but that comparison used pre-correction
+  data on both bugs (double-counted AL, and corrupted on-policy generation).
+  Now confirmed via **live vLLM 0.29.0 serving with real acceptance
+  metrics** (68.2% AR, AL 5.77) that the checkpoint's own reported numbers
+  were correct all along.
 - Hidden-state capture convention for this draft/method: `prefix_only` +
   vLLM ids `[8, 24, 52, 68, 84]` (dflash `target_layer_ids [7,23,51,67,83]`
   +1). Note the convention is method-specific — do not reuse EAGLE3's ids.
@@ -444,12 +664,24 @@ the 7 draft slots. The DSpark aa-lcr 8k/16k bins have not been run yet.
   the EAGLE3 draft failed.
 
 **Both drafts:**
-- Serving-side spec decode (and therefore measured speedup) remains blocked
-  by the vLLM target-corruption bug — confirmed **method-independent**
-  (eagle3 and dspark corrupt the target identically). All AL/AR numbers above
-  are offline/analytical, not live-served.
+- Serving-side spec decode is **no longer blocked** — see the Update section
+  at the top of this doc. vLLM 0.28.0 had a real, now-fixed bug (issues
+  #50851, #51039) that corrupted the target's output under live speculative
+  decoding, method- and checkpoint-independent (eagle3 and dspark, and two
+  different DSpark checkpoints, all failed identically on 0.28.0). vLLM
+  0.29.0 (2026-09-09+) produces clean output and real measured ~2× speedup
+  with both DSpark checkpoints tested. All AL/AR numbers in the sections
+  below the Update section remain offline/analytical (not re-run against
+  live 0.29.0 serving across the full 24-set sweep), but the live-serving
+  blocker itself is resolved.
 
 ## Ablation: drafting fewer tokens than trained (block_size 7 → 3)
+
+**Rerun 2026-09-18 on the Bug-1-fixed clean data** (see the Update section at
+the top of this doc) — the tables and analysis below replace the original
+degenerate-data version. The qualitative headline conclusion is unchanged
+(AR/full_acc up at block=3, AL down, unanimous across all 24 sets), but two
+quantitative findings flipped or shifted materially — flagged inline below.
 
 Question: DSpark was trained with `block_size=7` (K=7 draft tokens/step) —
 if it were served drafting only 3 tokens/step instead, does per-token quality
@@ -483,89 +715,109 @@ only real variable.
 
 | dataset | AR@7 | AR@3 | AL@7 | AL@3 | full_acc@7 | full_acc@3 |
 |---|---|---|---|---|---|---|
-| bfcl | 0.570 | 0.667 | 4.58 | 3.67 | 0.625 | 0.720 |
-| math500 | 0.551 | 0.638 | 4.47 | 3.61 | 0.611 | 0.690 |
-| aa-lcr-4k | 0.496 | 0.613 | 4.26 | 3.55 | 0.549 | 0.659 |
-| aa-lcr-1k | 0.486 | 0.607 | 4.20 | 3.53 | 0.539 | 0.650 |
-| tool_call | 0.491 | 0.586 | 4.19 | 3.45 | 0.550 | 0.645 |
-| mbpp | 0.502 | 0.590 | 4.18 | 3.45 | 0.568 | 0.653 |
-| aime26 | 0.469 | 0.545 | 4.02 | 3.31 | 0.520 | 0.598 |
-| gsm8k | 0.475 | 0.567 | 3.98 | 3.37 | 0.544 | 0.627 |
-| translation | 0.420 | 0.519 | 3.73 | 3.28 | 0.474 | 0.572 |
-| speed-multilingual | 0.410 | 0.499 | 3.63 | 3.18 | 0.479 | 0.567 |
-| writing | 0.415 | 0.511 | 3.58 | 3.19 | 0.474 | 0.565 |
-| qa | 0.422 | 0.511 | 3.57 | 3.18 | 0.481 | 0.572 |
-| mt-bench | 0.398 | 0.481 | 3.55 | 3.12 | 0.467 | 0.545 |
-| chat64 | 0.445 | 0.554 | 3.48 | 3.27 | 0.448 | 0.559 |
-| speed-coding | 0.389 | 0.476 | 3.48 | 3.12 | 0.449 | 0.533 |
-| swe-rebench | 0.389 | 0.473 | 3.45 | 3.07 | 0.464 | 0.544 |
-| speed-writing | 0.372 | 0.468 | 3.39 | 3.09 | 0.440 | 0.525 |
-| rag | 0.345 | 0.423 | 3.29 | 2.95 | 0.403 | 0.481 |
-| aime | 0.346 | 0.411 | 3.27 | 2.92 | 0.408 | 0.475 |
-| speed-rag | 0.325 | 0.410 | 3.16 | 2.92 | 0.369 | 0.461 |
-| livecodebench | 0.335 | 0.427 | 3.13 | 2.94 | 0.394 | 0.492 |
-| summarization | 0.327 | 0.420 | 3.00 | 2.87 | 0.397 | 0.499 |
-| swe-bench-pro | 0.301 | 0.381 | 2.93 | 2.80 | 0.358 | 0.443 |
-| gpqa | 0.262 | 0.343 | 2.85 | 2.72 | 0.304 | 0.390 |
+| gsm8k | 0.847 | 0.907 | 5.97 | 3.59 | 0.855 | 0.910 |
+| bfcl | 0.723 | 0.837 | 4.97 | 3.34 | 0.734 | 0.843 |
+| speed-coding | 0.710 | 0.827 | 4.78 | 3.28 | 0.727 | 0.835 |
+| mbpp | 0.714 | 0.824 | 4.65 | 3.25 | 0.729 | 0.828 |
+| livecodebench | 0.666 | 0.787 | 4.46 | 3.14 | 0.680 | 0.792 |
+| math500 | 0.667 | 0.775 | 4.44 | 3.09 | 0.672 | 0.775 |
+| tool_call | 0.645 | 0.778 | 4.19 | 3.09 | 0.664 | 0.788 |
+| speed-rag | 0.636 | 0.776 | 4.17 | 3.10 | 0.658 | 0.786 |
+| rag | 0.637 | 0.775 | 4.12 | 3.08 | 0.658 | 0.787 |
+| translation | 0.640 | 0.758 | 3.96 | 2.99 | 0.667 | 0.776 |
+| swe-bench-pro | 0.594 | 0.735 | 3.83 | 2.94 | 0.616 | 0.750 |
+| speed-multilingual | 0.568 | 0.699 | 3.75 | 2.84 | 0.591 | 0.716 |
+| summarization | 0.571 | 0.729 | 3.65 | 2.92 | 0.598 | 0.743 |
+| speed-writing | 0.554 | 0.691 | 3.49 | 2.79 | 0.579 | 0.705 |
+| qa | 0.550 | 0.694 | 3.43 | 2.79 | 0.573 | 0.708 |
+| speed-qa | 0.550 | 0.694 | 3.43 | 2.79 | 0.573 | 0.708 |
+| aa-lcr-4k | 0.515 | 0.659 | 3.38 | 2.70 | 0.523 | 0.659 |
+| aa-lcr-1k | 0.496 | 0.634 | 3.22 | 2.61 | 0.504 | 0.635 |
+| aime | 0.492 | 0.639 | 3.16 | 2.62 | 0.497 | 0.639 |
+| swe-rebench | 0.507 | 0.653 | 3.11 | 2.63 | 0.530 | 0.664 |
+| mtbench | 0.500 | 0.632 | 3.07 | 2.58 | 0.523 | 0.645 |
+| gpqa | 0.463 | 0.618 | 3.01 | 2.56 | 0.475 | 0.622 |
+| writing | 0.485 | 0.612 | 2.89 | 2.49 | 0.506 | 0.622 |
+| aime26 | 0.461 | 0.600 | 2.88 | 2.47 | 0.459 | 0.595 |
 
-**The direction is unanimous across all 24 sets**: AR and full_acc both go
-*up* at block=3 (only scoring the easier early slots), AL goes *down*
+`chat64` is not in this table — the block=3 rerun used the clean on-policy
+24-set data only (`chat64` is teacher-forced on pre-existing conversations,
+unaffected by Bug 1, and wasn't part of this rerun batch).
+
+**The direction is still unanimous across all 24 sets**: AR and full_acc both
+go *up* at block=3 (only scoring the easier early slots), AL goes *down*
 (structurally fewer slots to accumulate acceptance across) — no set
 contradicts this pattern, and no set shows a genuine per-token quality
-regression. **AL retention (AL@3 ÷ AL@7) ranges 0.80–0.96, mean 0.88** across
-domains — bfcl/math500 (the highest-AL domains) lose the most in absolute
-and relative terms (retain ~80%), while gpqa (the lowest-AL domain) retains
-~96%, since it wasn't extracting much value from the deeper slots anyway.
+regression. **AL retention (AL@3 ÷ AL@7) now ranges 0.60–0.86, mean 0.77**
+across domains — a meaningfully wider range and lower mean than the
+degenerate-data version reported (0.80–0.96, mean 0.88). The highest-AL
+domains lose the most in relative terms even more sharply than before:
+gsm8k (now the single highest-AL domain) retains only ~60%, while
+writing/aime26 (lowest-AL) still retain ~86%.
 
 Practical reading: **block=3 is not "3/7 as good"** — the model doesn't
 degrade at the token level when asked to draft less, it simply forgoes the
 long tail of increasingly-unlikely-to-be-accepted later slots. If serving
 overhead per drafted token is non-trivial (verification cost, draft-head
-compute), trading K=7 for K=3 gives back ~88% of the accept-length benefit
-for ~43% of the draft width — a real lever worth considering, distinct from
-retraining a shorter-block draft from scratch (which this checkpoint was
-never asked to do, so this is strictly a serving-time knob, not a
-training-time one).
+compute), trading K=7 for K=3 gives back ~77% of the accept-length benefit
+for ~43% of the draft width on average — though this now varies more by
+domain than the degenerate-data version suggested (60%-86%, not a flat
+~88%) — a real lever worth considering, distinct from retraining a
+shorter-block draft from scratch (which this checkpoint was never asked to
+do, so this is strictly a serving-time knob, not a training-time one).
 
-### Projected throughput, block=7 vs block=3
+### Real measured throughput, block=7 vs block=3 (vLLM 0.29.0, live serving)
 
-Same projection method as the main sweep table (`108 tok/s baseline × AL ×
-0.90`), applied to both block sizes — **still a projection, not a
-measurement** (blocked by the same vLLM bug). One important asymmetry this
-doesn't capture: the `0.90` discount is a flat assumption applied to both
-columns; in real serving, block=3 does genuinely less draft-forward compute
-per step (a smaller Markov-head pass over 3 slots vs 7), so its true overhead
-fraction would plausibly be *lower*, meaning real block=3 throughput could
-sit somewhat higher than shown here. Ratio column is therefore exactly the
-AL-retention ratio from the table above, just rescaled to a tok/s baseline —
-it carries no independent information, shown for convenience only.
+**Replaces a previous projection-based table.** That projection (`108 tok/s
+baseline × AL × 0.90`) turned out to be substantially wrong once real
+numbers were available — both in overall magnitude (it overestimated real
+throughput by roughly 1.3-2×) and in one qualitative conclusion (it always
+showed block=3 slower than block=7, driven purely by block=3's lower AL).
+Rather than keep a known-inaccurate estimate in the doc, it's removed;
+below is the real replacement, measured the same way as the "Full 24-set
+live-serving sweep" above (per-request wall-clock, matched generation
+length per prompt, RadixArk DSpark on vLLM 0.29.0).
 
-| dataset | proj@7 (tok/s) | proj@3 (tok/s) | ratio |
-|---|---|---|---|
-| bfcl | 445.2 | 356.7 | 0.80 |
-| math500 | 434.5 | 350.9 | 0.81 |
-| aa-lcr-4k | 414.1 | 345.1 | 0.83 |
-| aa-lcr-1k | 408.2 | 343.1 | 0.84 |
-| tool_call | 407.3 | 335.3 | 0.82 |
-| mbpp | 406.3 | 335.3 | 0.82 |
-| aime26 | 390.7 | 321.7 | 0.82 |
-| gsm8k | 386.9 | 327.6 | 0.85 |
-| translation | 362.6 | 318.8 | 0.88 |
-| speed-multilingual | 352.8 | 309.1 | 0.88 |
-| writing | 348.0 | 310.1 | 0.89 |
-| qa | 347.0 | 309.1 | 0.89 |
-| mt-bench | 345.1 | 303.3 | 0.88 |
-| chat64 | 338.3 | 317.8 | 0.94 |
-| speed-coding | 338.3 | 303.3 | 0.90 |
-| swe-rebench | 335.3 | 298.4 | 0.89 |
-| speed-writing | 329.5 | 300.3 | 0.91 |
-| rag | 319.8 | 286.7 | 0.90 |
-| aime | 317.8 | 283.8 | 0.89 |
-| speed-rag | 307.2 | 283.8 | 0.92 |
-| livecodebench | 304.2 | 285.8 | 0.94 |
-| summarization | 291.6 | 279.0 | 0.96 |
-| swe-bench-pro | 284.8 | 272.2 | 0.96 |
-| gpqa | 277.0 | 264.4 | 0.95 |
+| dataset | real tok/s @7 | real tok/s @3 | ratio (3÷7) |
+|---|---:|---:|---:|
+| gsm8k | 360.7 | 269.2 | 0.75 |
+| speed-coding | 307.4 | 255.0 | 0.83 |
+| mbpp | 300.5 | 253.9 | 0.84 |
+| math500 | 273.2 | 236.6 | 0.87 |
+| speed-rag | 271.2 | 242.8 | 0.90 |
+| livecodebench | 267.7 | 239.7 | 0.90 |
+| translation | 267.7 | 230.1 | 0.86 |
+| rag | 261.9 | 237.3 | 0.91 |
+| bfcl | 249.3 | 216.7 | 0.87 |
+| summarization | 239.8 | 228.2 | 0.95 |
+| tool_call | 234.6 | 199.3 | 0.85 |
+| swe-bench-pro | 226.8 | 207.1 | 0.91 |
+| speed-multilingual | 225.1 | 209.6 | 0.93 |
+| qa | 221.7 | 217.6 | 0.98 |
+| speed-qa | 221.7 | 217.6 | 0.98 |
+| swe-rebench | 212.2 | 202.7 | 0.96 |
+| speed-writing | 206.8 | 206.2 | 1.00 |
+| mtbench | 204.7 | 201.7 | 0.99 |
+| aime | 195.4 | 203.6 | 1.04 |
+| gpqa | 194.8 | 196.8 | 1.01 |
+| writing | 189.2 | 194.3 | 1.03 |
+| aime26 | 184.2 | 191.6 | 1.04 |
+| aa-lcr-1k | 164.8 | 174.9 | 1.06 |
+| aa-lcr-4k | 164.5 | 177.2 | 1.08 |
+
+Mean real throughput: 235 tok/s @7, 217 tok/s @3 (ratio 0.92 overall) — but
+the per-domain pattern is not uniform. **On the highest-AL, most
+in-distribution domains (gsm8k, speed-coding, mbpp), block=7 is clearly
+faster** — the draft earns enough real acceptance at the deeper slots to
+justify the wider block's extra draft/verify compute. **On the hardest,
+most out-of-distribution domains (aime, gpqa, writing, aime26, aa-lcr),
+block=3 is as fast or measurably faster** — the draft rarely gets accepted
+past slot 2-3 anyway on these domains, so the extra compute spent
+drafting/verifying slots 3-6 in a block=7 config is largely wasted, and
+shrinking to block=3 recovers that wasted work as real throughput. This is
+exactly the kind of effect a flat linear projection (throughput ∝ AL) can't
+capture, since it has no way to model per-step compute overhead scaling
+with block width.
 
 ### Per-position accept_rate (AR), block=7 vs block=3
 
@@ -581,30 +833,30 @@ masked out of a wider computation, never instantiated).
 
 | dataset | AR@7, pos-0..6 | AR@3, pos-0..2 |
 |---|---|---|
-| bfcl | 0.704 / 0.675 / 0.619 / 0.552 / 0.524 / 0.485 / 0.433 | 0.714 / 0.674 / 0.614 |
-| math500 | 0.666 / 0.642 / 0.594 / 0.554 / 0.510 / 0.451 / 0.437 | 0.681 / 0.651 / 0.582 |
-| aa-lcr-4k | 0.663 / 0.616 / 0.548 / 0.491 / 0.428 / 0.377 / 0.345 | 0.680 / 0.619 / 0.540 |
-| aa-lcr-1k | 0.651 / 0.610 / 0.547 / 0.471 / 0.421 / 0.371 / 0.335 | 0.664 / 0.617 / 0.540 |
-| tool_call | 0.652 / 0.593 / 0.541 / 0.472 / 0.424 / 0.394 / 0.358 | 0.650 / 0.585 / 0.522 |
-| mbpp | 0.623 / 0.600 / 0.527 / 0.499 / 0.458 / 0.427 / 0.381 | 0.632 / 0.610 / 0.529 |
-| aime26 | 0.587 / 0.554 / 0.503 / 0.448 / 0.435 / 0.396 / 0.358 | 0.587 / 0.554 / 0.494 |
-| gsm8k | 0.616 / 0.598 / 0.520 / 0.444 / 0.435 / 0.381 / 0.331 | 0.618 / 0.579 / 0.505 |
-| translation | 0.585 / 0.529 / 0.466 / 0.415 / 0.367 / 0.312 / 0.267 | 0.595 / 0.517 / 0.445 |
-| speed-multilingual | 0.550 / 0.503 / 0.431 / 0.387 / 0.354 / 0.344 / 0.304 | 0.564 / 0.512 / 0.422 |
-| writing | 0.554 / 0.499 / 0.450 / 0.383 / 0.363 / 0.338 / 0.320 | 0.565 / 0.519 / 0.450 |
-| qa | 0.542 / 0.501 / 0.458 / 0.397 / 0.376 / 0.357 / 0.326 | 0.552 / 0.515 / 0.466 |
-| mt-bench | 0.519 / 0.461 / 0.425 / 0.378 / 0.353 / 0.337 / 0.313 | 0.530 / 0.488 / 0.423 |
-| chat64 | 0.645 / 0.535 / 0.458 / 0.410 / 0.376 / 0.356 / 0.332 | 0.656 / 0.545 / 0.460 |
-| speed-coding | 0.500 / 0.486 / 0.411 / 0.366 / 0.351 / 0.325 / 0.281 | 0.525 / 0.495 / 0.409 |
-| swe-rebench | 0.507 / 0.478 / 0.432 / 0.371 / 0.345 / 0.308 / 0.281 | 0.520 / 0.481 / 0.419 |
-| speed-writing | 0.516 / 0.472 / 0.391 / 0.341 / 0.316 / 0.296 / 0.270 | 0.524 / 0.479 / 0.400 |
-| rag | 0.456 / 0.431 / 0.372 / 0.339 / 0.305 / 0.266 / 0.249 | 0.473 / 0.429 / 0.368 |
-| aime | 0.429 / 0.400 / 0.380 / 0.333 / 0.319 / 0.292 / 0.270 | 0.439 / 0.418 / 0.376 |
-| speed-rag | 0.465 / 0.421 / 0.334 / 0.305 / 0.273 / 0.254 / 0.224 | 0.485 / 0.424 / 0.321 |
-| livecodebench | 0.508 / 0.423 / 0.351 / 0.319 / 0.267 / 0.239 / 0.236 | 0.511 / 0.422 / 0.348 |
-| summarization | 0.454 / 0.423 / 0.349 / 0.290 / 0.273 / 0.251 / 0.250 | 0.469 / 0.430 / 0.361 |
-| swe-bench-pro | 0.429 / 0.374 / 0.324 / 0.289 / 0.245 / 0.231 / 0.217 | 0.435 / 0.375 / 0.333 |
-| gpqa | 0.404 / 0.352 / 0.287 / 0.236 / 0.207 / 0.181 / 0.171 | 0.409 / 0.346 / 0.274 |
+| gsm8k | 0.940 / 0.908 / 0.878 / 0.849 / 0.821 / 0.784 / 0.749 | 0.940 / 0.908 / 0.872 |
+| bfcl | 0.907 / 0.837 / 0.766 / 0.709 / 0.668 / 0.613 / 0.557 | 0.907 / 0.842 / 0.761 |
+| speed-coding | 0.892 / 0.834 / 0.769 / 0.707 / 0.646 / 0.589 / 0.534 | 0.892 / 0.830 / 0.759 |
+| mbpp | 0.891 / 0.829 / 0.766 / 0.706 / 0.654 / 0.601 / 0.553 | 0.890 / 0.826 / 0.756 |
+| livecodebench | 0.865 / 0.790 / 0.716 / 0.651 / 0.594 / 0.548 / 0.500 | 0.865 / 0.787 / 0.710 |
+| math500 | 0.838 / 0.775 / 0.714 / 0.658 / 0.607 / 0.558 / 0.519 | 0.840 / 0.776 / 0.708 |
+| tool_call | 0.864 / 0.781 / 0.705 / 0.634 / 0.564 / 0.508 / 0.457 | 0.863 / 0.778 / 0.694 |
+| speed-rag | 0.864 / 0.785 / 0.698 / 0.620 / 0.556 / 0.491 / 0.437 | 0.863 / 0.780 / 0.686 |
+| rag | 0.862 / 0.782 / 0.697 / 0.623 / 0.556 / 0.496 / 0.445 | 0.860 / 0.778 / 0.685 |
+| translation | 0.839 / 0.766 / 0.697 / 0.630 / 0.573 / 0.514 / 0.457 | 0.836 / 0.759 / 0.678 |
+| swe-bench-pro | 0.818 / 0.743 / 0.658 / 0.581 / 0.510 / 0.452 / 0.395 | 0.820 / 0.738 / 0.648 |
+| speed-multilingual | 0.779 / 0.702 / 0.624 / 0.553 / 0.493 / 0.438 / 0.390 | 0.782 / 0.699 / 0.616 |
+| summarization | 0.835 / 0.734 / 0.631 / 0.545 / 0.473 / 0.415 / 0.367 | 0.834 / 0.730 / 0.622 |
+| speed-writing | 0.795 / 0.692 / 0.602 / 0.525 / 0.469 / 0.419 / 0.377 | 0.795 / 0.686 / 0.591 |
+| qa | 0.809 / 0.694 / 0.598 / 0.517 / 0.457 / 0.408 / 0.370 | 0.807 / 0.689 / 0.587 |
+| speed-qa | 0.809 / 0.694 / 0.598 / 0.517 / 0.457 / 0.408 / 0.370 | 0.807 / 0.689 / 0.587 |
+| aa-lcr-4k | 0.770 / 0.661 / 0.566 / 0.490 / 0.423 / 0.372 / 0.325 | 0.767 / 0.654 / 0.556 |
+| aa-lcr-1k | 0.747 / 0.635 / 0.542 / 0.471 / 0.407 / 0.352 / 0.317 | 0.745 / 0.628 / 0.531 |
+| aime | 0.752 / 0.639 / 0.539 / 0.460 / 0.399 / 0.348 / 0.309 | 0.752 / 0.635 / 0.529 |
+| swe-rebench | 0.760 / 0.653 / 0.557 / 0.479 / 0.415 / 0.363 / 0.321 | 0.761 / 0.647 / 0.549 |
+| mtbench | 0.748 / 0.629 / 0.532 / 0.466 / 0.414 / 0.373 / 0.339 | 0.747 / 0.625 / 0.525 |
+| gpqa | 0.747 / 0.620 / 0.507 / 0.422 / 0.360 / 0.314 / 0.274 | 0.743 / 0.614 / 0.496 |
+| writing | 0.728 / 0.605 / 0.514 / 0.448 / 0.402 / 0.362 / 0.332 | 0.727 / 0.600 / 0.508 |
+| aime26 | 0.717 / 0.596 / 0.501 / 0.425 / 0.368 / 0.326 / 0.290 | 0.717 / 0.591 / 0.492 |
 
 ### Isolated pos-0/1/2 comparison: block=7's first 3 slots vs block=3
 
@@ -620,77 +872,120 @@ of the block exists).
 
 | dataset | pos0@7 | pos0@3 | Δ0 | pos1@7 | pos1@3 | Δ1 | pos2@7 | pos2@3 | Δ2 | avg(pos0-2)@7 | avg(pos0-2)@3 | AL@3 (real) |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bfcl | 0.704 | 0.714 | +0.009 | 0.675 | 0.674 | -0.001 | 0.619 | 0.614 | -0.004 | 0.666 | 0.667 | 3.671 |
-| math500 | 0.666 | 0.681 | +0.014 | 0.642 | 0.651 | +0.008 | 0.594 | 0.582 | -0.013 | 0.634 | 0.638 | 3.614 |
-| aa-lcr-4k | 0.663 | 0.680 | +0.017 | 0.616 | 0.619 | +0.003 | 0.548 | 0.540 | -0.008 | 0.609 | 0.613 | 3.552 |
-| aa-lcr-1k | 0.651 | 0.664 | +0.013 | 0.610 | 0.617 | +0.007 | 0.547 | 0.540 | -0.007 | 0.603 | 0.607 | 3.532 |
-| tool_call | 0.652 | 0.650 | -0.002 | 0.593 | 0.585 | -0.008 | 0.541 | 0.522 | -0.019 | 0.595 | 0.586 | 3.451 |
-| mbpp | 0.623 | 0.632 | +0.009 | 0.600 | 0.610 | +0.010 | 0.527 | 0.529 | +0.002 | 0.583 | 0.590 | 3.451 |
-| aime26 | 0.587 | 0.587 | +0.001 | 0.554 | 0.554 | +0.001 | 0.503 | 0.494 | -0.009 | 0.548 | 0.545 | 3.310 |
-| gsm8k | 0.616 | 0.618 | +0.002 | 0.598 | 0.579 | -0.019 | 0.520 | 0.505 | -0.015 | 0.578 | 0.567 | 3.366 |
-| translation | 0.585 | 0.595 | +0.010 | 0.529 | 0.517 | -0.012 | 0.466 | 0.445 | -0.022 | 0.527 | 0.519 | 3.275 |
-| speed-multilingual | 0.550 | 0.564 | +0.014 | 0.503 | 0.512 | +0.009 | 0.431 | 0.422 | -0.009 | 0.495 | 0.499 | 3.183 |
-| writing | 0.554 | 0.565 | +0.011 | 0.499 | 0.519 | +0.021 | 0.450 | 0.450 | -0.001 | 0.501 | 0.511 | 3.187 |
-| qa | 0.542 | 0.552 | +0.010 | 0.501 | 0.515 | +0.014 | 0.458 | 0.466 | +0.008 | 0.500 | 0.511 | 3.177 |
-| mt-bench | 0.519 | 0.530 | +0.011 | 0.461 | 0.488 | +0.027 | 0.425 | 0.423 | -0.002 | 0.468 | 0.480 | 3.118 |
-| chat64 | 0.645 | 0.656 | +0.011 | 0.535 | 0.545 | +0.010 | 0.458 | 0.460 | +0.002 | 0.546 | 0.554 | 3.266 |
-| speed-coding | 0.500 | 0.525 | +0.025 | 0.486 | 0.495 | +0.009 | 0.411 | 0.409 | -0.002 | 0.466 | 0.476 | 3.120 |
-| swe-rebench | 0.507 | 0.520 | +0.013 | 0.478 | 0.481 | +0.003 | 0.432 | 0.419 | -0.012 | 0.472 | 0.473 | 3.070 |
-| speed-writing | 0.516 | 0.524 | +0.008 | 0.472 | 0.479 | +0.007 | 0.391 | 0.400 | +0.008 | 0.460 | 0.468 | 3.087 |
-| rag | 0.456 | 0.473 | +0.016 | 0.431 | 0.429 | -0.003 | 0.372 | 0.368 | -0.005 | 0.420 | 0.423 | 2.954 |
-| aime | 0.429 | 0.439 | +0.010 | 0.400 | 0.418 | +0.018 | 0.380 | 0.376 | -0.005 | 0.403 | 0.411 | 2.920 |
-| speed-rag | 0.465 | 0.485 | +0.019 | 0.421 | 0.424 | +0.003 | 0.334 | 0.321 | -0.012 | 0.407 | 0.410 | 2.921 |
-| livecodebench | 0.508 | 0.511 | +0.003 | 0.423 | 0.422 | -0.001 | 0.351 | 0.348 | -0.003 | 0.427 | 0.427 | 2.944 |
-| summarization | 0.454 | 0.469 | +0.015 | 0.423 | 0.430 | +0.008 | 0.349 | 0.361 | +0.012 | 0.409 | 0.420 | 2.871 |
-| swe-bench-pro | 0.429 | 0.435 | +0.007 | 0.374 | 0.375 | +0.001 | 0.324 | 0.333 | +0.009 | 0.376 | 0.381 | 2.796 |
-| gpqa | 0.404 | 0.409 | +0.005 | 0.352 | 0.346 | -0.005 | 0.287 | 0.274 | -0.013 | 0.348 | 0.343 | 2.719 |
-| **mean Δ** | | | **+0.0105** | | | **+0.0046** | | | **-0.0050** | | | |
-| **max \|Δ\|** | | | 0.025 | | | 0.027 | | | 0.022 | | | |
+| gsm8k | 0.940 | 0.940 | +0.001 | 0.908 | 0.908 | -0.001 | 0.878 | 0.872 | -0.006 | 0.909 | 0.907 | 3.587 |
+| bfcl | 0.907 | 0.907 | +0.001 | 0.837 | 0.842 | +0.005 | 0.766 | 0.761 | -0.005 | 0.837 | 0.837 | 3.337 |
+| speed-coding | 0.892 | 0.892 | +0.000 | 0.834 | 0.830 | -0.005 | 0.769 | 0.759 | -0.010 | 0.832 | 0.827 | 3.283 |
+| mbpp | 0.891 | 0.890 | -0.001 | 0.829 | 0.826 | -0.004 | 0.766 | 0.756 | -0.010 | 0.829 | 0.824 | 3.252 |
+| livecodebench | 0.865 | 0.865 | -0.000 | 0.790 | 0.787 | -0.003 | 0.716 | 0.710 | -0.006 | 0.790 | 0.787 | 3.142 |
+| math500 | 0.838 | 0.840 | +0.002 | 0.775 | 0.776 | +0.001 | 0.714 | 0.708 | -0.006 | 0.776 | 0.775 | 3.089 |
+| tool_call | 0.864 | 0.863 | -0.002 | 0.781 | 0.778 | -0.003 | 0.705 | 0.694 | -0.010 | 0.784 | 0.778 | 3.087 |
+| speed-rag | 0.864 | 0.863 | -0.001 | 0.785 | 0.780 | -0.005 | 0.698 | 0.686 | -0.012 | 0.782 | 0.776 | 3.104 |
+| rag | 0.862 | 0.860 | -0.002 | 0.782 | 0.778 | -0.004 | 0.697 | 0.685 | -0.011 | 0.780 | 0.775 | 3.081 |
+| translation | 0.839 | 0.836 | -0.003 | 0.766 | 0.759 | -0.007 | 0.697 | 0.678 | -0.018 | 0.767 | 0.758 | 2.988 |
+| swe-bench-pro | 0.818 | 0.820 | +0.002 | 0.743 | 0.738 | -0.005 | 0.658 | 0.648 | -0.010 | 0.740 | 0.735 | 2.940 |
+| speed-multilingual | 0.779 | 0.782 | +0.003 | 0.702 | 0.699 | -0.003 | 0.624 | 0.616 | -0.009 | 0.702 | 0.699 | 2.841 |
+| summarization | 0.835 | 0.834 | -0.001 | 0.734 | 0.730 | -0.004 | 0.631 | 0.622 | -0.009 | 0.733 | 0.729 | 2.923 |
+| speed-writing | 0.795 | 0.795 | -0.000 | 0.692 | 0.686 | -0.006 | 0.602 | 0.591 | -0.010 | 0.696 | 0.691 | 2.787 |
+| qa | 0.809 | 0.807 | -0.002 | 0.694 | 0.689 | -0.006 | 0.598 | 0.587 | -0.011 | 0.700 | 0.694 | 2.793 |
+| speed-qa | 0.809 | 0.807 | -0.002 | 0.694 | 0.689 | -0.006 | 0.598 | 0.587 | -0.011 | 0.700 | 0.694 | 2.793 |
+| aa-lcr-4k | 0.770 | 0.767 | -0.003 | 0.661 | 0.654 | -0.006 | 0.566 | 0.556 | -0.010 | 0.666 | 0.659 | 2.700 |
+| aa-lcr-1k | 0.747 | 0.745 | -0.002 | 0.635 | 0.628 | -0.007 | 0.542 | 0.531 | -0.011 | 0.641 | 0.634 | 2.611 |
+| aime | 0.752 | 0.752 | -0.000 | 0.639 | 0.635 | -0.004 | 0.539 | 0.529 | -0.010 | 0.644 | 0.639 | 2.621 |
+| swe-rebench | 0.760 | 0.761 | +0.001 | 0.653 | 0.647 | -0.006 | 0.557 | 0.549 | -0.008 | 0.657 | 0.653 | 2.632 |
+| mtbench | 0.748 | 0.747 | -0.001 | 0.629 | 0.625 | -0.004 | 0.532 | 0.525 | -0.007 | 0.636 | 0.632 | 2.575 |
+| gpqa | 0.747 | 0.743 | -0.003 | 0.620 | 0.614 | -0.006 | 0.507 | 0.496 | -0.011 | 0.625 | 0.618 | 2.563 |
+| writing | 0.728 | 0.727 | -0.001 | 0.605 | 0.600 | -0.005 | 0.514 | 0.508 | -0.006 | 0.616 | 0.612 | 2.490 |
+| aime26 | 0.717 | 0.717 | -0.001 | 0.596 | 0.591 | -0.005 | 0.501 | 0.492 | -0.010 | 0.605 | 0.600 | 2.474 |
+| **mean Δ** | | | **-0.0007** | | | **-0.0041** | | | **-0.0095** | | | |
+| **max \|Δ\|** | | | 0.003 | | | 0.007 | | | 0.018 | | | |
 
-**avg(pos0-2)@7 / avg(pos0-2)@3** = mean of that row's own pos0/1/2 (a real, exact quantity —
-no approximation error). **AL@3 (real)** = the exact accept_len from the
-genuine block=3 model run (same value as the main ablation table above, not
-re-derived). There is deliberately **no "AL@7, restricted to pos0-2" column**:
-an attempt was made to derive it as `1 + p0 + p0·p1 + p0·p1·p2` from the
-pooled per-position means (the same independence-approximation style as the
-EAGLE3 `sim_acc_len` formula elsewhere in this doc), but checked against the
-real AL@3 that approximation underestimates by **32-42% across every single
-set** — real per-block accept-rates are positively correlated within a block
-(an easy anchor context tends to be easy at every slot, a hard one hard at
-every slot), which the independence formula can't capture. Getting the true
-"AL using only the first 3 slots of the 7-slot computation" requires the
-precise per-block `--truncate-k 3` computation already implemented in
-`run_dspark_eval.py`, which needs GPU access to run.
+**avg(pos0-2)@7 / avg(pos0-2)@3** = mean of that row's own pos0/1/2 (a real,
+exact quantity — no approximation error). **AL@3 (real)** = the exact
+`accept_len` from the genuine block=3 model run (same value as the main
+ablation table above, not re-derived).
 
-A real, small, directional pattern emerges — not just noise:
+**The independence approximation is now much closer to correct.** The
+degenerate-data version of this table reported that deriving AL@3 as
+`1 + p0 + p0·p1 + p0·p1·p2` from the pooled per-position means underestimated
+the real AL@3 by 32-42% across every set. On clean data that gap shrinks to
+**1-6%** — the earlier large gap was itself substantially an artifact of the
+corrupted generation data (which likely exaggerated within-block correlation
+by making "easy" and "hard" positions more extreme/bimodal than they
+genuinely are), not a real property of the draft. Real per-block accept
+rates are still slightly positively correlated within a block (hence a small
+residual gap, not zero), just far less than the degenerate data suggested.
 
-- **Slot 0 is unanimously (23/24 sets) higher at block=3**, by a small but
-  consistent margin (mean +0.011, up to +0.025). The single exception,
-  tool_call, is a near-zero -0.002.
-- **Slot 1 is mostly higher too** (17/24), but noisier and closer to zero
-  (mean +0.0046) — some sets (gsm8k, translation) show a real negative shift.
-- **Slot 2 flips sign**: mostly *lower* at block=3 (16/24 negative, mean
-  -0.0050) — the opposite direction from slot 0.
+**The second-order pattern reported previously has flipped and shrunk.** The
+degenerate-data version found slot 0 unanimously *higher* at block=3 (mean
++0.011) and slot 2 mostly *lower* (mean -0.0050). On clean data:
 
-Interpretation: shrinking the block very slightly *helps* the earliest slot
-(marginally less to attend to / less competition for attention mass from
-far-away masks it doesn't need) and very slightly *hurts* the slot furthest
-from the anchor (slot 2 is relatively "deeper" in a 3-wide block than it is
-in a 7-wide one, changing its position-relative context slightly). Both
-effects are small — max absolute shift across all 72 (dataset × slot) cells
-is 2.7 percentage points — so the earlier "near-independent" characterization
-still holds as the dominant effect, but this isolates a second-order,
-consistent-in-direction pattern underneath it, rather than pure noise.
+- **Slot 0 is now essentially flat** — mean Δ -0.0007, split 7 positive / 17
+  negative, max magnitude 0.003 (0.3 percentage points). No meaningful
+  effect either direction.
+- **Slot 1 is now consistently, slightly negative** — 22/24 sets, mean
+  -0.0041 (opposite direction from the old data's slight-positive finding).
+- **Slot 2 is now unanimously negative across all 24/24 sets**, mean -0.0095,
+  up to -0.018 (translation) — the same direction as before but the finding
+  is now unanimous rather than 16/24.
+
+Interpretation: on clean data, having 4 more mask tokens further out in the
+same block (block=7) has **no effect on slot 0**, and a small, consistent,
+now-unambiguous *negative* effect on slots 1-2 when they're restricted to a
+narrower block (i.e., the wider block=7 context very slightly *helps* slots
+1-2, opposite of the earlier "shrinking helps the early slot" reading, which
+does not survive the data-corruption fix). All effects remain small in
+absolute terms (max magnitude 1.8 percentage points across all 72 dataset×slot
+cells) — the "near-independent" characterization is, if anything, *more*
+strongly supported by clean data than it was before, given the independence
+approximation's error also shrank from 32-42% to 1-6%.
+
+### Isolated pos-0/1/2 comparison — real live-serving counterpart (vLLM 0.29.0)
+
+Same question as above (does slot 0/1/2's accept rate change when the rest
+of the block is 7 wide vs 3 wide), but measured live: two full 24-set
+live-serving sweeps (RadixArk DSpark, `num_speculative_tokens=7` and `=3`),
+per-position accept counts read from vLLM's
+`spec_decode_num_accepted_tokens_per_pos_total` counter.
+
+| position | mean Δ (block=3 − block=7) | direction |
+|---|---:|---|
+| pos0 | +0.020 | 23/24 sets higher at block=3 |
+| pos1 | +0.024 | 21/24 sets higher at block=3 |
+| pos2 | +0.027 | 20/24 sets higher at block=3 |
+
+**All three positions are consistently higher at block=3 here, with the
+effect size growing slightly deeper into the block** — a third, distinct
+pattern from both offline versions (degenerate data: pos0 up, pos2 down;
+clean data: all roughly flat-to-slightly-down).
+
+**Important methodological caveat, stated plainly rather than glossed over:
+this comparison is less tightly controlled than the offline version.** The
+offline analytical method replays the *exact same* fixed target-generated
+text through both block sizes — only the draft's processing of that fixed
+text differs, isolating one variable. Live serving cannot do this: block=7
+and block=3 are two independent live generations, and real accept/reject
+outcomes cascade into genuinely different actual output text between the
+two runs. So this real delta reflects a mix of (a) genuine block-width
+effects and (b) natural content variation between the two live runs — it is
+evidence about what happens in real deployment at each block size, but not
+as clean a single-variable ablation as the offline table above. Take the
+offline table as the controlled ablation and this table as the real-world
+confirmation that block=3 does not lose ground on early-slot accuracy in
+practice either, by any measure tried.
 
 ## Open follow-ups
 
 Roughly in priority order:
 
-1. **Escalate the vLLM spec-decode target-corruption bug.** Confirmed
-   method-independent (eagle3 and dspark both fail identically); this is the
-   single blocker on every serving-side number in this doc (real throughput,
-   real acceptance under batching, concurrent requests). Evidence is in "Why
-   offline" and the DSpark serving notes above.
+1. ~~**Escalate the vLLM spec-decode target-corruption bug.**~~ **Done
+   2026-09-18** — resolved by upgrading to vLLM 0.29.0, see the Update
+   section at the top of this doc. Remaining follow-up: run a proper
+   multi-prompt, multi-benchmark real-throughput sweep on 0.29.0 (only 2-3
+   spot-check prompts per checkpoint have been measured so far) and test
+   under concurrent-request batching (issue #50851's comment thread reports
+   a separate, unresolved *batched-verify* throughput regression on recent
+   vLLM main, distinct from the correctness bug fixed here — worth checking
+   whether 0.29.0 has it).
 2. **DSpark aa-lcr 8k/16k.** The one benchmark axis not yet measured for the
    stronger draft, and the most interesting given its yarn rope design —
    directly testable against the EAGLE3 draft's collapse at the same lengths.
