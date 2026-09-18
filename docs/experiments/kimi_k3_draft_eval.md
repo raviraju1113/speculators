@@ -412,12 +412,13 @@ Serving notes:
 - vLLM misroutes a generic `"DSparkDraftModel"` architecture into its
   weights-in-target DeepSeek-V4 path and force-inherits the target's mxfp4
   quantization (crash). Declaring `"Qwen3DSparkModel"` in config.json fixes
-  loading. `num_speculative_tokens: 6` is required.
-- **The spec-decode target-corruption bug is method-independent**: DSpark
-  serving shows the same failure signature as eagle3 (correct first ~10–12
-  tokens then token loops; acceptance 7/666 ≈ 1%). The bug is in K3's
-  spec-decode state handling (KDA/AttnRes vs rejected tokens), not in any
-  draft or method.
+  loading. `num_speculative_tokens: 7` is required (matches `block_size=7`
+  — K=7 draft tokens, not 6; see model card's "1 current + 7 draft tokens").
+- **Historical, resolved 2026-09-18** — the spec-decode target-corruption
+  bug described here (correct first ~10–12 tokens then token loops;
+  acceptance 7/666 ≈ 1%) was confirmed method-independent (DSpark and
+  eagle3 both showed it) and is now fixed in vLLM 0.29.0 — see the Update
+  section for root cause, evidence, and real post-fix measurements.
 
 Offline eval (`run_dspark_eval.py`): weights load into this repo's
 `DSparkDraftModel` with zero core mismatches (it is a speculators-family
@@ -562,13 +563,23 @@ directly to the speedup ceiling vs the 108 tok/s baseline) and
 `accept_rate = accepted_tokens / drafted_tokens`. Derived from the measured
 per-step/per-slot numbers above (EAGLE3 drafts 4 tokens/step, DSpark 7).
 
-| set | EAGLE3 rate | EAGLE3 len | DSpark rate | DSpark len |
+**DSpark columns updated 2026-09-18 with clean data** (original values were
+measured on generation data later found corrupted by Bug 1 — see the
+Update section — old values were 3.48/3.27/3.13/2.85/4.20/4.26 across these
+rows, all wrong by 1.0×-2.1× per the correction table in the Update
+section). EAGLE3 columns are **not** updated here — EAGLE3's on-policy sets
+(aime, livecodebench, gpqa) were collected with the same general on-policy
+pipeline described as affected by Bug 1, but were never specifically
+re-verified or re-collected this session; treat EAGLE3's numbers below as
+**unverified against Bug 1**, not confirmed-clean the way DSpark's are.
+
+| set | EAGLE3 rate (unverified vs Bug 1) | EAGLE3 len (unverified vs Bug 1) | DSpark rate (clean) | DSpark len (clean) |
 |---|---|---|---|---|
-| general chat | 0.234 | 1.94 | 0.445 | **3.48** |
-| aime | 0.303 | 2.21 | 0.346 | **3.27** |
-| livecodebench | 0.275 | 2.10 | 0.335 | **3.13** |
-| gpqa | 0.170 | 1.68 | 0.263 | **2.85** |
-| aa-lcr 1k / 4k | 0.284 / 0.266 | 2.13 / 2.06 | 0.486 / 0.496 | 4.20 / 4.26 |
+| general chat | 0.234 | 1.94 | 0.445 | **2.48** |
+| aime | 0.303 | 2.21 | 0.492 | **3.16** |
+| livecodebench | 0.275 | 2.10 | 0.666 | **4.46** |
+| gpqa | 0.170 | 1.68 | 0.463 | **3.01** |
+| aa-lcr 1k / 4k | 0.284 / 0.266 | 2.13 / 2.06 | 0.496 / 0.515 | 3.22 / 3.38 |
 | aa-lcr 8k | 0.138 | 1.55 | — | — |
 | aa-lcr 16k | 0.039 | 1.16 | — | — |
 
@@ -944,8 +955,8 @@ Roughly in priority order:
    SGLang, since 1M-token prompts are impractical to capture via
    `extract_hidden_states` (86 GB+ of hidden states per sample at 6 layers).
 4. **DSpark's `--enable-adaptive-verification` path** — the confidence-head
-   calibration numbers above suggest it should work well; untestable until
-   serving is unblocked.
+   calibration numbers above suggest it should work well; now testable live
+   given serving is unblocked (not yet done).
 5. If a from-scratch MTP/DSpark draft is trained (tasks already staged, see
    TRAINING.md §7): fix `rope_theta` (use a large base or match the target's
    NoPE design) and include long sequences in training data, per the EAGLE3
@@ -957,13 +968,35 @@ Roughly in priority order:
 
 ## Artifacts
 
+**Current (clean data, 2026-09-18+) — use these for anything in the Update
+section or the rerun Ablation tables:**
+- Clean on-policy hidden states + metric JSONs (24 sets):
+  `/import/ml-sc-scratch5/chenw/models/kimi-k3-data-clean/<set>/` — each dir
+  has `gen_cache/` (cached clean generations), `sample_*.safetensors`
+  (extracted hidden states), `dspark_eval_clean.json` (block=7 offline
+  metrics), `dspark_eval_clean_block3.json` (block=3 offline metrics).
+- Real live-serving sweep results (JSON):
+  `/tmp/live_dspark_eval_results.json` (block=7 aggregate),
+  `/tmp/live_dspark_eval_results_block7.json` (independent block=7 rerun,
+  confirms 0% drift), `/tmp/live_dspark_eval_pos_block7.json` /
+  `_block3.json` (per-position, both block sizes).
+- Fixed collection pipeline: `scripts/evaluate/kimi_k3_offline_eval/sweep_collect.py`
+  (`--phase generate` against a plain server, `--phase extract` against the
+  `extract_hidden_states` server — see Bug 1 in the Update section).
+- DSpark checkpoint used for all real/clean numbers (RadixArk, local copy,
+  arch patched to `Qwen3DSparkModel` for vLLM loading, MD5-verified
+  identical to the untouched HF download):
+  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark/`
+- Inferact's checkpoint (vLLM-native, spot-checked live only):
+  `/import/ml-sc-scratch5/chenw/models/Inferact-Kimi-K3-DSpark/`
+
+**Historical (pre-2026-09-18, degenerate/buggy data) — kept for the record,
+do not use for current numbers:**
 - Harness: `scripts/evaluate/kimi_k3_offline_eval/{prep_and_collect,sweep_collect,run_ttt_eval,run_dspark_eval}.py`
 - EAGLE3 collected hidden states + metric JSONs:
   `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/{eval_hs_*,sweep_hs_*,bench_hs_*}/`
-- DSpark collected hidden states + metric JSONs:
+- DSpark collected hidden states + metric JSONs (original, Bug-1-affected):
   `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/dspark_hs_*/` (25 sets;
   each dir has `dspark_eval_results.json`)
-- DSpark checkpoint (local copy, arch patched to `Qwen3DSparkModel` for vLLM
-  loading): `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark/`
 - Throughput: `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/throughput_baseline/`
 - Sweep prompt bins: `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/aa_lcr_sweep_kimi/`
