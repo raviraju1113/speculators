@@ -1,4 +1,4 @@
-# Kimi-K3 speculator evaluation: EAGLE3 vs DSpark (2026-09-14 / 2026-09-15, updated 2026-09-18)
+# Kimi-K3 speculator evaluation: EAGLE3 vs DSpark
 
 Offline evaluation of two speculative-decoding drafts for Kimi K3 — the
 TorchSpec-trained EAGLE3 draft and the published `RadixArk/Kimi-K3-DSpark`
@@ -227,9 +227,11 @@ did, so draft-side sampling may not exactly match target-side greedy
 verification at every position). The direction and magnitude are
 domain-independent enough (0.80-0.98, no outliers) that the offline
 analytical numbers remain a reasonable *relative* ranking across domains,
-just a ~10% overestimate of *absolute* real-world AL. The block=7-vs-block=3
-ablation further down remains offline/analytical only — a live-serving
-version would need a second live sweep with `num_speculative_tokens: 3`.
+just a ~10% overestimate of *absolute* real-world AL. **Update:** the
+block=7-vs-block=3 ablation further down now also has a real live-serving
+counterpart (both throughput and per-position accept rate) — see the "Real
+measured throughput" and "Isolated pos-0/1/2 comparison — real live-serving
+counterpart" subsections under the Ablation section.
 
 ## Draft under test
 
@@ -377,22 +379,19 @@ On-policy, 15 samples/benchmark, ≤512-token greedy generations, prompts from
 separately on a plain target-only server (no extraction overhead;
 `run_vllm_eval.py`, 8 prompts × ≤512 tokens, temperature 0, single-stream):
 
-| benchmark | avg_acc | sim_acc_len | acc_0 / 1 / 2 / 3 | baseline decode | projected w/ spec* |
-|---|---|---|---|---|---|
-| aime | 0.5563 | **1.212** | 0.565 / 0.642 / 0.522 / 0.495 | 108.0 tok/s | ~200–210 tok/s (≤2.21×) |
-| livecodebench | 0.5539 | **1.102** | 0.507 / 0.647 / 0.530 / 0.531 | 108.0 tok/s | ~190–200 tok/s (≤2.10×) |
-| gpqa | 0.3914 | 0.682 | 0.408 / 0.464 / 0.328 / 0.366 | 108.0 tok/s | ~145–155 tok/s (≤1.68×) |
-| general chat (Result 1) | 0.4921 | 0.936 | — | — | ~165–175 tok/s (≤1.94×) |
+| benchmark | avg_acc | sim_acc_len | acc_0 / 1 / 2 / 3 | baseline decode (no spec) |
+|---|---|---|---|---|
+| aime | 0.5563 | **1.212** | 0.565 / 0.642 / 0.522 / 0.495 | 108.0 tok/s |
+| livecodebench | 0.5539 | **1.102** | 0.507 / 0.647 / 0.530 / 0.531 | 108.0 tok/s |
+| gpqa | 0.3914 | 0.682 | 0.408 / 0.464 / 0.328 / 0.366 | 108.0 tok/s |
+| general chat (Result 1) | 0.4921 | 0.936 | — | — |
 
 Baseline details: decode 108.0 tok/s on all three benchmarks (decode-bound at
 these context lengths); e2e 97.2–105.4 tok/s; mean TTFT 0.088–0.538 s.
 Raw JSONs: `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/throughput_baseline/`.
-
-\* **Projection, not a measurement** (spec-decode serving blocked by the vLLM
-bug): ceiling = baseline × (1 + sim_acc_len), discounted ~10% for draft
-forward + verification overhead (1-layer MLA draft + 163k-vocab lm_head vs the
-1T MoE target). Single-stream, short-context; batching and long contexts
-change the picture.
+(A projected-speedup column was previously shown here; removed per
+2026-09-18 decision to keep only real measured numbers in this doc — see the
+Update section for real live-serving throughput instead.)
 
 The domain pattern matches the training data: aime/livecodebench (in-domain
 code/math) sit ~1.8× higher in sim_acc_len than gpqa (out-of-distribution
@@ -431,54 +430,37 @@ Directionally comparable, not identical. `position_k_acc` is top-1 argmax
 agreement at block slot k (slot 0 = anchor-adjacent, comparable to EAGLE3
 acc_0).
 
-| set | accept_len (of 7) | accept_rate | pos-0 acc | pos-0..6 acc |
-|---|---|---|---|---|
-| general chat (64 convs, teacher-forced) | **2.48** | 0.445 | 0.658 | 0.66/0.54/0.45/0.41/0.38/0.36/0.33 |
-| aime (on-policy) | **2.27** | 0.346 | 0.503 | 0.50/0.46/0.43/0.40/0.38/0.36/0.33 |
-| livecodebench (on-policy) | **2.13** | 0.335 | 0.578 | 0.58/0.49/0.41/0.38/0.32/0.29/0.29 |
-| gpqa (on-policy) | 1.85 | 0.262 | 0.457 | 0.46/0.39/0.32/0.28/0.26/0.22/0.20 |
-
-Head-to-head vs the TorchSpec EAGLE3 draft (expected accepted draft
-tokens/verify step; EAGLE3 = sim_acc_len over 4 steps):
-
-| set | EAGLE3 draft | DSpark draft | DSpark projected decode* |
-|---|---|---|---|
-| general chat | 0.94 | **2.48** | ~330–360 tok/s (≤3.48×) |
-| aime | 1.21 | **2.27** | ~310–340 tok/s (≤3.27×) |
-| livecodebench | 1.10 | **2.13** | ~295–325 tok/s (≤3.13×) |
-| gpqa | 0.68 | **1.85** | ~270–295 tok/s (≤2.85×) |
-
-\* Same projection method as before (baseline 108 tok/s × (1 + accept_len),
-~5–10% overhead discount — DSpark drafts a whole block in ONE draft forward,
-so overhead is lower than sequential EAGLE3 drafting). Not a measurement.
+**On-policy numbers originally shown here (aime, livecodebench, gpqa) were
+measured on generation data later found corrupted by Bug 1 — removed rather
+than kept as known-wrong.** See the Update section's "Corrected 24-set
+DSpark sweep" for current values (aime AL 3.16, livecodebench AL 4.46, gpqa
+AL 3.01) and "Full 24-set live-serving sweep" for the real measured
+counterparts. One value from this original table is still valid and kept:
+**general chat (64 convs, teacher-forced)**, unaffected by Bug 1 since it
+uses pre-existing conversations, not on-policy generation — `accept_len`
+(= real AL, no `+1` needed) **2.48**, accept_rate 0.445, pos-0..6 acc
+0.66/0.54/0.45/0.41/0.38/0.36/0.33.
 
 Also better positioned for long context on paper (yarn rope, 64k original) —
 the aa-lcr length sweep for this draft is the natural follow-up.
 
 ### Reproduction check against the model card
 
-The card reports `acc_len` measured live in SGLang serving (real rejection
-sampling, K=7). Our numbers are offline/analytical (distribution-overlap
-acceptance, vLLM `extract_hidden_states`) — a different measurement path, so
-this is a sanity check on load correctness, not an apples-to-apples repro.
-25 on-policy samples/set, same harness as above.
-
-| dataset | our accept_len (of 7) | our AL (1+accept_len) | card acc_len | ratio |
-|---|---|---|---|---|
-| MT-Bench | 2.555 | **3.56** | 3.9342 | 0.90 |
-| GSM8K | 2.982 | **3.98** | 5.4176 | 0.73 |
-
-MT-Bench lands within 10% of the card; GSM8K undershoots more (still same
-direction — GSM8K > MT-Bench > AIME26 in both, and our GSM8K AL of ~4 already
-beats every set in the head-to-head table above). Structural load checks also
-passed: `fc.weight` is exactly 5×7168 (5 aux layers, matches the card), and all
-62 tensors loaded into the repo's `DSparkDraftModel` with zero missing/
-unexpected keys. **Conclusion: the draft is loaded correctly** — the gap to
-the card is attributable to the offline-analytical vs. live-SGLang-serving
-measurement gap (and dataset-specific prompt sampling), not a loading bug.
-The earlier "not that good" read was comparing against benchmarks (aime,
-gpqa, livecodebench, general chat) that are harder than the card's easiest
-sets (GSM8K, HumanEval, MBPP) where the card's own numbers also peak highest.
+**Numbers originally shown here were measured on generation data later
+found corrupted by Bug 1 — removed rather than kept as known-wrong.** Using
+the corrected clean-data values instead: GSM8K AL 5.97 vs. the card's
+5.4176 (ratio 1.10 — our corrected measurement now slightly *exceeds* the
+card's own number, a large swing from the original 0.73 ratio). The card
+reports `acc_len` from live SGLang serving; our clean-data AL is still
+offline/analytical, so this remains a load-correctness sanity check, not an
+apples-to-apples repro — but it's a much closer match now, and the *real*
+live-serving numbers in the Update section (68.2% AR, AL 5.77 on RadixArk's
+own checkpoint) are the actual apples-to-apples confirmation that the card's
+reported numbers were correct all along. Structural load checks (unaffected
+by either bug): `fc.weight` is exactly 5×7168 (5 aux layers, matches the
+card), and all 62 tensors loaded into the repo's `DSparkDraftModel` with
+zero missing/unexpected keys — the draft was always loaded correctly; the
+gap was purely the two measurement bugs, not a loading bug.
 
 ### Full 25-benchmark sweep
 
@@ -502,59 +484,16 @@ the 15,360-token server context and was skipped (long repetitive code
 boilerplate). `qa` and `speed-qa` share the same 15 underlying questions
 (verified via diff/md5) — identical numbers are expected, not a bug.
 
-AL = 1 + accept_len (bonus token included, the vLLM/SGLang serving
-convention); AR = measured `accept_rate` (mean per-position acceptance over
-the 7 draft slots (K=7), not a linear back-derivation from AL); `full_acc` =
-top-1 argmax agreement pooled over all 7 slots (stricter than AR — see the
-per-slot section below for why); `conf_err` = confidence head's mean
-absolute calibration error against realized acceptance (lower = better);
-`proj. decode*` = projected single-stream decode throughput, **not
-measured** (spec-decode serving is blocked by the vLLM bug — see "Why
-offline"): `108 tok/s baseline × AL × 0.90` (a flat 10% discount for draft
-forward + verification overhead; the real number would vary by domain since
-overhead is roughly constant per step while AL varies, so the discount ratio
-isn't actually flat — treat this column as directional, not precise).
-Sorted by AL descending.
-
-| dataset | n | AR | AL | full_acc | conf_err | proj. decode* |
-|---|---|---|---|---|---|---|
-| **bfcl** | 15 | 0.570 | **4.58** | 0.625 | 0.230 | **445 tok/s** |
-| **math500** | 15 | 0.551 | **4.47** | 0.611 | 0.240 | 434 tok/s |
-| aa-lcr-4k | 15 | 0.496 | 4.26 | 0.549 | 0.207 | 414 tok/s |
-| aa-lcr-1k | 15 | 0.486 | 4.20 | 0.539 | 0.217 | 408 tok/s |
-| tool_call | 15 | 0.491 | 4.19 | 0.550 | 0.223 | 407 tok/s |
-| mbpp | 15 | 0.502 | 4.18 | 0.568 | 0.232 | 406 tok/s |
-| aime26 | 15 | 0.469 | 4.02 | 0.520 | 0.229 | 391 tok/s |
-| gsm8k | 25 | 0.475 | 3.98 | 0.544 | 0.249 | 387 tok/s |
-| translation | 15 | 0.420 | 3.73 | 0.474 | 0.249 | 363 tok/s |
-| speed-multilingual | 15 | 0.410 | 3.63 | 0.479 | 0.238 | 353 tok/s |
-| writing | 15 | 0.415 | 3.58 | 0.474 | 0.237 | 348 tok/s |
-| qa / speed-qa | 15 | 0.422 | 3.57 | 0.481 | 0.244 | 347 tok/s |
-| mt-bench | 25 | 0.398 | 3.55 | 0.467 | 0.237 | 345 tok/s |
-| chat64 (teacher-forced) | 64 | 0.445 | 3.48 | 0.448 | 0.199 | 338 tok/s |
-| speed-coding | 15 | 0.389 | 3.48 | 0.449 | 0.226 | 338 tok/s |
-| swe-rebench | 15 | 0.389 | 3.45 | 0.464 | 0.222 | 335 tok/s |
-| speed-writing | 15 | 0.372 | 3.39 | 0.440 | 0.219 | 330 tok/s |
-| rag | 15 | 0.345 | 3.29 | 0.403 | 0.213 | 320 tok/s |
-| aime | 15 | 0.346 | 3.27 | 0.408 | 0.243 | 318 tok/s |
-| speed-rag | 15 | 0.325 | 3.16 | 0.369 | 0.211 | 307 tok/s |
-| livecodebench | 15 | 0.335 | 3.13 | 0.394 | 0.222 | 304 tok/s |
-| summarization | 15 | 0.327 | 3.00 | 0.397 | 0.208 | 292 tok/s |
-| swe-bench-pro | 15 | 0.301 | 2.93 | 0.358 | 0.203 | 285 tok/s |
-| **gpqa** | 15 | 0.263 | **2.85** | 0.304 | 0.199 | 277 tok/s |
-| speed-low-entropy | 0/15 | — | — | — | — | — *(excluded: all prompts exceed 15,360-tok context)* |
-
-Every domain projects at **2.6–4.1× the measured 108 tok/s baseline**, even
-the weakest (gpqa, 2.85×) — no domain falls near parity the way the EAGLE3
-draft's 16k-context bin did.
-
-Range: **AL 2.85–4.58** across 24 evaluated domains (median ≈ 3.5). Highest on
-structured/in-distribution tasks (bfcl function-calling, math500, tool_call,
-mbpp — all draft-training-adjacent code/math) and the two short/medium aa-lcr
-bins; lowest on gpqa (out-of-domain science QA) and swe-bench-pro (long,
-unusual-format software-engineering prompts). No domain drops below AL 2.85 —
-unlike the EAGLE3 draft, which fell to 1.68 on gpqa and collapsed to 1.16 by
-16k context.
+**The data table originally here has been removed** (measured on generation
+data later found corrupted by Bug 1 — see the Update section — kept as a
+known-wrong table was worse than no table). Metric definitions (AL, AR,
+full_acc, conf_err) and methodology notes above still apply to the
+corrected replacement: see the Update section's "Corrected 24-set DSpark
+sweep" for the current AL/AR/full_acc numbers, and "Full 24-set
+live-serving sweep" for real measured AR/AL/throughput. Range on clean data:
+**AL 2.88–5.97** across 24 domains (median ≈ 3.7) — see the Update section
+table for the full per-domain breakdown and ordering, which shifted
+somewhat from the original (gsm8k is now the top domain, not bfcl).
 
 ### Per-slot accuracy (DSpark)
 
@@ -562,51 +501,58 @@ unlike the EAGLE3 draft, which fell to 1.68 on gpqa and collapsed to 1.16 by
 broken out per draft slot: slot 0 = immediately after the anchor, slot 6 =
 the last/deepest draft position.
 
+**Rerun 2026-09-18 on clean data** (original table removed — measured on
+generation data later found corrupted by Bug 1). `chat64` not included
+(unaffected by Bug 1, but wasn't part of this particular rerun batch).
+
 | dataset | pos-0 | pos-1 | pos-2 | pos-3 | pos-4 | pos-5 | pos-6 |
 |---|---|---|---|---|---|---|---|
-| bfcl | 0.76 | 0.73 | 0.67 | 0.59 | 0.57 | 0.54 | 0.51 |
-| math500 | 0.72 | 0.70 | 0.65 | 0.62 | 0.57 | 0.51 | 0.51 |
-| aa-lcr-4k | 0.71 | 0.66 | 0.60 | 0.55 | 0.48 | 0.44 | 0.40 |
-| mbpp | 0.68 | 0.67 | 0.58 | 0.57 | 0.53 | 0.51 | 0.45 |
-| gsm8k | 0.67 | 0.67 | 0.58 | 0.52 | 0.51 | 0.46 | 0.41 |
-| aa-lcr-1k | 0.69 | 0.65 | 0.60 | 0.53 | 0.48 | 0.43 | 0.39 |
-| tool_call | 0.72 | 0.65 | 0.60 | 0.52 | 0.49 | 0.45 | 0.42 |
-| aime26 | 0.64 | 0.61 | 0.55 | 0.49 | 0.50 | 0.45 | 0.40 |
-| translation | 0.64 | 0.58 | 0.52 | 0.47 | 0.42 | 0.37 | 0.32 |
-| speed-multilingual | 0.62 | 0.56 | 0.49 | 0.45 | 0.43 | 0.43 | 0.38 |
-| qa / speed-qa | 0.60 | 0.55 | 0.52 | 0.45 | 0.43 | 0.42 | 0.40 |
-| writing | 0.60 | 0.55 | 0.50 | 0.45 | 0.43 | 0.40 | 0.39 |
-| chat64 (teacher-forced) | 0.66 | 0.54 | 0.45 | 0.41 | 0.38 | 0.36 | 0.33 |
-| mt-bench | 0.58 | 0.51 | 0.49 | 0.45 | 0.43 | 0.42 | 0.39 |
-| swe-rebench | 0.58 | 0.55 | 0.51 | 0.43 | 0.43 | 0.40 | 0.36 |
-| speed-coding | 0.55 | 0.55 | 0.46 | 0.42 | 0.42 | 0.39 | 0.35 |
-| speed-writing | 0.57 | 0.54 | 0.44 | 0.40 | 0.38 | 0.38 | 0.36 |
-| aime | 0.50 | 0.46 | 0.43 | 0.40 | 0.38 | 0.36 | 0.33 |
-| rag | 0.51 | 0.49 | 0.43 | 0.40 | 0.36 | 0.33 | 0.31 |
-| summarization | 0.53 | 0.50 | 0.44 | 0.35 | 0.33 | 0.30 | 0.33 |
-| livecodebench | 0.58 | 0.49 | 0.41 | 0.38 | 0.32 | 0.29 | 0.29 |
-| speed-rag | 0.52 | 0.47 | 0.37 | 0.35 | 0.31 | 0.29 | 0.26 |
-| swe-bench-pro | 0.48 | 0.44 | 0.38 | 0.34 | 0.30 | 0.28 | 0.28 |
-| gpqa | 0.46 | 0.39 | 0.32 | 0.28 | 0.26 | 0.22 | 0.20 |
+| gsm8k | 0.94 | 0.91 | 0.88 | 0.86 | 0.83 | 0.79 | 0.76 |
+| bfcl | 0.90 | 0.84 | 0.78 | 0.73 | 0.69 | 0.63 | 0.58 |
+| speed-coding | 0.90 | 0.84 | 0.78 | 0.72 | 0.67 | 0.62 | 0.56 |
+| mbpp | 0.89 | 0.83 | 0.78 | 0.72 | 0.67 | 0.63 | 0.58 |
+| livecodebench | 0.87 | 0.79 | 0.73 | 0.67 | 0.61 | 0.57 | 0.52 |
+| rag | 0.87 | 0.79 | 0.71 | 0.65 | 0.58 | 0.53 | 0.48 |
+| speed-rag | 0.87 | 0.79 | 0.71 | 0.65 | 0.59 | 0.52 | 0.47 |
+| tool_call | 0.86 | 0.79 | 0.72 | 0.65 | 0.59 | 0.54 | 0.49 |
+| translation | 0.85 | 0.78 | 0.72 | 0.66 | 0.61 | 0.55 | 0.50 |
+| summarization | 0.84 | 0.75 | 0.65 | 0.58 | 0.51 | 0.45 | 0.41 |
+| math500 | 0.83 | 0.77 | 0.71 | 0.67 | 0.62 | 0.57 | 0.53 |
+| swe-bench-pro | 0.83 | 0.75 | 0.67 | 0.61 | 0.54 | 0.48 | 0.43 |
+| qa / speed-qa | 0.82 | 0.71 | 0.62 | 0.54 | 0.49 | 0.44 | 0.40 |
+| speed-writing | 0.81 | 0.71 | 0.62 | 0.55 | 0.50 | 0.45 | 0.41 |
+| speed-multilingual | 0.80 | 0.72 | 0.64 | 0.58 | 0.52 | 0.47 | 0.42 |
+| aa-lcr-4k | 0.76 | 0.66 | 0.57 | 0.50 | 0.43 | 0.39 | 0.34 |
+| swe-rebench | 0.77 | 0.67 | 0.58 | 0.50 | 0.45 | 0.40 | 0.35 |
+| aime | 0.75 | 0.64 | 0.54 | 0.47 | 0.41 | 0.36 | 0.32 |
+| gpqa | 0.75 | 0.63 | 0.52 | 0.44 | 0.38 | 0.33 | 0.29 |
+| mtbench | 0.75 | 0.64 | 0.55 | 0.49 | 0.45 | 0.41 | 0.37 |
+| aa-lcr-1k | 0.74 | 0.64 | 0.55 | 0.48 | 0.42 | 0.36 | 0.34 |
+| writing | 0.73 | 0.62 | 0.53 | 0.47 | 0.43 | 0.39 | 0.36 |
+| aime26 | 0.71 | 0.59 | 0.50 | 0.42 | 0.37 | 0.33 | 0.30 |
 
 Two observations beyond the master table's AR/AL/full_acc/conf_err columns:
 
 - **Decay shape is consistent across domains**: pos-0 is always highest,
-  decaying roughly monotonically to pos-6, but the *slope* varies —
-  bfcl/math500 decay gently (0.76→0.51, a 33% relative drop) while
-  gpqa/swe-bench-pro decay sharply (0.46→0.20, a 57% drop). This means the
-  Markov head's benefit (predicting later tokens conditioned on earlier draft
+  decaying *strictly* monotonically to pos-6 in every single one of the 24
+  sets (no exceptions on clean data — the one exception reported in the
+  original degenerate-data table, `summarization`, turned out to be a
+  corruption artifact, not a real signal). The *slope* still varies by
+  domain — gsm8k decays gentlest (94.3%→76.4%, a 19% relative drop) while
+  gpqa decays steepest (74.6%→29.0%, a 61% drop). This means the Markov
+  head's benefit (predicting later tokens conditioned on earlier draft
   tokens, not just the anchor) is domain-dependent — it holds up longer on
   structured/short-answer domains than on open-ended or unfamiliar ones.
-  `summarization` is the one set that doesn't decay monotonically (0.33 at
-  pos-3 dips below pos-6's 0.33 — noise at n=15, not a real signal).
-- **`conf_err` sits in a narrow band (0.20–0.25) across every domain**,
-  including the worst-performing one (gpqa, 0.199 — actually the *best*
-  calibrated). This is a genuinely good sign for deployment: the confidence
-  head's calibration doesn't degrade on hard/OOD inputs the way raw
-  acceptance does, so adaptive-verification budget sizing (`--enable-adaptive-verification`
-  in vLLM's dspark path) should remain reliable even where the draft itself
-  is weak — worth verifying once serving is unblocked.
+- **`conf_err` ranges 0.11–0.24 across domains** (wider than the original
+  degenerate-data table's reported 0.20–0.25 band), best-calibrated on
+  gsm8k (0.113) and worst on qa (0.241, not gpqa as the original table
+  claimed). Still no strong correlation between calibration quality and raw
+  acceptance quality — gsm8k is both the best-accepted and best-calibrated
+  domain, but qa/gpqa (weaker acceptance domains) don't calibrate uniformly
+  worse than each other, so calibration isn't simply "worse when the draft
+  is worse." Adaptive-verification budget sizing
+  (`--enable-adaptive-verification` in vLLM's dspark path) is now testable
+  live given serving is unblocked — worth verifying in practice.
 
 ## Normalized view: accept_length / accept_rate
 
@@ -670,10 +616,11 @@ the 7 draft slots. The DSpark aa-lcr 8k/16k bins have not been run yet.
   decoding, method- and checkpoint-independent (eagle3 and dspark, and two
   different DSpark checkpoints, all failed identically on 0.28.0). vLLM
   0.29.0 (2026-09-09+) produces clean output and real measured ~2× speedup
-  with both DSpark checkpoints tested. All AL/AR numbers in the sections
-  below the Update section remain offline/analytical (not re-run against
-  live 0.29.0 serving across the full 24-set sweep), but the live-serving
-  blocker itself is resolved.
+  with both DSpark checkpoints tested. RadixArk/Kimi-K3-DSpark's full 24-set
+  sweep has since been re-run live on 0.29.0 too (real AR/AL/throughput, see
+  the Update section's "Full 24-set live-serving sweep", and the block=7 vs
+  block=3 real comparisons under the Ablation section) — EAGLE3 and
+  Inferact's checkpoint have only been spot-checked live, not full-swept.
 
 ## Ablation: drafting fewer tokens than trained (block_size 7 → 3)
 
@@ -979,13 +926,17 @@ Roughly in priority order:
 
 1. ~~**Escalate the vLLM spec-decode target-corruption bug.**~~ **Done
    2026-09-18** — resolved by upgrading to vLLM 0.29.0, see the Update
-   section at the top of this doc. Remaining follow-up: run a proper
-   multi-prompt, multi-benchmark real-throughput sweep on 0.29.0 (only 2-3
-   spot-check prompts per checkpoint have been measured so far) and test
-   under concurrent-request batching (issue #50851's comment thread reports
-   a separate, unresolved *batched-verify* throughput regression on recent
-   vLLM main, distinct from the correctness bug fixed here — worth checking
-   whether 0.29.0 has it).
+   section at the top of this doc. ~~Remaining follow-up: run a proper
+   multi-prompt, multi-benchmark real-throughput sweep on 0.29.0~~ **Also
+   done 2026-09-18** — full 24-set real live-serving sweep completed for
+   RadixArk/Kimi-K3-DSpark at both block=7 and block=3 (AR, AL, throughput,
+   and per-position accept rate), all in the Update and Ablation sections.
+   Still open: (a) the same full sweep for Inferact's checkpoint and EAGLE3
+   (only spot-checked live so far), and (b) testing under concurrent-request
+   batching — issue #50851's comment thread reports a separate, unresolved
+   *batched-verify* throughput regression on recent vLLM main, distinct from
+   the correctness bug fixed here; all real numbers in this doc are
+   single-stream (concurrency 1) — worth checking whether 0.29.0 has it.
 2. **DSpark aa-lcr 8k/16k.** The one benchmark axis not yet measured for the
    stronger draft, and the most interesting given its yarn rope design —
    directly testable against the EAGLE3 draft's collapse at the same lengths.
