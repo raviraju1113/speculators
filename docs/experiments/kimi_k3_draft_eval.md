@@ -168,6 +168,107 @@ Range: AL 2.88–5.97 across 24 domains (median ≈ 3.7). This table supersedes
 the "Full 25-benchmark sweep" table further down, which is kept for
 historical record with its data table removed.
 
+### Corrected 24-set EAGLE3 sweep (clean generation data, teacher-forced TTT metrics)
+
+The original EAGLE3 evaluation (`Result 3` further down) only covered 3
+on-policy sets (aime, livecodebench, gpqa) plus a separate aa-lcr context
+sweep, and was never re-verified against Bug 1 the way DSpark's numbers
+were. Rerun here across the full 24-set clean-data suite — same clean
+generations already used for DSpark (target-only output, draft-independent,
+so no need to regenerate), just re-extracted at EAGLE3's own aux layers
+(`[48,68,88]` TorchSpec convention → vLLM ids `[49,69,89]` + final 93,
+different from DSpark's layers) and replayed through TorchSpec's own TTT
+harness (`run_ttt_eval.py`, `--ttt-length 4`, same as the original Result
+1/2/3 methodology).
+
+| dataset | sim_acc_len | avg_acc | acc_0 / acc_1 / acc_2 / acc_3 |
+|---|---:|---:|---|
+| gsm8k | 1.420 | 0.699 | 0.490 / 0.816 / 0.772 / 0.719 |
+| mbpp | 1.333 | 0.641 | 0.519 / 0.750 / 0.676 / 0.620 |
+| bfcl | 1.243 | 0.637 | 0.481 / 0.746 / 0.693 / 0.627 |
+| speed-coding | 1.154 | 0.592 | 0.481 / 0.713 / 0.622 / 0.554 |
+| rag | 1.120 | 0.552 | 0.504 / 0.669 / 0.557 / 0.478 |
+| tool_call | 1.099 | 0.565 | 0.486 / 0.667 / 0.583 / 0.525 |
+| speed-rag | 1.057 | 0.539 | 0.488 / 0.645 / 0.543 / 0.480 |
+| livecodebench | 1.050 | 0.576 | 0.445 / 0.696 / 0.613 / 0.548 |
+| qa / speed-qa | 1.031 | 0.531 | 0.484 / 0.634 / 0.534 / 0.471 |
+| math500 | 1.031 | 0.589 | 0.428 / 0.699 / 0.643 / 0.587 |
+| translation | 1.011 | 0.541 | 0.464 / 0.644 / 0.556 / 0.500 |
+| mtbench | 0.999 | 0.519 | 0.476 / 0.624 / 0.521 / 0.455 |
+| summarization | 0.973 | 0.529 | 0.449 / 0.646 / 0.548 / 0.472 |
+| writing | 0.970 | 0.507 | 0.473 / 0.608 / 0.505 / 0.441 |
+| speed-writing | 0.936 | 0.510 | 0.447 / 0.622 / 0.520 / 0.452 |
+| swe-rebench | 0.927 | 0.496 | 0.459 / 0.596 / 0.494 / 0.437 |
+| swe-bench-pro | 0.920 | 0.506 | 0.445 / 0.608 / 0.519 / 0.453 |
+| speed-multilingual | 0.753 | 0.451 | 0.396 / 0.546 / 0.463 / 0.400 |
+| aa-lcr-4k | 0.744 | 0.421 | 0.415 / 0.513 / 0.405 / 0.352 |
+| aa-lcr-1k | 0.730 | 0.415 | 0.413 / 0.497 / 0.402 / 0.347 |
+| aime | 0.704 | 0.437 | 0.373 / 0.548 / 0.449 / 0.379 |
+| gpqa | 0.666 | 0.412 | 0.369 / 0.516 / 0.414 / 0.348 |
+| aime26 | 0.649 | 0.399 | 0.371 / 0.491 / 0.395 / 0.337 |
+
+**Comparison against the original (Bug-1-affected) numbers, same exact
+clean prompts, verified via identical `hs_stack` shape (4 layers: 3 aux +
+1 final) so this isn't a setup error**: `livecodebench` 1.102→1.050 (0.95×,
+essentially unchanged), `gpqa` 0.682→0.666 (0.98×, essentially unchanged),
+**`aime` 1.212→0.704 (0.58×, a substantial decrease)**.
+
+This is the opposite direction from DSpark, where every single set
+increased after the Bug 1 fix. Best available (not fully proven) hypothesis
+for aime specifically: the original corrupted "ground truth" degenerated
+into a highly repetitive loop (per Bug 1's description — an aime sample
+repeating "A: A: A: ..." ~190 times); once any model falls into that kind
+of degenerate pattern, "predict the same token again" becomes trivially
+easy to guess correctly for both target and draft, artificially inflating
+apparent agreement. The clean, mathematically real reasoning text is
+genuinely harder for this draft to predict — a lower but more honest
+number. `livecodebench`/`gpqa` barely moved, suggesting their original
+degenerate samples were less extreme or less frequent than aime's.
+
+**AR/AL conversion, for comparison against DSpark's tables only — not a
+separate measurement.** EAGLE3's native metrics above (`sim_acc_len`,
+`avg_acc`) are computed via TTT argmax-agreement (`acc_i` = does the
+draft's argmax match the target's argmax at TTT step *i*), a genuinely
+different underlying computation from DSpark's `AR`/`AL` (TV-distributional-overlap,
+`1 - TV(draft_dist, target_dist)`). The two are **not interchangeable
+measurements** — converting one into the other's naming convention doesn't
+make them equivalent, it's purely an arithmetic restatement of the same
+underlying `sim_acc_len` number, done so the two drafts can be skimmed
+side by side. Formula used: `AL = 1 + sim_acc_len` (same bonus-token
+convention as DSpark), `AR = sim_acc_len / 4` (K=4, EAGLE3's draft width;
+this is the same derivation the pre-existing "Normalized view" section
+below already used for EAGLE3's `aime`/`livecodebench`/`gpqa`/`aa-lcr` rows).
+
+| dataset | AL (= 1 + sim_acc_len) | AR (= sim_acc_len / 4) |
+|---|---:|---:|
+| gsm8k | 2.42 | 0.355 |
+| mbpp | 2.33 | 0.333 |
+| bfcl | 2.24 | 0.311 |
+| speed-coding | 2.15 | 0.289 |
+| rag | 2.12 | 0.280 |
+| tool_call | 2.10 | 0.275 |
+| speed-rag | 2.06 | 0.264 |
+| livecodebench | 2.05 | 0.262 |
+| qa / speed-qa | 2.03 | 0.258 |
+| math500 | 2.03 | 0.258 |
+| translation | 2.01 | 0.253 |
+| mtbench | 2.00 | 0.250 |
+| summarization | 1.97 | 0.243 |
+| writing | 1.97 | 0.242 |
+| speed-writing | 1.94 | 0.234 |
+| swe-rebench | 1.93 | 0.232 |
+| swe-bench-pro | 1.92 | 0.230 |
+| speed-multilingual | 1.75 | 0.188 |
+| aa-lcr-4k | 1.74 | 0.186 |
+| aa-lcr-1k | 1.73 | 0.183 |
+| aime | 1.70 | 0.176 |
+| gpqa | 1.67 | 0.166 |
+| aime26 | 1.65 | 0.162 |
+
+For real, directly-measured (not converted) throughput on this draft, see
+the live-serving test below — real EAGLE3 speculative decoding on vLLM
+0.29.0, not an offline TTT replay.
+
 ### Full 24-set live-serving sweep — real measurements, vLLM 0.29.0 (the authoritative numbers)
 
 Per your request to "use the correct infra": replayed all 380 already-cached
@@ -373,28 +474,22 @@ target's own MLA layers are NoPE, so this was purely a draft-side choice);
 
 ## Result 3 — benchmark slice + throughput
 
-On-policy, 15 samples/benchmark, ≤512-token greedy generations, prompts from
-`scripts/evaluate/mtp_server_eval/data/`. Baseline decode throughput measured
-separately on a plain target-only server (no extraction overhead;
-`run_vllm_eval.py`, 8 prompts × ≤512 tokens, temperature 0, single-stream):
+**On-policy avg_acc/sim_acc_len numbers originally shown here (aime,
+livecodebench, gpqa) were measured on generation data later found corrupted
+by Bug 1 — removed rather than kept as known-wrong.** See the Update
+section's "Corrected 24-set EAGLE3 sweep" for current values (aime
+sim_acc_len 0.704, livecodebench 1.050, gpqa 0.666 — note aime dropped
+substantially from the original 1.212, the opposite direction from DSpark's
+corrections; see that section for the likely explanation). `general chat`
+(Result 1, chat64) is unaffected by Bug 1 and remains valid as originally
+reported: avg_acc 0.4921, sim_acc_len 0.9364.
 
-| benchmark | avg_acc | sim_acc_len | acc_0 / 1 / 2 / 3 | baseline decode (no spec) |
-|---|---|---|---|---|
-| aime | 0.5563 | **1.212** | 0.565 / 0.642 / 0.522 / 0.495 | 108.0 tok/s |
-| livecodebench | 0.5539 | **1.102** | 0.507 / 0.647 / 0.530 / 0.531 | 108.0 tok/s |
-| gpqa | 0.3914 | 0.682 | 0.408 / 0.464 / 0.328 / 0.366 | 108.0 tok/s |
-| general chat (Result 1) | 0.4921 | 0.936 | — | — |
-
-Baseline details: decode 108.0 tok/s on all three benchmarks (decode-bound at
-these context lengths); e2e 97.2–105.4 tok/s; mean TTFT 0.088–0.538 s.
-Raw JSONs: `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/throughput_baseline/`.
-(A projected-speedup column was previously shown here; removed per
-2026-09-18 decision to keep only real measured numbers in this doc — see the
-Update section for real live-serving throughput instead.)
-
-The domain pattern matches the training data: aime/livecodebench (in-domain
-code/math) sit ~1.8× higher in sim_acc_len than gpqa (out-of-distribution
-science QA).
+Baseline decode throughput (unaffected by either bug — plain target-only
+serving, no draft involved) measured separately (`run_vllm_eval.py`, 8
+prompts × ≤512 tokens, temperature 0, single-stream): **108.0 tok/s** on
+aime/livecodebench/gpqa (decode-bound at these context lengths); e2e
+97.2–105.4 tok/s; mean TTFT 0.088–0.538 s. Raw JSONs:
+`/import/ml-sc-scratch5/chenw/models/kimi-k3-data/throughput_baseline/`.
 
 ## RadixArk/Kimi-K3-DSpark (HF) — second draft evaluated (2026-09-15)
 
@@ -562,24 +657,24 @@ directly to the speedup ceiling vs the 108 tok/s baseline) and
 `accept_rate = accepted_tokens / drafted_tokens`. Derived from the measured
 per-step/per-slot numbers above (EAGLE3 drafts 4 tokens/step, DSpark 7).
 
-**DSpark columns updated 2026-09-18 with clean data** (original values were
-measured on generation data later found corrupted by Bug 1, wrong by
-1.0×-2.1× — see the Update section for the fix and current values).
-EAGLE3 columns are **not** updated here — EAGLE3's on-policy sets
-(aime, livecodebench, gpqa) were collected with the same general on-policy
-pipeline described as affected by Bug 1, but were never specifically
-re-verified or re-collected this session; treat EAGLE3's numbers below as
-**unverified against Bug 1**, not confirmed-clean the way DSpark's are.
+**Both columns now updated 2026-09-18 with clean data** for the rows that
+have a direct clean-data equivalent (original values on these rows were
+measured on generation data later found corrupted by Bug 1). `aa-lcr`
+rows are the exception — they come from EAGLE3's original `Result 2`
+context-length sweep (a different, paired-bin methodology via
+`prepare_aa_lcr_sweep.py`, distinct from the 24-set sweep's own
+`aa-lcr-1k`/`aa-lcr-4k` entries), which was **not** rerun this session —
+treat the EAGLE3 aa-lcr row as still unverified against Bug 1.
 
-| set | EAGLE3 rate (unverified vs Bug 1) | EAGLE3 len (unverified vs Bug 1) | DSpark rate (clean) | DSpark len (clean) |
+| set | EAGLE3 rate | EAGLE3 len | DSpark rate (clean) | DSpark len (clean) |
 |---|---|---|---|---|
 | general chat | 0.234 | 1.94 | 0.445 | **2.48** |
-| aime | 0.303 | 2.21 | 0.492 | **3.16** |
-| livecodebench | 0.275 | 2.10 | 0.666 | **4.46** |
-| gpqa | 0.170 | 1.68 | 0.463 | **3.01** |
-| aa-lcr 1k / 4k | 0.284 / 0.266 | 2.13 / 2.06 | 0.496 / 0.515 | 3.22 / 3.38 |
-| aa-lcr 8k | 0.138 | 1.55 | — | — |
-| aa-lcr 16k | 0.039 | 1.16 | — | — |
+| aime | 0.176 | **1.70** | 0.492 | **3.16** |
+| livecodebench | 0.263 | **2.05** | 0.666 | **4.46** |
+| gpqa | 0.167 | **1.67** | 0.463 | **3.01** |
+| aa-lcr 1k / 4k (unverified, different methodology) | 0.284 / 0.266 | 2.13 / 2.06 | 0.496 / 0.515 | 3.22 / 3.38 |
+| aa-lcr 8k (unverified) | 0.138 | 1.55 | — | — |
+| aa-lcr 16k (unverified) | 0.039 | 1.16 | — | — |
 
 Footnote: EAGLE3 rates derive from greedy argmax agreement (TTT), DSpark's
 from the analytical distribution-overlap acceptance — both estimate
