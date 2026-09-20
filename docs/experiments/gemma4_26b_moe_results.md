@@ -275,6 +275,10 @@ eagle3}` — vLLM 0.28's method auto-detection has no peagle branch and
 otherwise routes it to the hidden-state-less `draft_model` proposer, which
 crashes at warmup (upstream bug; the eagle3 path picks up `pard_token`).
 
+> **Note:** `qa`/`speed-qa` and `question`/`writing` are duplicate prompt
+> sets (see the suite caveat in §7), so those rows are each counted twice in
+> the mean. De-duplicated means are +0.02 to +0.04 and preserve the ordering.
+
 ### Per-benchmark decode speedup / accept_len (rows sorted easiest→hardest; bold = best per row)
 
 | benchmark | DSpark k=8 | DFlash k=7 | MTP-ft k=5 | EAGLE3 k=5 | P-EAGLE k=4 | vanilla asst k=5 |
@@ -406,6 +410,28 @@ portable to stock vLLM) against a **freshly measured same-day baseline**
 (drift vs the §5 baseline was +1.9%, so the older columns remain comparable).
 26 benchmarks — the 25 of §5 plus `heldout_chat`, which existed as a data file
 but was unregistered in both eval runners until now.
+
+> **Suite caveat — two duplicate prompt sets (found 2026-09-20 during a numbers
+> audit).** Of the 26 benchmark files, only **24 are distinct**: `qa` and
+> `speed-qa` contain the same 80 prompts, as do `question` and `writing`
+> (verified by hashing the prompt sets). Those pairs therefore carry double
+> weight in any mean below. The effect is small and uniform — dropping one of
+> each pair raises every draft's mean by +0.02 to +0.04 and changes no
+> ordering — but the de-duplicated figures are the honest ones:
+>
+> | draft | mean as tabulated | mean over distinct sets |
+> |---|---|---|
+> | DSpark 400k (§7) | 1.89× (n=26) | **1.93×** (n=24) |
+> | vanilla assistant | 1.85× (n=25) | **1.89×** (n=23) |
+> | DFlash 30k | 1.54× | 1.57× |
+> | DSpark 30k | 1.53× | 1.56× |
+> | MTP-ft 30k | 1.45× | 1.49× |
+> | EAGLE3 30k | 1.39× | 1.41× |
+> | P-EAGLE 30k | 0.91× | 0.91× |
+>
+> On the 23 **distinct, shared** benchmarks the headline still holds:
+> DSpark 400k **1.933×** vs vanilla **1.890×**, winning 12 of 23 (the
+> "13 of 25" split elsewhere counts the duplicated pairs).
 
 ### Speedup / accept_len (AL) / accept_rate (AR) — bold = beats the vanilla assistant
 
