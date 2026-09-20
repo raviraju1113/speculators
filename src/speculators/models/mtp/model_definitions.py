@@ -18,11 +18,12 @@ from transformers.models.qwen3.modeling_qwen3 import (
 )
 
 from speculators.models import base_components
+from speculators.models.utils import _DEEPSEEK_V3_MIN_TRANSFORMERS
 
 __all__ = ["MTPLayerMixin", "mtp_model_classes", "resolve_model_type"]
 
 _MIN_TRANSFORMERS_VERSION: dict[str, str] = {
-    "deepseek_v3": "4.51.0",
+    "deepseek_v3": _DEEPSEEK_V3_MIN_TRANSFORMERS,
     "qwen3_next": "4.57.0",
     "qwen3_5_text": "5.2.0",
     "qwen3_5_moe_text": "5.2.0",

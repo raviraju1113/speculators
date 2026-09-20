@@ -28,6 +28,33 @@ def get_verifier_config(
 #: therefore be drafted with a transformers ``deepseek_v3`` decoder layer.
 MLA_VERIFIER_MODEL_TYPES = ("kimi_linear", "kimi_k3")
 
+# Keep in sync with MTP deepseek_v3 registration (imported by model_definitions).
+_DEEPSEEK_V3_MIN_TRANSFORMERS = "4.51.0"
+
+
+def _require_deepseek_v3_config():
+    """Import ``DeepseekV3Config``, or raise a version-aware error."""
+    from importlib.metadata import version as pkg_version
+
+    from packaging.version import Version
+
+    installed = pkg_version("transformers")
+    if Version(installed) < Version(_DEEPSEEK_V3_MIN_TRANSFORMERS):
+        raise ImportError(
+            "Kimi K3 / MLA verifier drafts map to DeepseekV3Config, which requires "
+            f"transformers>={_DEEPSEEK_V3_MIN_TRANSFORMERS} (installed: {installed}). "
+            f"Upgrade with: pip install 'transformers>={_DEEPSEEK_V3_MIN_TRANSFORMERS}'"
+        )
+    try:
+        from transformers import DeepseekV3Config  # noqa: PLC0415
+    except ImportError as e:
+        raise ImportError(
+            "Failed to import DeepseekV3Config from transformers "
+            f"(installed: {installed}; need >={_DEEPSEEK_V3_MIN_TRANSFORMERS}). "
+            f"Upgrade with: pip install 'transformers>={_DEEPSEEK_V3_MIN_TRANSFORMERS}'"
+        ) from e
+    return DeepseekV3Config
+
 
 def translate_verifier_config_for_draft(
     verifier_config: PretrainedConfig,
@@ -47,7 +74,7 @@ def translate_verifier_config_for_draft(
     if verifier_config.model_type not in MLA_VERIFIER_MODEL_TYPES:
         return verifier_config
 
-    from transformers import DeepseekV3Config  # noqa: PLC0415
+    DeepseekV3Config = _require_deepseek_v3_config()
 
     return DeepseekV3Config(
         vocab_size=verifier_config.vocab_size,

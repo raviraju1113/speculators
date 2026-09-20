@@ -99,9 +99,10 @@ def compute_metrics(
         # is the anchor), shared by the accept-length and calibration metrics.
         num_blocks = seq_len // block_size
         accept_blocks = accept_rate.view(num_blocks, block_size)
-        draft_mask = loss_mask.to(accept_rate.dtype).view(num_blocks, block_size)[
-            :, start_pos:
-        ]
+        # Full-width block mask (index with absolute ``pos``); ``draft_mask`` is
+        # the draft-slot slice used by cumprod / accept_len.
+        block_mask = loss_mask.to(accept_rate.dtype).view(num_blocks, block_size)
+        draft_mask = block_mask[:, start_pos:]
         accept_prefix = (accept_blocks[:, start_pos:] * draft_mask).cumprod(dim=-1)
 
     metrics: dict[str, Any] = {}
@@ -151,13 +152,14 @@ def compute_metrics(
 
         # Per-position breakdown of the same TV-overlap accept_rate (mirrors
         # the per-position full_acc breakdown below, but for AR not argmax).
+        # Index both tensors with absolute ``pos`` (same as correct_per_pos[pos]).
         for pos in range(start_pos, block_size):
             metrics[f"position_{pos}_accept_rate_sum"] = (
-                accept_blocks[:, pos] * draft_mask[:, pos - start_pos]
+                accept_blocks[:, pos] * block_mask[:, pos]
             ).sum()
-            metrics[f"position_{pos}_accept_rate_total"] = draft_mask[
-                :, pos - start_pos
-            ].sum().clamp_min(1.0)
+            metrics[f"position_{pos}_accept_rate_total"] = block_mask[:, pos].sum().clamp_min(
+                1.0
+            )
 
     # Expected accepted draft length per block (DSpark's tau): the cumulative
     # acceptance product summed over draft slots, plus the always-emitted anchor.
