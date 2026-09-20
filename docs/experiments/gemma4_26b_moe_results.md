@@ -5,7 +5,7 @@ drafts (MTP assistant, EAGLE3, DFlash, DSpark, P-EAGLE), the acceptance/throughp
 evals, and two training-time bugs found & fixed here: the **shared-KV attention
 leak** (§2) and a **hidden-state off-by-one** (§4), plus the feature-distillation
 quality push, the six-way 25-benchmark profile (§5), and the 400k DSpark
-scale-up (§6).
+scale-up (§6) and its results (§7).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -331,7 +331,7 @@ _Configs: `scripts/evaluate/experiments/gemma4-26b-penta-eval.yaml`,
 
 ---
 
-## 6. Scaling DSpark to 400k samples (in progress)
+## 6. Scaling DSpark to 400k samples — setup
 
 Follow-up to §5: give the best from-scratch draft (DSpark) ~13x the data and let
 validation decide the epoch count. Started 2026-09-16.
@@ -367,11 +367,7 @@ conditioning). The serving numbers are what will settle it.
 
 ### Status / next
 
-- Epoch 0 is `checkpoint_best`; epoch 1 is running. If its val loss does not
-  beat 0.585, early stopping ends the run there.
-- On completion: evaluate on the same 25-benchmark suite as §5 and add the
-  column. Open question: whether a properly-fed DSpark closes the gap to the
-  **vanilla assistant's 1.85x mean** (it already wins the math columns at 30k).
+- **Completed — final results and the 26-benchmark eval are in §7.**
 - Operational note: three separate session-boundary `SIGTERM`s killed trainers
   during this work (the parent shell's process group is reaped). The run is now
   launched via
@@ -382,3 +378,78 @@ conditioning). The serving numbers are what will settle it.
 
 _Config/logs: `output/gemma4_26b_dspark_400k/` (`logs/`, `dspark/checkpoints/`,
 `data_prep/`)._
+
+---
+
+## 7. DSpark at 400k samples — final results
+
+The §6 run finished: **3 epochs** (the cap; validation was still improving, so
+`--early-stop-patience 1` never fired), `checkpoint_best` = epoch 2.
+
+| epoch | val loss | val accept_len | full_acc |
+|---|---|---|---|
+| 0 | 0.585 | 2.937 | 0.520 |
+| 1 | 0.555 | 3.130 | 0.551 |
+| 2 (best) | **0.495** | **3.520** | **0.606** |
+
+Served at its native **k=7** (trained `--no-sample-from-anchor`, so it is
+portable to stock vLLM) against a **freshly measured same-day baseline**
+(drift vs the §5 baseline was +1.9%, so the older columns remain comparable).
+26 benchmarks — the 25 of §5 plus `heldout_chat`, which existed as a data file
+but was unregistered in both eval runners until now.
+
+### Speedup / accept_len (bold = beats the vanilla assistant)
+
+| benchmark | **DSpark 400k** (k=7) | DSpark 30k (k=8) | vanilla assistant (k=5) |
+|---|---|---|---|
+| gsm8k | **2.99 / 5.56** | 2.53 | 2.32 |
+| math_reasoning | **2.94 / 5.39** | 2.51 | 2.37 |
+| math500 | **2.71 / 5.11** | 2.22 | 2.24 |
+| humaneval | **2.63 / 4.95** | 2.01 | 2.26 |
+| HumanEval | **2.47 / 4.65** | 1.92 | 2.20 |
+| aime26 | **2.33 / 4.65** | 1.90 | 2.10 |
+| aime | **2.31 / 4.55** | 1.84 | 2.10 |
+| bfcl | 2.31 / 4.40 | 1.65 | 2.39 |
+| mbpp | **2.23 / 4.31** | 1.83 | 2.03 |
+| livecodebench | **2.03 / 4.10** | 1.60 | 1.92 |
+| heldout_chat | 1.95 / 3.69 | — | — |
+| speed-coding | **1.93 / 3.91** | 1.43 | 1.93 |
+| gpqa | 1.76 / 3.48 | 1.46 | 1.89 |
+| translation | 1.66 / 3.03 | 1.31 | 1.83 |
+| swe-bench-pro | 1.65 / 3.30 | 1.26 | 1.79 |
+| tool_call | 1.59 / 2.95 | 1.29 | 1.78 |
+| speed-rag | 1.57 / 3.19 | 1.21 | 1.77 |
+| question | **1.52 / 2.83** | 1.28 | 1.47 |
+| writing | **1.52 / 2.83** | 1.28 | 1.47 |
+| mt-bench | **1.52 / 2.83** | 1.28 | 1.44 |
+| rag | 1.48 / 2.98 | 1.19 | 1.68 |
+| qa | 1.34 / 2.44 | 1.14 | 1.42 |
+| speed-qa | 1.34 / 2.44 | 1.14 | 1.42 |
+| speed-writing | 1.25 / 2.55 | 1.04 | 1.27 |
+| summarization | 1.18 / 2.40 | 0.97 | 1.37 |
+| speed-multilingual | 1.06 / 1.92 | 0.97 | 1.89 |
+| **MEAN (25 shared)** | **1.89×** | 1.53× | 1.85× |
+
+### Takeaways
+
+- **Scaling the data worked: 1.53× → 1.89× mean**, and the 400k DSpark now
+  **edges past the vanilla Google assistant (1.85×)** — the first draft we have
+  trained that does. Mean accept_len 3.63 at k=7.
+- **The win is uneven: 13 of 25 benchmarks beat vanilla, 12 do not.** It wins
+  decisively where drafting is easy — gsm8k **2.99×** (+0.67 over vanilla),
+  math_reasoning 2.94×, math500 2.71×, humaneval 2.63× — and loses on
+  retrieval/chat-ish and multilingual work.
+- **The §5 draft-vocab diagnosis is confirmed.** More data barely moved
+  multilingual (0.97× → 1.06×, still 0.83 behind vanilla's 1.89×) while math
+  jumped ~0.5. The 32k pruned draft vocab, not data volume, is the binding
+  constraint there — the next experiment worth running is a larger
+  `--draft-vocab-size`, not more samples.
+- **Deployment read:** for a math/code-heavy workload, this checkpoint is now
+  the best option; for general multilingual traffic, the vanilla assistant is
+  still safer. A vocab fix would likely settle it outright.
+- Training was still improving at the epoch cap (epoch 1→2 gained *more* than
+  0→1), so a 4th/5th epoch is also unexplored headroom.
+
+_Results: `scripts/evaluate/experiments/results/gemma4-26b-post400k-eval/`
+(merged from the four parallel `post400k-*` shards + the `heldout_chat` legs).
+Checkpoint: `output/gemma4_26b_dspark_400k/dspark/checkpoints/checkpoint_best`._
