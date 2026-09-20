@@ -26,6 +26,15 @@ via `scripts/evaluate/mtp_server_eval/run_vllm_eval.py`. Metrics:
 Target: `gemma-4-26B-A4B-it`. Drafts (vanilla MTP assistant, EAGLE3, DFlash)
 compared against the same target, sweeping speculative depth k.
 
+> **Scope / currency.** This section is the **k-depth sweep over *stock*
+> (published) drafts on 3 benchmarks, measured on vLLM 0.24.0** (baseline
+> ~127 tok/s). It is kept for the k-sweep, which later sections do not repeat.
+> For the **current** picture — the drafts trained here, at their native k,
+> over 25-26 benchmarks on vLLM 0.28 — see §5 (six-way comparison) and §7
+> (DSpark 400k, the present best at **1.89x** mean / **2.31x** aime, which
+> supersedes the "best drafts overall" note below). Do not compare speedups
+> across engine versions; compare within a section.
+
 | benchmark | config | accept_len | accept_rate | decode tok/s | e2e tok/s | speedup |
 |---|---|--:|--:|--:|--:|--:|
 | **aime** | baseline (no draft) | — | — | 127.1 | 126.4 | 1.00× |
