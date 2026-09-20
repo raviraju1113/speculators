@@ -398,43 +398,76 @@ portable to stock vLLM) against a **freshly measured same-day baseline**
 26 benchmarks — the 25 of §5 plus `heldout_chat`, which existed as a data file
 but was unregistered in both eval runners until now.
 
-### Speedup / accept_len (bold = beats the vanilla assistant)
+### Speedup / accept_len (AL) / accept_rate (AR) — bold = beats the vanilla assistant
 
-| benchmark | **DSpark 400k** (k=7) | DSpark 30k (k=8) | vanilla assistant (k=5) |
+**AL** = accepted tokens committed per target forward (max `k+1`). **AR** =
+`(AL-1)/k`, so it is *normalized by draft depth* and therefore **not comparable
+across columns with different k** — a draft with more slots is penalized for the
+deeper, harder ones. Compare **AL** (and speedup) across drafts; read AR only
+within a column, as "how much of this draft's own budget landed".
+
+| benchmark | **DSpark 400k** (k=7)<br>speedup / AL / AR | DSpark 30k (k=8)<br>speedup / AL / AR | vanilla assistant (k=5)<br>speedup / AL / AR |
 |---|---|---|---|
-| gsm8k | **2.99 / 5.56** | 2.53 | 2.32 |
-| math_reasoning | **2.94 / 5.39** | 2.51 | 2.37 |
-| math500 | **2.71 / 5.11** | 2.22 | 2.24 |
-| humaneval | **2.63 / 4.95** | 2.01 | 2.26 |
-| HumanEval | **2.47 / 4.65** | 1.92 | 2.20 |
-| aime26 | **2.33 / 4.65** | 1.90 | 2.10 |
-| aime | **2.31 / 4.55** | 1.84 | 2.10 |
-| bfcl | 2.31 / 4.40 | 1.65 | 2.39 |
-| mbpp | **2.23 / 4.31** | 1.83 | 2.03 |
-| livecodebench | **2.03 / 4.10** | 1.60 | 1.92 |
-| heldout_chat | 1.95 / 3.69 | — | — |
-| speed-coding | **1.93 / 3.91** | 1.43 | 1.93 |
-| gpqa | 1.76 / 3.48 | 1.46 | 1.89 |
-| translation | 1.66 / 3.03 | 1.31 | 1.83 |
-| swe-bench-pro | 1.65 / 3.30 | 1.26 | 1.79 |
-| tool_call | 1.59 / 2.95 | 1.29 | 1.78 |
-| speed-rag | 1.57 / 3.19 | 1.21 | 1.77 |
-| question | **1.52 / 2.83** | 1.28 | 1.47 |
-| writing | **1.52 / 2.83** | 1.28 | 1.47 |
-| mt-bench | **1.52 / 2.83** | 1.28 | 1.44 |
-| rag | 1.48 / 2.98 | 1.19 | 1.68 |
-| qa | 1.34 / 2.44 | 1.14 | 1.42 |
-| speed-qa | 1.34 / 2.44 | 1.14 | 1.42 |
-| speed-writing | 1.25 / 2.55 | 1.04 | 1.27 |
-| summarization | 1.18 / 2.40 | 0.97 | 1.37 |
-| speed-multilingual | 1.06 / 1.92 | 0.97 | 1.89 |
-| **MEAN (25 shared)** | **1.89×** | 1.53× | 1.85× |
+| gsm8k | **2.99 / 5.56 / 0.652** | 2.53 / 4.76 / 0.471 | 2.32 / 5.03 / 0.805 |
+| math_reasoning | **2.94 / 5.39 / 0.628** | 2.51 / 4.67 / 0.459 | 2.37 / 5.11 / 0.821 |
+| math500 | **2.71 / 5.11 / 0.587** | 2.22 / 4.23 / 0.404 | 2.24 / 5.02 / 0.805 |
+| humaneval | **2.63 / 4.95 / 0.564** | 2.01 / 3.83 / 0.354 | 2.26 / 4.99 / 0.797 |
+| HumanEval | **2.47 / 4.65 / 0.521** | 1.92 / 3.69 / 0.336 | 2.20 / 4.78 / 0.756 |
+| aime26 | **2.33 / 4.65 / 0.521** | 1.90 / 3.83 / 0.354 | 2.10 / 4.90 / 0.780 |
+| aime | **2.31 / 4.55 / 0.507** | 1.84 / 3.67 / 0.334 | 2.10 / 4.86 / 0.772 |
+| bfcl | 2.31 / 4.40 / 0.486 | 1.65 / 3.18 / 0.272 | 2.39 / 5.75 / 0.951 |
+| mbpp | **2.23 / 4.31 / 0.472** | 1.83 / 3.53 / 0.316 | 2.03 / 4.46 / 0.692 |
+| livecodebench | **2.03 / 4.10 / 0.443** | 1.60 / 3.28 / 0.285 | 1.92 / 4.52 / 0.705 |
+| heldout_chat | 1.95 / 3.69 / 0.385 | — | — |
+| speed-coding | **1.93 / 3.91 / 0.415** | 1.43 / 2.93 / 0.241 | 1.93 / 4.46 / 0.692 |
+| gpqa | 1.76 / 3.48 / 0.355 | 1.46 / 2.89 / 0.236 | 1.89 / 4.36 / 0.671 |
+| translation | 1.66 / 3.03 / 0.289 | 1.31 / 2.44 / 0.180 | 1.83 / 3.89 / 0.579 |
+| swe-bench-pro | 1.65 / 3.30 / 0.329 | 1.26 / 2.55 / 0.194 | 1.79 / 4.18 / 0.635 |
+| tool_call | 1.59 / 2.95 / 0.279 | 1.29 / 2.44 / 0.180 | 1.78 / 3.93 / 0.586 |
+| speed-rag | 1.57 / 3.19 / 0.314 | 1.21 / 2.50 / 0.188 | 1.77 / 4.16 / 0.632 |
+| question | **1.52 / 2.83 / 0.262** | 1.28 / 2.44 / 0.181 | 1.47 / 3.17 / 0.435 |
+| writing | **1.52 / 2.83 / 0.261** | 1.28 / 2.44 / 0.181 | 1.47 / 3.18 / 0.435 |
+| mt-bench | **1.52 / 2.83 / 0.262** | 1.28 / 2.45 / 0.181 | 1.44 / 3.16 / 0.432 |
+| rag | 1.48 / 2.98 / 0.283 | 1.19 / 2.42 / 0.177 | 1.68 / 3.89 / 0.578 |
+| qa | 1.34 / 2.44 / 0.206 | 1.14 / 2.09 / 0.136 | 1.42 / 2.98 / 0.395 |
+| speed-qa | 1.34 / 2.44 / 0.206 | 1.14 / 2.09 / 0.136 | 1.42 / 2.98 / 0.395 |
+| speed-writing | 1.25 / 2.55 / 0.222 | 1.04 / 2.15 / 0.143 | 1.27 / 2.96 / 0.392 |
+| summarization | 1.18 / 2.40 / 0.199 | 0.97 / 1.98 / 0.122 | 1.37 / 3.20 / 0.440 |
+| speed-multilingual | 1.06 / 1.92 / 0.131 | 0.97 / 1.76 / 0.095 | 1.89 / 4.03 / 0.606 |
+| **MEAN (25 shared)** | **1.89 / 3.63 / 0.376** | 1.53 / 2.97 / 0.246 | 1.85 / 4.16 / 0.632 |
+
+### Per-slot acceptance (server-side, pooled over the whole 26-benchmark run)
+
+Cumulative acceptance at each draft slot, from vLLM's own `SpecDecoding`
+metrics (weighted by drafted tokens); `1 + sum` reproduces the measured AL.
+
+| slot | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | => AL |
+|---|---|---|---|---|---|---|---|---|---|
+| **DSpark 400k** (k=7) | 0.752 | 0.561 | 0.420 | 0.323 | 0.251 | 0.193 | 0.146 | — | 3.65 |
+| DSpark 30k (k=8) | 0.689 | 0.466 | 0.312 | 0.211 | 0.141 | 0.092 | 0.059 | 0.036 | 3.00 |
+| vanilla assistant (k=5) | 0.917 | 0.830 | 0.750 | 0.674 | 0.598 | — | — | — | 4.77 |
+
+- Scaling to 400k mostly bought **depth**: +9% at slot 1 over the 30k draft but
+  **+147% at slot 7** — blocks stay alive longer, which is where AL comes from.
+- **Vanilla wins every slot yet loses on speedup, and that is the whole story.**
+  Its per-slot decay is ~0.90x/slot vs DSpark's ~0.75x, giving a much higher AL
+  (4.77 vs 3.65) and AR (0.63 vs 0.38) — but it is a *true autoregressive*
+  draft, so those 5 tokens cost **5 sequential forwards**, while DSpark drafts
+  its whole 7-slot block in **one parallel forward**. Per-slot AR measures draft
+  *quality*; speedup is quality / cost.
+- **Train/serve parity is clean**: served slot-1 (0.752) matches training
+  position-1 (0.769), and served AL (3.65) exceeds the training-reported 3.52.
+  The failure mode to watch for is serving at ~half of training, which signals a
+  `sample_from_anchor` convention mismatch (see
+  `.claude/skills/dspark-train-serve-parity`).
 
 ### Takeaways
 
-- **Scaling the data worked: 1.53× → 1.89× mean**, and the 400k DSpark now
-  **edges past the vanilla Google assistant (1.85×)** — the first draft we have
-  trained that does. Mean accept_len 3.63 at k=7.
+- **Scaling the data worked: 1.53× → 1.89× mean** (AL 2.97 → 3.63, AR 0.246 →
+  0.376), and the 400k DSpark now **edges past the vanilla Google assistant
+  (1.85×)** — the first draft we have trained that does. Note it wins on
+  *speedup* while losing on AL (3.63 vs 4.16) and AR (0.376 vs 0.632): its
+  block drafts in one forward pass, vanilla's needs five.
 - **The win is uneven: 13 of 25 benchmarks beat vanilla, 12 do not.** It wins
   decisively where drafting is easy — gsm8k **2.99×** (+0.67 over vanilla),
   math_reasoning 2.94×, math500 2.71×, humaneval 2.63× — and loses on
