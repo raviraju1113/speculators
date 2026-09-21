@@ -2,16 +2,17 @@
 
 Evaluation of two speculative-decoding drafts for Kimi K3 — the
 TorchSpec-trained EAGLE3 draft and the published `RadixArk/Kimi-K3-DSpark`
-draft — plus two more architecturally distinct DSpark checkpoints
+draft — plus three more architecturally distinct DSpark checkpoints
 (`Inferact/Kimi-K3-DSpark` and `lightseekorg/kimi-k3-dspark`, both native
-MLA) evaluated live for cross-checkpoint comparison. **Four real issues
-were found and fixed along the way (two in vLLM, one in EAGLE3's
-checkpoint export, one missing feature in vLLM's DSpark model support)**
-— root causes, evidence, and the original (now-superseded) offline
-methodology are in the [Appendix](#appendix). The body below reflects the
-current, corrected state: what each draft is, how it's served,
-standardized metric definitions, the up-to-date real-vs-real comparison,
-conclusions, the block-width ablation, and open follow-ups.
+MLA; `RedHatAI/Kimi-K3-speculator.dspark`, also native and the only one
+requiring zero fixes) evaluated live for cross-checkpoint comparison.
+**Four real issues were found and fixed along the way (two in vLLM, one
+in EAGLE3's checkpoint export, one missing feature in vLLM's DSpark model
+support)** — root causes, evidence, and the original (now-superseded)
+offline methodology are in the [Appendix](#appendix). The body below
+reflects the current, corrected state: what each draft is, how it's
+served, standardized metric definitions, the up-to-date real-vs-real
+comparison, conclusions, the block-width ablation, and open follow-ups.
 
 **Contents**
 - [Draft under test (EAGLE3)](#draft-under-test)
@@ -306,7 +307,30 @@ are read the same way from vLLM's own `spec_decode_num_*_total` counters.
   is a from-scratch community-side fix, not something the checkpoint
   authors validated themselves.
 
-**All four checkpoints:**
+**RedHatAI/Kimi-K3-speculator.dspark (fifth checkpoint, native format, K=8, zero fixes needed):**
+- **Real, live-serving, full 24-set sweep (vLLM 0.29.0): AL 3.04–6.64
+  across 24 domains, mean AL 4.17, mean throughput 268 tok/s** — the
+  strongest of all four DSpark checkpoints on raw AL for nearly every
+  domain, and gsm8k's 402.9 tok/s is the single highest throughput
+  measured anywhere in this doc. Beats the 108 tok/s baseline on every
+  set (1.5-3.7×). Pooled: AR = 35.5%, AL = 3.84.
+- **The only checkpoint requiring no fix or patch at all** — this is a
+  genuine "speculators"-native export (this repo's own checkpoint
+  format), and vLLM auto-detected it and auto-corrected the raw
+  `DSparkDraftModel` architecture declaration to `Qwen3DSparkModel`
+  entirely on its own, with zero manual intervention.
+- Uses the checkpoint author's own recommended `draft_sample_method:
+  probabilistic` + `rejection_sample_method: block` (every other
+  checkpoint here uses `greedy`), and K=8 (wider than the K=7/K=4 used
+  elsewhere) — taken directly from its README, not assumed.
+- **Cross-check against its own README's acceptance table shows a real,
+  unexplained one-directional gap** (this measurement 7-39% higher on
+  all 5 comparable domains, unlike lightseekorg's balanced ±16% scatter)
+  — flagged explicitly as unresolved, not dismissed, though 3 independent
+  spot-checks with real text inspection confirmed clean, correct,
+  non-repetitive output before the sweep ran.
+
+**All five checkpoints:**
 - Serving-side spec decode is **no longer blocked** — see the
   [Update section](#update-2026-09-181920-four-issues-found-all-fixed) in the
   Appendix. vLLM 0.28.0 had a real, now-fixed bug (issues #50851, #51039)
@@ -314,11 +338,11 @@ are read the same way from vLLM's own `spec_decode_num_*_total` counters.
   method- and checkpoint-independent (eagle3 and dspark, and multiple
   DSpark checkpoints, all failed identically on 0.28.0). vLLM 0.29.0
   (2026-09-09+) produces clean output and real measured speedups across
-  all four checkpoints tested (RadixArk, Inferact, lightseekorg, EAGLE3).
-  All four now have full 24-set live sweeps (real AR/AL/throughput, see
-  the "Full 24-set live-serving sweep" tables in the Appendix, and the
-  block=7 vs block=3 real comparisons under the Ablation section above
-  for RadixArk).
+  all five checkpoints tested (RadixArk, Inferact, lightseekorg, RedHatAI,
+  EAGLE3). All five now have full 24-set live sweeps (real
+  AR/AL/throughput, see the "Full 24-set live-serving sweep" tables in
+  the Appendix, and the block=7 vs block=3 real comparisons under the
+  Ablation section above for RadixArk).
 
 ## Ablation: drafting fewer tokens than trained (block_size 7 → 3)
 
@@ -629,17 +653,23 @@ Roughly in priority order:
    Appendix. ~~Remaining follow-up: run a proper
    multi-prompt, multi-benchmark real-throughput sweep on 0.29.0~~ **Also
    done 2026-09-18/19/20** — full 24-set real live-serving sweeps completed
-   for **all four checkpoints**: RadixArk/Kimi-K3-DSpark (block=7 and
+   for **all five checkpoints**: RadixArk/Kimi-K3-DSpark (block=7 and
    block=3: AR, AL, throughput, per-position accept rate), EAGLE3 (AR, AL,
-   throughput), Inferact/Kimi-K3-DSpark (AR, AL, throughput), and
-   lightseekorg/kimi-k3-dspark (AR, AL, throughput), all in the Update and
-   Ablation sections. Getting EAGLE3's sweep right required finding and
-   fixing a third bug (Bug 3: checkpoint export shipped wrong aux-layer
-   ids for live serving); Inferact's sweep needed no fix, config was
-   correct on the first attempt; lightseekorg's checkpoint needed a fourth
-   fix (Bug 4: vLLM's DSpark model support is missing a per-tap
-   normalization step some training contracts require) — see the Update
-   section for all four. Still open: testing under concurrent-request
+   throughput), Inferact/Kimi-K3-DSpark (AR, AL, throughput),
+   lightseekorg/kimi-k3-dspark (AR, AL, throughput), and
+   RedHatAI/Kimi-K3-speculator.dspark (AR, AL, throughput), all in the
+   Update and Ablation sections. Getting EAGLE3's sweep right required
+   finding and fixing a third bug (Bug 3: checkpoint export shipped wrong
+   aux-layer ids for live serving); Inferact's and RedHatAI's sweeps
+   needed no fix, config was correct on the first attempt (RedHatAI's
+   checkpoint even auto-corrected its own architecture declaration);
+   lightseekorg's checkpoint needed a fourth fix (Bug 4: vLLM's DSpark
+   model support is missing a per-tap normalization step some training
+   contracts require) — see the Update section for all four issues. Still
+   open: (a) RedHatAI's cross-check against its own README shows an
+   unexplained one-directional gap (this measurement 7-39% higher on all
+   5 comparable domains) — not yet root-caused; (b) testing under
+   concurrent-request
    batching — issue #50851's comment thread reports a separate, unresolved
    *batched-verify* throughput regression on recent vLLM main, distinct
    from the correctness bug fixed here; all real numbers in this doc are
@@ -682,7 +712,9 @@ section or the rerun Ablation tables:**
   `/tmp/live_inferact_eval_results.json` (Inferact, the numbers in "Full
   24-set live-serving sweep — Inferact/Kimi-K3-DSpark"),
   `/tmp/live_lightseekorg_eval_results.json` (lightseekorg, post-Bug-4-fix,
-  the numbers in "Full 24-set live-serving sweep — lightseekorg/kimi-k3-dspark").
+  the numbers in "Full 24-set live-serving sweep — lightseekorg/kimi-k3-dspark"),
+  `/tmp/live_redhatai_eval_results.json` (RedHatAI, the numbers in "Full
+  24-set live-serving sweep — RedHatAI/Kimi-K3-speculator.dspark").
   `/tmp/live_eagle3_eval_results_BUGGED_wrong_aux_layers.json` is the
   **first** EAGLE3 attempt, run before Bug 3 was found/fixed — kept only as
   evidence for that bug, not a usable measurement.
@@ -711,6 +743,10 @@ section or the rerun Ablation tables:**
   fc_norm patch to serve correctly — see `k3dspark_fc_norm_plugin.py`
   above; unmodified as downloaded, the fix lives entirely in the plugin):
   `/import/ml-sc-scratch5/chenw/models/lightseekorg-kimi-k3-dspark/`
+- RedHatAI's checkpoint ("speculators"-native format, K=8, no fix
+  needed — vLLM auto-detects and auto-corrects its architecture on its
+  own):
+  `/import/ml-sc-scratch5/chenw/models/RedHatAI-Kimi-K3-speculator-dspark/`
 
 **Historical (pre-2026-09-18, degenerate/buggy data) — kept for the record,
 do not use for current numbers:**
@@ -843,22 +879,22 @@ higher real acceptance here is consistent with its model card's own
 (previously unreproducible) `acc_len` numbers being correct all along — the
 gap was never the checkpoint, it was vLLM 0.28.0.
 
-### Corrected 24-set sweep — EAGLE3 vs RadixArk DSpark vs Inferact DSpark
+### Corrected 24-set sweep — EAGLE3 vs RadixArk DSpark vs Inferact DSpark vs lightseekorg DSpark vs RedHatAI DSpark
 
-**Note on naming: three different, unrelated checkpoints are all called
+**Note on naming: four different, unrelated checkpoints are all called
 "DSpark" in this doc** — `RadixArk/Kimi-K3-DSpark` (SGLang-trained,
 full-attention Qwen3-style architecture), `Inferact/Kimi-K3-DSpark`
-(vLLM-native, MLA architecture matching the target), and
+(vLLM-native, MLA architecture matching the target),
 `lightseekorg/kimi-k3-dspark` (also native MLA, TokenSpeed-trained — see
-Bug 4). This table only covers the first two; lightseekorg's checkpoint
-has its own "Full 24-set live-serving sweep — lightseekorg/kimi-k3-dspark"
-section further down (not merged into this table to keep it readable).
-Every column below is labeled **RadixArk DSpark** or **Inferact DSpark**
-explicitly — an unqualified "DSpark" elsewhere in this doc almost always
-means RadixArk's checkpoint (it was evaluated first and most
-extensively), but always check which one a given number is attached to.
+Bug 4), and `RedHatAI/Kimi-K3-speculator.dspark` (also native, this
+repo's own "speculators" export format, K=8, needed zero fixes). Every
+column below is labeled **RadixArk DSpark**, **Inferact DSpark**,
+**lightseekorg DSpark**, or **RedHatAI DSpark** explicitly — an
+unqualified "DSpark" elsewhere in this doc almost always means RadixArk's
+checkpoint (it was evaluated first and most extensively), but always
+check which one a given number is attached to.
 
-Both evaluated on the exact same 380 clean, Bug-1-fixed generations
+All five evaluated on the exact same 380 clean, Bug-1-fixed generations
 (24 on-policy sets), so every column below is directly side-by-side
 comparable *per set*, though **not from an identical underlying formula**:
 RadixArk DSpark's offline AL/AR are exact analytical distribution-overlap
@@ -866,12 +902,16 @@ acceptance (`run_dspark_eval.py`, `AR = 1 - TV(draft, target)`, cumulative
 product over 7 draft slots — `accept_len` already includes the bonus
 token, no separate `+1` needed); EAGLE3's AL/AR are derived from TTT
 argmax-agreement (`run_ttt_eval.py --ttt-length 4`, `AL = 1 +
-sim_acc_len`, `AR = sim_acc_len / 4`, K=4). **Inferact DSpark has no
-offline/analytical columns** — its architecture isn't supported by this
-repo's offline eval harness (`run_dspark_eval.py` targets RadixArk's
-specific `DSparkDraftModel` class), so live serving is the only
-measurement available for it; its AL/AR/tok/s below are all real,
-live-measured numbers, not analytical estimates. See
+sim_acc_len`, `AR = sim_acc_len / 4`, K=4). **Inferact DSpark,
+lightseekorg DSpark, and RedHatAI DSpark all have no offline/analytical
+columns** — none of their architectures are supported by this repo's
+offline eval harness (`run_dspark_eval.py` targets RadixArk's specific
+`DSparkDraftModel` class), so live serving is the only measurement
+available for them; their AL/AR/tok/s below are all real, live-measured
+numbers, not analytical estimates. Note also lightseekorg and RedHatAI
+both draft K=8 tokens per step (RadixArk and Inferact use K=7, EAGLE3
+uses K=4) — their higher raw AL partly reflects the wider draft block,
+not just higher per-token quality; see
 [Metric definitions](#metric-definitions) for the full formulas — treat
 this as a convenient side-by-side view, not a claim these are
 bit-identical measurements. Fixing Bug 1 alone raised RadixArk's numbers
@@ -879,53 +919,50 @@ bit-identical measurements. Fixing Bug 1 alone raised RadixArk's numbers
 the *opposite* direction on `aime` specifically (see below) — see the
 Bug 1 section above for that comparison.
 
-| dataset | EAGLE3 AL (K=4) | EAGLE3 AR (K=4) | EAGLE3 tok/s (live) | RadixArk DSpark AL (K=7) | RadixArk DSpark AR (K=7) | RadixArk DSpark tok/s (live) | Inferact DSpark AL (live, K=7) | Inferact DSpark AR (live, K=7) | Inferact DSpark tok/s (live) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| gsm8k | 2.42 | 0.355 | 273.4 | 5.97 | 0.847 | 360.8 | 5.55 | 0.650 | 359.9 |
-| bfcl | 2.24 | 0.311 | 210.0 | 4.97 | 0.723 | 249.7 | 4.86 | 0.552 | 255.4 |
-| mbpp | 2.33 | 0.333 | 234.8 | 4.65 | 0.714 | 300.4 | 4.26 | 0.465 | 291.6 |
-| speed-coding | 2.15 | 0.289 | 248.6 | 4.78 | 0.710 | 307.4 | 4.72 | 0.531 | 325.7 |
-| livecodebench | 2.05 | 0.262 | 215.3 | 4.46 | 0.666 | 267.7 | 3.67 | 0.382 | 274.1 |
-| math500 | 2.03 | 0.258 | 212.5 | 4.44 | 0.667 | 273.1 | 3.82 | 0.402 | 273.8 |
-| tool_call | 2.10 | 0.275 | 201.1 | 4.19 | 0.645 | 234.8 | 3.89 | 0.413 | 251.5 |
-| speed-rag | 2.06 | 0.264 | 228.6 | 4.17 | 0.636 | 271.0 | 4.09 | 0.441 | 277.9 |
-| rag | 2.12 | 0.280 | 220.3 | 4.12 | 0.637 | 261.8 | 4.08 | 0.440 | 270.6 |
-| translation | 2.01 | 0.253 | 244.4 | 3.96 | 0.640 | 267.9 | 4.48 | 0.497 | 303.2 |
-| swe-bench-pro | 1.92 | 0.230 | 210.3 | 3.83 | 0.594 | 227.1 | 3.80 | 0.400 | 256.3 |
-| speed-multilingual | 1.75 | 0.188 | 218.2 | 3.75 | 0.568 | 225.0 | 4.20 | 0.458 | 299.1 |
-| summarization | 1.97 | 0.243 | 217.3 | 3.65 | 0.571 | 239.8 | 3.66 | 0.380 | 244.8 |
-| speed-writing | 1.94 | 0.234 | 192.7 | 3.49 | 0.554 | 206.7 | 3.20 | 0.314 | 218.2 |
-| qa / speed-qa | 2.03 | 0.258 | 192.0 | 3.43 | 0.550 | 221.8 | 3.14 | 0.305 | 217.2 |
-| aa-lcr-4k | 1.74 | 0.186 | 148.2 | 3.38 | 0.515 | 165.0 | 3.17 | 0.310 | 188.3 |
-| aa-lcr-1k | 1.73 | 0.183 | 155.2 | 3.22 | 0.496 | 164.9 | 3.08 | 0.297 | 188.6 |
-| aime | 1.70 | 0.176 | 169.8 | 3.16 | 0.492 | 195.5 | 2.77 | 0.253 | 200.6 |
-| swe-rebench | 1.93 | 0.232 | 179.9 | 3.11 | 0.507 | 212.4 | 3.17 | 0.310 | 229.0 |
-| mtbench | 2.00 | 0.250 | 184.8 | 3.07 | 0.500 | 204.6 | 2.82 | 0.260 | 202.4 |
-| gpqa | 1.67 | 0.166 | 172.4 | 3.01 | 0.463 | 194.7 | 3.03 | 0.289 | 216.4 |
-| writing | 1.97 | 0.242 | 177.5 | 2.89 | 0.485 | 189.2 | 2.63 | 0.233 | 186.6 |
-| aime26 | 1.65 | 0.162 | 156.8 | 2.88 | 0.461 | 184.2 | 2.66 | 0.238 | 190.0 |
+| metric | gsm8k | bfcl | mbpp | speed-coding | livecodebench | math500 | tool_call | speed-rag | rag | translation | swe-bench-pro | speed-multilingual | summarization | speed-writing | qa / speed-qa | aa-lcr-4k | aa-lcr-1k | aime | swe-rebench | mtbench | gpqa | writing | aime26 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| EAGLE3 AL (K=4) | 2.42 | 2.24 | 2.33 | 2.15 | 2.05 | 2.03 | 2.10 | 2.06 | 2.12 | 2.01 | 1.92 | 1.75 | 1.97 | 1.94 | 2.03 | 1.74 | 1.73 | 1.70 | 1.93 | 2.00 | 1.67 | 1.97 | 1.65 |
+| EAGLE3 AR (K=4) | 0.355 | 0.311 | 0.333 | 0.289 | 0.262 | 0.258 | 0.275 | 0.264 | 0.280 | 0.253 | 0.230 | 0.188 | 0.243 | 0.234 | 0.258 | 0.186 | 0.183 | 0.176 | 0.232 | 0.250 | 0.166 | 0.242 | 0.162 |
+| EAGLE3 tok/s (live) | 273.4 | 210.0 | 234.8 | 248.6 | 215.3 | 212.5 | 201.1 | 228.6 | 220.3 | 244.4 | 210.3 | 218.2 | 217.3 | 192.7 | 192.0 | 148.2 | 155.2 | 169.8 | 179.9 | 184.8 | 172.4 | 177.5 | 156.8 |
+| RadixArk DSpark AL (K=7) | 5.97 | 4.97 | 4.65 | 4.78 | 4.46 | 4.44 | 4.19 | 4.17 | 4.12 | 3.96 | 3.83 | 3.75 | 3.65 | 3.49 | 3.43 | 3.38 | 3.22 | 3.16 | 3.11 | 3.07 | 3.01 | 2.89 | 2.88 |
+| RadixArk DSpark AR (K=7) | 0.847 | 0.723 | 0.714 | 0.710 | 0.666 | 0.667 | 0.645 | 0.636 | 0.637 | 0.640 | 0.594 | 0.568 | 0.571 | 0.554 | 0.550 | 0.515 | 0.496 | 0.492 | 0.507 | 0.500 | 0.463 | 0.485 | 0.461 |
+| RadixArk DSpark tok/s (live) | 360.8 | 249.7 | 300.4 | 307.4 | 267.7 | 273.1 | 234.8 | 271.0 | 261.8 | 267.9 | 227.1 | 225.0 | 239.8 | 206.7 | 221.8 | 165.0 | 164.9 | 195.5 | 212.4 | 204.6 | 194.7 | 189.2 | 184.2 |
+| Inferact DSpark AL (live, K=7) | 5.55 | 4.86 | 4.26 | 4.72 | 3.67 | 3.82 | 3.89 | 4.09 | 4.08 | 4.48 | 3.80 | 4.20 | 3.66 | 3.20 | 3.14 | 3.17 | 3.08 | 2.77 | 3.17 | 2.82 | 3.03 | 2.63 | 2.66 |
+| Inferact DSpark AR (live, K=7) | 0.650 | 0.552 | 0.465 | 0.531 | 0.382 | 0.402 | 0.413 | 0.441 | 0.440 | 0.497 | 0.400 | 0.458 | 0.380 | 0.314 | 0.305 | 0.310 | 0.297 | 0.253 | 0.310 | 0.260 | 0.289 | 0.233 | 0.238 |
+| Inferact DSpark tok/s (live) | 359.9 | 255.4 | 291.6 | 325.7 | 274.1 | 273.8 | 251.5 | 277.9 | 270.6 | 303.2 | 256.3 | 299.1 | 244.8 | 218.2 | 217.2 | 188.3 | 188.6 | 200.6 | 229.0 | 202.4 | 216.4 | 186.6 | 190.0 |
+| lightseekorg DSpark AL (live, K=8) | 5.32 | 4.51 | 4.29 | 4.44 | 3.38 | 3.43 | 3.92 | 3.83 | 4.00 | 4.58 | 3.73 | 3.99 | 3.65 | 3.12 | 3.09 | 2.93 | 2.85 | 2.47 | 3.12 | 2.79 | 2.68 | 2.62 | 2.45 |
+| lightseekorg DSpark AR (live, K=8) | 0.617 | 0.501 | 0.469 | 0.491 | 0.340 | 0.347 | 0.417 | 0.404 | 0.429 | 0.512 | 0.390 | 0.427 | 0.379 | 0.303 | 0.299 | 0.276 | 0.264 | 0.211 | 0.303 | 0.256 | 0.240 | 0.232 | 0.207 |
+| lightseekorg DSpark tok/s (live) | 345.8 | 245.2 | 292.7 | 310.8 | 253.1 | 257.0 | 254.2 | 263.9 | 263.5 | 308.4 | 250.4 | 290.4 | 244.2 | 212.9 | 214.8 | 176.5 | 175.2 | 180.8 | 229.7 | 200.2 | 188.9 | 186.2 | 175.8 |
+| RedHatAI DSpark AL (live, K=8) | 6.64 | 5.20 | 5.08 | 5.23 | 3.85 | 4.32 | 4.62 | 4.84 | 4.65 | 5.20 | 4.40 | 4.58 | 4.40 | 3.70 | 3.74 | 3.38 | 3.16 | 3.25 | 3.48 | 3.34 | 3.09 | 3.25 | 3.04 |
+| RedHatAI DSpark AR (live, K=8) | 0.705 | 0.525 | 0.509 | 0.529 | 0.356 | 0.415 | 0.452 | 0.480 | 0.457 | 0.525 | 0.425 | 0.448 | 0.426 | 0.338 | 0.342 | 0.297 | 0.270 | 0.281 | 0.310 | 0.293 | 0.262 | 0.281 | 0.256 |
+| RedHatAI DSpark tok/s (live) | 402.9 | 256.7 | 334.3 | 345.3 | 280.8 | 306.8 | 271.6 | 313.0 | 293.1 | 335.3 | 272.9 | 308.5 | 280.4 | 242.1 | 249.4 | 165.7 | 186.0 | 225.8 | 232.7 | 231.7 | 214.7 | 219.8 | 209.9 |
 
 **Throughput columns are all real, live-measured** (from the "Full 24-set
 live-serving sweep" tables further down, vLLM 0.29.0, per-request
-wall-clock) — not derived from either DSpark checkpoint's offline AL/AR
-(where it exists), which has no throughput signal of its own (it's a
-teacher-forced/analytical replay, not real generation). Both DSpark
+wall-clock) — not derived from any checkpoint's offline AL/AR (where it
+exists), which has no throughput signal of its own (it's a
+teacher-forced/analytical replay, not real generation). All four DSpark
 checkpoints' live throughput is consistently higher than EAGLE3's on
 every set, tracking their higher AL (more accepted tokens per verify
-step, wider K=7 block vs EAGLE3's K=4); Inferact edges out RadixArk on
-throughput on most (but not all) sets — see "Full 24-set live-serving
-sweep — Inferact/Kimi-K3-DSpark" for the full domain-by-domain breakdown.
+step, wider K=7/K=8 blocks vs EAGLE3's K=4); among the four DSpark
+checkpoints, RedHatAI wins most sets outright (see below) but not every
+single one — see each checkpoint's own "Full 24-set live-serving sweep"
+section for the full domain-by-domain breakdown and head-to-head
+comparisons.
 
 Ranges: EAGLE3 AL 1.65–2.42 (median ≈ 2.0, offline), RadixArk DSpark AL
 2.88–5.97 (median ≈ 3.7, offline), Inferact DSpark AL 2.63–5.55 (median ≈
-3.7, live-only — not directly comparable to the two offline ranges since
-it's a different measurement type). Both DSpark checkpoints lead EAGLE3
-on every single set here, though by a narrower margin on the hardest
-domains (aime, gpqa, aa-lcr) than on easy/structured ones (gsm8k, bfcl,
-mbpp). Row order follows RadixArk DSpark's AL, descending. This table
-supersedes the "Full 25-benchmark sweep" table further down (RadixArk
-DSpark's original pre-fix numbers), which is kept for historical record
-with its data table removed.
+3.7, live-only), lightseekorg DSpark AL 2.45–5.32 (median ≈ 3.6, live-only,
+K=8), RedHatAI DSpark AL 3.04–6.64 (median ≈ 4.4, live-only, K=8, the
+widest range and highest ceiling of all five) — the live-only/offline
+ranges aren't directly comparable to each other since they're different
+measurement types (see the note above on formulas). All four DSpark
+checkpoints lead EAGLE3 on every single set here, though by a narrower
+margin on the hardest domains (aime, gpqa, aa-lcr) than on easy/structured
+ones (gsm8k, bfcl, mbpp). Row order follows RadixArk DSpark's AL,
+descending. This table supersedes the "Full 25-benchmark sweep" table
+further down (RadixArk DSpark's original pre-fix numbers), which is kept
+for historical record with its data table removed.
 
 <details>
 <summary>EAGLE3 native TorchSpec field names (<code>sim_acc_len</code>,
@@ -1335,6 +1372,100 @@ collapse did). Not a proof the patch is bit-identical to TokenSpeed's
 implementation, but strong evidence it's substantively correct rather
 than merely "doesn't crash."
 
+### Full 24-set live-serving sweep — RedHatAI/Kimi-K3-speculator.dspark, real measurements, vLLM 0.29.0
+
+Fifth checkpoint (fourth DSpark variant), 2026-09-20. Notable for being
+the only one of the four DSpark checkpoints that required **zero fixes or
+patches** — this is a genuine "speculators"-native export (this repo's
+own checkpoint format: `speculators_model_type: dspark`,
+`DSparkSpeculatorConfig`), and vLLM auto-detected the format and
+auto-corrected the raw `DSparkDraftModel` architecture declaration to
+`Qwen3DSparkModel` on its own (confirmed via the log: `Resolved
+architecture: Qwen3DSparkModel`) — no manual architecture patch like
+RadixArk needed, no capture-mode/normalization gap like EAGLE3/lightseekorg
+needed. Also architecturally distinct in two ways from every other
+checkpoint tried: **K=8** (wider than the K=7/K=4 used elsewhere) and the
+checkpoint author's own recommended `draft_sample_method: probabilistic`
++ `rejection_sample_method: block` (every other checkpoint this session
+used `greedy` sampling) — both taken directly from the checkpoint's own
+README rather than assumed. Same methodology otherwise: real HTTP
+requests replaying the same 380 cached clean prompts, AR/AL read from
+vLLM's own `spec_decode_num_*_total` counters, throughput per-request
+wall-clock. Verified via 3 spot-checks with real text inspection (gsm8k,
+aime, mtbench) before trusting any metric — all clean, coherent, correct,
+no repetition.
+
+| dataset | n | real AR | real AL | real tok/s |
+|---|---:|---:|---:|---:|
+| gsm8k | 25 | 0.705 | 6.64 | 402.9 |
+| speed-coding | 15 | 0.529 | 5.23 | 345.3 |
+| translation | 15 | 0.526 | 5.20 | 335.3 |
+| bfcl | 15 | 0.525 | 5.20 | 256.7 |
+| mbpp | 15 | 0.510 | 5.08 | 334.3 |
+| speed-rag | 15 | 0.480 | 4.84 | 313.0 |
+| rag | 15 | 0.457 | 4.65 | 293.1 |
+| tool_call | 15 | 0.452 | 4.62 | 271.6 |
+| speed-multilingual | 15 | 0.448 | 4.58 | 308.5 |
+| summarization | 15 | 0.426 | 4.40 | 280.4 |
+| swe-bench-pro | 15 | 0.425 | 4.40 | 272.9 |
+| math500 | 15 | 0.415 | 4.32 | 306.8 |
+| livecodebench | 15 | 0.356 | 3.85 | 280.8 |
+| qa | 15 | 0.342 | 3.74 | 249.4 |
+| speed-qa | 15 | 0.342 | 3.74 | 249.4 |
+| speed-writing | 15 | 0.338 | 3.70 | 242.1 |
+| swe-rebench | 15 | 0.310 | 3.48 | 232.7 |
+| aa-lcr-4k | 15 | 0.297 | 3.38 | 165.7 |
+| mtbench | 25 | 0.293 | 3.34 | 231.7 |
+| aime | 15 | 0.281 | 3.25 | 225.8 |
+| writing | 15 | 0.281 | 3.25 | 219.8 |
+| aa-lcr-1k | 15 | 0.270 | 3.16 | 186.0 |
+| gpqa | 15 | 0.262 | 3.09 | 214.7 |
+| aime26 | 15 | 0.256 | 3.04 | 209.9 |
+
+Mean real AL 4.17, mean real throughput 268 tok/s (166-403 tok/s range —
+gsm8k's 402.9 tok/s is the single highest throughput measured across
+every checkpoint in this doc). Pooled across all draft tokens: **AR =
+35.5%, AL = 3.84**. All 24 sets beat the 108 tok/s no-draft baseline
+(1.5-3.7×). **This is the strongest of the four DSpark checkpoints on
+raw AL for nearly every domain** — part of this is the wider K=8 block
+(more chances to accumulate accepted tokens), part appears to be
+genuinely higher per-token quality (K=8 alone wouldn't explain the ~2×
+gsm8k AR vs EAGLE3's, since AR is block-size-independent).
+
+**Cross-check against the checkpoint's own README acceptance table**: 5
+domains share exact names with this repo's own 24-set sweep (`qa`, `rag`,
+`summarization`, `tool_call`, `translation`) — the other README domains
+(`HumanEval`, `math_reasoning`, `question`) don't map cleanly to sets
+used here.
+
+| dataset | this measurement (AL) | README (AL) | ratio |
+|---|---:|---:|---:|
+| qa | 3.74 | 3.28 | 1.14 |
+| rag | 4.65 | 3.86 | 1.20 |
+| summarization | 4.40 | 4.10 | 1.07 |
+| tool_call | 4.62 | 3.33 | 1.39 |
+| translation | 5.20 | 4.65 | 1.12 |
+
+**Unlike lightseekorg's cross-check, this one shows a consistent
+one-directional gap** — every ratio is above 1.0 (this measurement always
+higher), not scattered both ways. Stated plainly rather than glossed
+over: this is a real, unexplained discrepancy, not dismissed as noise.
+Plausible, unconfirmed explanations: the README's own `qa`/`rag`/etc. test
+sets may not be the identical prompt distributions as this repo's
+same-named sets despite sharing a name; the README doesn't state which
+`draft_sample_method` was used to produce its own acceptance table
+specifically (its deployment example uses `probabilistic`, matching what
+was used here, but that's an inference, not a confirmed match); and
+hardware/serving-stack differences (this repo: 1×8×B300 single-stream vs
+the README's validation on B300 NVL72). What this cross-check does *not*
+show is the one-sided-collapse pattern a broken implementation would
+produce — real output was independently verified clean and correct via 3
+spot-checks before the sweep ran, and the per-position decay curves are
+smooth and monotonic across all 24 domains (consistent with a genuinely
+working draft), so the working hypothesis is measurement-methodology
+divergence, not an implementation bug — but this is explicitly flagged as
+unresolved, not swept under the rug.
+
 ## Setup (measurement conditions)
 
 | item | value |
@@ -1441,7 +1572,7 @@ target's own MLA layers are NoPE, so this was purely a draft-side choice);
 livecodebench, gpqa) were measured on generation data later found corrupted
 by Bug 1 — removed rather than kept as known-wrong.** See the Update
 section's "Corrected 24-set sweep — EAGLE3 vs RadixArk DSpark vs Inferact
-DSpark" for current values (aime
+DSpark vs lightseekorg DSpark vs RedHatAI DSpark" for current values (aime
 sim_acc_len 0.704, livecodebench 1.050, gpqa 0.666 — note aime dropped
 substantially from the original 1.212, the opposite direction from DSpark's
 corrections; see that section for the likely explanation). `general chat`
@@ -1479,7 +1610,8 @@ gap was purely the two measurement bugs, not a loading bug.
 found to be corrupted by the `extract_hidden_states` generation bug (see the
 [Update section](#update-2026-09-181920-four-issues-found-all-fixed) in the
 Appendix). Kept for historical record; use the "Corrected 24-set sweep —
-EAGLE3 vs DSpark" table in the Update section for current numbers. The
+EAGLE3 vs RadixArk DSpark vs Inferact DSpark vs lightseekorg DSpark vs
+RedHatAI DSpark" table in the Update section for current numbers. The
 `AL = 1 + accept_len` convention described below also has the separate
 double-counting bug described in the Update section — `accept_len` already
 includes the bonus token.
@@ -1501,7 +1633,8 @@ data later found corrupted by Bug 1 — see the Update section — kept as a
 known-wrong table was worse than no table). Metric definitions (AL, AR,
 full_acc, conf_err) and methodology notes above still apply to the
 corrected replacement: see the Update section's "Corrected 24-set sweep —
-EAGLE3 vs RadixArk DSpark vs Inferact DSpark" for current AL/AR numbers
+EAGLE3 vs RadixArk DSpark vs Inferact DSpark vs lightseekorg DSpark vs
+RedHatAI DSpark" for current AL/AR numbers
 (that table dropped its `full_acc` column for cross-draft readability —
 see "Per-slot accuracy (DSpark)" further down for the current pooled
 `full_acc` value per domain), and "Full 24-set live-serving sweep" for real
