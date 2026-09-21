@@ -128,6 +128,41 @@ samples, no errors, and no skips. Ten RDU requests reached the 4,096-token
 limit, versus eight on GPU. RDU decode tok/s is intentionally excluded because
 it is not comparable to GPU decode tok/s.
 
+#### RDU launch details
+
+- Target checkpoint:
+  `/import/mlcp-sc-nlp/gemma-4/gemma-4-31b-it-pad5632-kv8-prefix`
+- MTP assistant checkpoint:
+  `/import/ml-sc-nlpcheckpoints-scratch3/weip/gemma-4-31b-it-assistant-pad5632-prefix-split`
+- k=5 CoE PEF:
+  `/import/snvm-sc-podscratch4/weip/gemma4/0908_sampling/apps/gemma4_31b_full_layers_tp16_ssss_cg_ss_kv_ss_tg_parallel_sdk_bf16_mtp_5/coe_pef_bsBS_max8_ssSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_MTP_5_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072.pef`
+- SambaFlow installation:
+  `/import/snvm-sc-scratch2/weip/sambaflow_oA0pU8PUsZ`
+
+The full evaluation was launched from the `speculators` repository root with:
+
+```bash
+export INSTALL_ROOT=/import/snvm-sc-scratch2/weip/sambaflow_oA0pU8PUsZ
+export CKPT=/import/mlcp-sc-nlp/gemma-4/gemma-4-31b-it-pad5632-kv8-prefix
+export ASSISTANT=/import/ml-sc-nlpcheckpoints-scratch3/weip/gemma-4-31b-it-assistant-pad5632-prefix-split
+export PEF=/import/snvm-sc-podscratch4/weip/gemma4/0908_sampling/apps/gemma4_31b_full_layers_tp16_ssss_cg_ss_kv_ss_tg_parallel_sdk_bf16_mtp_5/coe_pef_bsBS_max8_ssSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_MTP_5_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072.pef
+export RESULT_DIR=$PWD/scripts/evaluate/experiments/results/gemma4-31b-rdu-k5-corrected
+export LOG_DIR=$PWD/scripts/evaluate/rdu_mtp_eval/logs-corrected
+export NUM_SAMPLES=50
+export MAX_TOKENS=4096
+export TIMEOUT=08:00:00
+export QOS=5
+export NODELIST=sc3-s240
+export EXCLUDE=sc3-s339,sc3-s345
+./scripts/evaluate/rdu_mtp_eval/submit_snrdu.sh
+```
+
+`NODELIST` was an availability-specific pin to a 16-chip SN40 node with
+`snruntime=1.38.0`; it can be changed to another compatible SN40-16 node.
+Leaving `BENCHMARKS` unset runs the complete 25-benchmark suite. The harness
+writes per-sample details and the aggregate summary under `RESULT_DIR`, while
+the `snrdu` output is written to `$LOG_DIR/snrdu.log`.
+
 | benchmark | n GPU / RDU | GPU AL | RDU AL | Δ AL | GPU AR | RDU AR | Δ AR |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | aime | 30 / 30 | 4.848 | 4.843 | -0.005 | 0.7696 | 0.7687 | -0.0009 |
