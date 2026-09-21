@@ -133,6 +133,7 @@ class DSparkDraftModel(DFlashDraftModel):
         confidence_head_alpha: float = 1.0,
         per_position_loss_weight: str = "fixed-exp-decay",
         dpace_alpha: float = 0.5,
+        truncate_k: int | None = None,
         **kwargs,
     ):
         hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (
@@ -208,5 +209,6 @@ class DSparkDraftModel(DFlashDraftModel):
             per_position_loss_weight=per_position_loss_weight,
             dpace_alpha=dpace_alpha,
             sample_from_anchor=self.config.sample_from_anchor,
+            truncate_k=truncate_k,
         )
         return None, loss, metrics
