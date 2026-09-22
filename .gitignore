@@ -236,3 +236,4 @@ scripts/evaluate/experiments/results/gemma4-31b-agentx/eagle3_k5/users8/trace_re
 google/
 *.json
 *.yaml
+scripts/evaluate/rdu_mtp_eval/env_*

@@ -761,11 +761,16 @@ do not use for current numbers:**
 
 ## Appendix
 
-Bug history, superseded offline methodology, and the original (later
-corrected) per-draft result tables. Everything above this point reflects
-the current, corrected state; everything below predates one or more of
-the three bugs found during this evaluation, or documents how they were
-found.
+Bug history and the original (later corrected) per-draft result tables.
+**Note on what's actually current vs. historical within this appendix**:
+the "Update" section immediately below (Bug 1-4, the corrected 24-set
+sweep, and all five checkpoints' "Full 24-set live-serving sweep" tables)
+holds the *current, authoritative* numbers — it documents how the bugs
+were found and fixed, and supersedes the tables above this point in the
+main body. The genuinely historical, pre-bug-fix material (measured on
+vLLM 0.28.0, before Bugs 1-2 were fixed) begins further down at "Setup
+(measurement conditions)" — each section there is explicitly marked
+historical/resolved inline.
 
 ## Update (2026-09-18/19/20): four issues found, all fixed
 
@@ -925,7 +930,7 @@ Bug 1 section above for that comparison.
 | EAGLE3 AR (K=4) | 0.355 | 0.311 | 0.333 | 0.289 | 0.262 | 0.258 | 0.275 | 0.264 | 0.280 | 0.253 | 0.230 | 0.188 | 0.243 | 0.234 | 0.258 | 0.186 | 0.183 | 0.176 | 0.232 | 0.250 | 0.166 | 0.242 | 0.162 |
 | EAGLE3 tok/s (live) | 273.4 | 210.0 | 234.8 | 248.6 | 215.3 | 212.5 | 201.1 | 228.6 | 220.3 | 244.4 | 210.3 | 218.2 | 217.3 | 192.7 | 192.0 | 148.2 | 155.2 | 169.8 | 179.9 | 184.8 | 172.4 | 177.5 | 156.8 |
 | RadixArk DSpark AL (K=7) | 5.97 | 4.97 | 4.65 | 4.78 | 4.46 | 4.44 | 4.19 | 4.17 | 4.12 | 3.96 | 3.83 | 3.75 | 3.65 | 3.49 | 3.43 | 3.38 | 3.22 | 3.16 | 3.11 | 3.07 | 3.01 | 2.89 | 2.88 |
-| RadixArk DSpark AR (K=7) | 0.847 | 0.723 | 0.714 | 0.710 | 0.666 | 0.667 | 0.645 | 0.636 | 0.637 | 0.640 | 0.594 | 0.568 | 0.571 | 0.554 | 0.550 | 0.515 | 0.496 | 0.492 | 0.507 | 0.500 | 0.463 | 0.485 | 0.461 |
+| RadixArk DSpark AR (K=7) | 0.847 | 0.723 | 0.714 | 0.710 | 0.666 | 0.667 | 0.645 | 0.636 | 0.637 | 0.640 | 0.594 | 0.568 | 0.571 | 0.554 | 0.550 | 0.515 | 0.496 | 0.492 | 0.507 | 0.500 | 0.485 | 0.463 | 0.461 |
 | RadixArk DSpark tok/s (live) | 360.8 | 249.7 | 300.4 | 307.4 | 267.7 | 273.1 | 234.8 | 271.0 | 261.8 | 267.9 | 227.1 | 225.0 | 239.8 | 206.7 | 221.8 | 165.0 | 164.9 | 195.5 | 212.4 | 204.6 | 194.7 | 189.2 | 184.2 |
 | Inferact DSpark AL (live, K=7) | 5.55 | 4.86 | 4.26 | 4.72 | 3.67 | 3.82 | 3.89 | 4.09 | 4.08 | 4.48 | 3.80 | 4.20 | 3.66 | 3.20 | 3.14 | 3.17 | 3.08 | 2.77 | 3.17 | 2.82 | 3.03 | 2.63 | 2.66 |
 | Inferact DSpark AR (live, K=7) | 0.650 | 0.552 | 0.465 | 0.531 | 0.382 | 0.402 | 0.413 | 0.441 | 0.440 | 0.497 | 0.400 | 0.458 | 0.380 | 0.314 | 0.305 | 0.310 | 0.297 | 0.253 | 0.310 | 0.260 | 0.289 | 0.233 | 0.238 |
@@ -1342,7 +1347,7 @@ offline harness.
 | aime | 15 | 0.211 | 2.47 | 180.8 |
 | aime26 | 15 | 0.207 | 2.45 | 175.8 |
 
-Mean real AL 3.60, mean real throughput 244 tok/s. All 24 sets beat the
+Mean real AL 3.51, mean real throughput 239 tok/s. All 24 sets beat the
 108 tok/s no-draft baseline.
 
 **Cross-check against the checkpoint's own README benchmark table**
