@@ -1,0 +1,53 @@
+# Nemo782k continued-training run: did new data beat the old-data plateau?
+# Val says +0.5 accept_len (4.19 -> 4.69) and still climbing; this measures it
+# on the standard benchmarks. Reference points already on the B200 table:
+#   anchorT ep14 (old data, the seed): k8 4.55 mean / aime 4.97-5.0
+#   RedHat k7: 3.8-4.1
+#
+# ep20 is included as a mid-trajectory point (data-scaling curve), ep24 = final.
+# !! True-trained checkpoints: REQUIRES the patched vllm (dspark-host venv).
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-nemo
+
+experiments:
+  - name: nemo_ep24_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_anchorT_nemo782k/checkpoints/24
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: nemo_ep24_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_anchorT_nemo782k/checkpoints/24
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  - name: nemo_ep20_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_anchorT_nemo782k/checkpoints/20
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
