@@ -6,7 +6,8 @@ evals, and two training-time bugs found & fixed here: the **shared-KV attention
 leak** (§2) and a **hidden-state off-by-one** (§4), plus the feature-distillation
 quality push, the six-way 25-benchmark profile (§5), and the 400k DSpark
 scale-up (§6), its results (§7), and the continuation run that shows more
-epochs are exhausted (§8).
+epochs are exhausted (§8), and a production-style workload where the
+stock assistant wins decisively (§9).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -604,3 +605,52 @@ Continuation wins 16 of 24 benchmarks — consistent, but the margin is
 _Checkpoint: `output/gemma4_26b_dspark_400k_cont/dspark/checkpoints/checkpoint_best`
 (epoch 3). Results: `scripts/evaluate/experiments/results/gemma4-26b-cont400k-eval/`. Launcher:
 [`examples/train/_continue_400k_detached.sh`](../../examples/train/_continue_400k_detached.sh)._
+
+---
+
+## 9. Production-style workload: `sc1_delta` — the assistant wins decisively
+
+The 26-benchmark suite (§5-§8) is public benchmarks with short prompts. This
+section evaluates the same drafts on **`/nvmedata/data/sc1_delta_v2.jsonl`**
+(MAI Profile V3 delta interest extraction): long, heavily structured
+production prompts — **mean 3879 prompt tokens** (max ~16k) producing
+**~1196 output tokens**. 100 prompts, **single A100, tp=1**, greedy,
+vLLM 0.28. Registered as the `sc1_delta` benchmark in both eval runners.
+
+| config | decode tok/s | AL | AR | QPS | output tok/s | latency (s) | TTFT (s) |
+|---|---|---|---|---|---|---|---|
+| baseline | 118.2 | — | — | 0.096 | 114.3 | 10.47 | 0.36 |
+| DSpark 400k+cont (k=7) | 135.2 | 2.48 | 0.211 | 0.109 | 130.4 | 9.20 | 0.33 |
+| **vanilla assistant (k=5)** | **230.7** | **5.06** | **0.812** | **0.177** | **214.4** | **5.64** | 0.40 |
+
+| speedup vs baseline | decode | QPS | output throughput |
+|---|---|---|---|
+| DSpark 400k+cont | 1.14x | 1.14x | 1.14x |
+| **vanilla assistant** | **1.95x** | **1.86x** | **1.88x** |
+
+### Takeaways
+
+- **This reverses the suite result.** On the 26 public benchmarks the two were
+  near-tied (DSpark 1.94x vs vanilla 1.89x, §8). Here the assistant delivers
+  **1.88x** output throughput against DSpark's
+  **1.14x** — about **64% more throughput**.
+- **The acceptance numbers show why:** vanilla reaches **AL 5.06 of a
+  possible 6 at 81% acceptance**, while DSpark manages
+  **AL 2.48 of 8 at 21%**. Not a serving bug — the same
+  DSpark checkpoint serves at AL ~3.7 across the public suite with this exact
+  setup. It is a **domain mismatch**: sc1_delta is long structured extraction
+  with a fixed system prompt, unlike the kimi-regen math/chat training mix, and
+  the 32k pruned draft vocab likely compounds it on structured tokens. The
+  assistant carries the full 262k vocab and Google's broad training.
+- **QPS gains trail decode gains** (1.86x vs
+  1.95x) because prefill of ~3879-token prompts does not
+  accelerate — speculation only speeds the decode phase. On prompt-heavy
+  traffic, judge drafts by QPS / output throughput, not decode tok/s.
+- **Deployment read: for traffic like sc1_delta, ship the vanilla assistant.**
+  A DSpark draft would need in-domain training data (and a larger draft vocab)
+  before competing here. The §7 lesson generalizes: our from-scratch drafts win
+  where their training distribution matches, and lose where it does not.
+- Batch=1 figures. The concurrency picture is a separate question (AgentX).
+
+_Data: `/nvmedata/data/sc1_delta_v2.jsonl` -> `mtp_server_eval/data/sc1_delta.jsonl`
+(100 of 1000 prompts sampled). Results: `scripts/evaluate/experiments/results/sc1-{base,dspark,vanilla}/`._
