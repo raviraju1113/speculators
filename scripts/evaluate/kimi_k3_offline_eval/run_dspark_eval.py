@@ -91,6 +91,8 @@ def build_model(draft_dir: str, verifier: str, max_anchors: int) -> DSparkDraftM
             k: v for k, v in rc["rope_parameters"].items() if k != "rope_theta"
         },
         layer_types=rc["layer_types"],
+        sliding_window=rc.get("sliding_window"),
+        use_sliding_window=rc.get("use_sliding_window", False),
         attention_bias=rc["attention_bias"],
         tie_word_embeddings=False,
     )
@@ -110,6 +112,18 @@ def build_model(draft_dir: str, verifier: str, max_anchors: int) -> DSparkDraftM
         confidence_head_alpha=1.0,
         total_seq_len=32768,
         mask_token_id=rc["dflash_config"]["mask_token_id"],
+        # Default True (bidirectional same-block attention) to match vLLM's own
+        # update_dflash conversion convention (algos.py:
+        # `causal = not config_dict.get("sliding_window_non_causal", True)`).
+        # Without this, non_causal = (sliding_window is None) or
+        # sliding_window_non_causal in dflash/attention.py silently flips
+        # same-block attention from bidirectional to causal whenever
+        # sliding_window is set, coupling two unrelated behaviors together.
+        # Passing this explicitly (rather than relying on from_training_args's
+        # own False default) keeps the baseline (sliding_window=None) run
+        # unaffected either way, since `sliding_window is None` alone already
+        # forces non_causal=True there.
+        sliding_window_non_causal=rc.get("sliding_window_non_causal", True),
     )
     sd = load_file(Path(draft_dir) / "model.safetensors")
     missing, unexpected = model.load_state_dict(sd, strict=False)

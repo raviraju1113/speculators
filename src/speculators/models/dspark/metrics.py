@@ -174,6 +174,12 @@ def compute_metrics(
             # -- both the cumprod (nonlinear, so must be resliced pre-sum, not
             # derived from the already-pooled accept_len above) and the flat
             # per-position mean.
+            n_draft_slots = int(draft_mask.shape[1])  # block_size - start_pos
+            if truncate_k < 1 or truncate_k > n_draft_slots:
+                raise ValueError(
+                    f"truncate_k={truncate_k} must be in [1, {n_draft_slots}] "
+                    f"(block_size={block_size}, start_pos={start_pos})"
+                )
             trunc_prefix = accept_prefix[:, :truncate_k]
             trunc_mask = draft_mask[:, :truncate_k]
             trunc_block_valid = (trunc_mask.sum(dim=-1) > 0).to(accept_rate.dtype)

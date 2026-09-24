@@ -2,6 +2,7 @@
 
 from functools import partial
 
+import pytest
 import torch
 
 from speculators.losses import resolve_loss_config
@@ -208,3 +209,25 @@ class TestComputeMetrics:
             assert key in metrics
         # all metric values must be tensors (so dist.reduce works in the trainer)
         assert all(torch.is_tensor(v) for v in metrics.values())
+
+    def test_truncate_k_rejects_out_of_range(self):
+        ids = torch.tensor([[0, 1, 0, 2]])
+        logits = _ids_to_logits(ids, 8)
+        targets = logits.clone()
+        loss_mask = torch.ones(1, 4, dtype=torch.float32)
+        # sample_from_anchor=True -> start_pos=0, n_draft_slots = block_size = 2
+        kwargs = dict(
+            logits=logits,
+            targets=targets,
+            confidence_logits=None,
+            loss_mask=loss_mask,
+            block_size=2,
+            loss_config=_DEFAULT_LOSS,
+        )
+        with pytest.raises(ValueError, match="truncate_k"):
+            compute_metrics(**kwargs, truncate_k=0)
+        with pytest.raises(ValueError, match="truncate_k"):
+            compute_metrics(**kwargs, truncate_k=3)
+        _, metrics = compute_metrics(**kwargs, truncate_k=1)
+        assert "accept_len_trunc_sum" in metrics
+        assert "accept_rate_trunc_sum" in metrics

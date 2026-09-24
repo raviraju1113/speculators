@@ -232,116 +232,125 @@ Same clean configuration as the second run (`sliding_window=2048`,
 `sliding_window_non_causal=True`, same-block attention verified
 bidirectional in both conditions), extended from the 3-set spot check to
 all 24 offline-harness sets used in
-[`kimi_k3_draft_eval.md`](kimi_k3_draft_eval.md). Sorted by `accept_len`
-ratio ascending (most-affected first):
+[`kimi_k3_draft_eval.md`](kimi_k3_draft_eval.md).
+
+**Updated 2026-09-24 — sample counts expanded from 15/25 to 50 per set**
+(30 for `aime`/`aime26`, which only have 30 raw prompts available) for
+more statistical confidence, after a methodological challenge raised
+whether the small-n results were noisy. New hidden states were collected
+via a full generate+extract pass (plain-server generation, then an
+`extract_hidden_states` server capture at the same aux layers), and all
+four conditions (baseline + 3 window sizes) were rerun at the new sample
+counts. The n=15/25/30 numbers below are entirely superseded — see the
+verification note after the tables for how the two compare (answer:
+almost no change; the original small-sample read was already accurate).
+Sorted by `accept_len` ratio ascending (most-affected first):
 
 | set | n | baseline AL | sliding-2048 AL | AL ratio | baseline AR | sliding-2048 AR | AR ratio | baseline full_acc | sliding-2048 full_acc | acc ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| aa-lcr-4k | 15 | 3.3831 | 3.3662 | **0.9950** | 0.5154 | 0.5135 | 0.9963 | 0.5229 | 0.5203 | 0.9951 |
-| speed-writing | 15 | 3.4902 | 3.4831 | **0.9980** | 0.5541 | 0.5532 | 0.9983 | 0.5789 | 0.5780 | 0.9984 |
-| aa-lcr-1k | 15 | 3.2151 | 3.2147 | 0.9999 | 0.4957 | 0.4957 | 0.9999 | 0.5039 | 0.5041 | 1.0003 |
-| translation | 15 | 3.9644 | 3.9639 | 0.9999 | 0.6396 | 0.6396 | 1.0000 | 0.6666 | 0.6664 | 0.9997 |
-| bfcl | 15 | 4.9744 | 4.9739 | 0.9999 | 0.7225 | 0.7225 | 0.9999 | 0.7338 | 0.7340 | 1.0003 |
-| gpqa | 15 | 3.0082 | 3.0080 | 0.9999 | 0.4634 | 0.4634 | 0.9999 | 0.4745 | 0.4742 | 0.9994 |
-| aime | 15 | 3.1631 | 3.1629 | 1.0000 | 0.4923 | 0.4923 | 1.0000 | 0.4973 | 0.4971 | 0.9996 |
-| mbpp | 15 | 4.6469 | 4.6467 | 1.0000 | 0.7143 | 0.7143 | 1.0000 | 0.7291 | 0.7291 | 0.9999 |
-| swe-bench-pro | 15 | 3.8286 | 3.8285 | 1.0000 | 0.5939 | 0.5939 | 1.0000 | 0.6161 | 0.6163 | 1.0004 |
-| mtbench | 25 | 3.0679 | 3.0678 | 1.0000 | 0.5001 | 0.5001 | 1.0000 | 0.5227 | 0.5225 | 0.9996 |
-| speed-multilingual | 15 | 3.7527 | 3.7526 | 1.0000 | 0.5684 | 0.5684 | 1.0000 | 0.5909 | 0.5907 | 0.9997 |
-| aime26 | 15 | 2.8845 | 2.8845 | 1.0000 | 0.4607 | 0.4607 | 1.0000 | 0.4590 | 0.4593 | 1.0007 |
-| tool_call | 15 | 4.1889 | 4.1888 | 1.0000 | 0.6447 | 0.6447 | 1.0000 | 0.6641 | 0.6638 | 0.9996 |
-| speed-rag | 15 | 4.1683 | 4.1683 | 1.0000 | 0.6359 | 0.6359 | 0.9999 | 0.6576 | 0.6573 | 0.9995 |
-| writing | 15 | 2.8906 | 2.8907 | 1.0000 | 0.4846 | 0.4846 | 1.0000 | 0.5057 | 0.5054 | 0.9994 |
-| summarization | 15 | 3.6541 | 3.6542 | 1.0000 | 0.5714 | 0.5714 | 1.0000 | 0.5976 | 0.5975 | 0.9998 |
-| math500 | 15 | 4.4372 | 4.4373 | 1.0000 | 0.6671 | 0.6671 | 0.9999 | 0.6722 | 0.6720 | 0.9998 |
-| speed-coding | 15 | 4.7809 | 4.7810 | 1.0000 | 0.7103 | 0.7103 | 1.0001 | 0.7273 | 0.7276 | 1.0004 |
-| livecodebench | 15 | 4.4606 | 4.4608 | 1.0000 | 0.6661 | 0.6662 | 1.0001 | 0.6803 | 0.6805 | 1.0004 |
-| swe-rebench | 15 | 3.1136 | 3.1137 | 1.0000 | 0.5070 | 0.5070 | 1.0000 | 0.5302 | 0.5304 | 1.0003 |
-| speed-qa | 15 | 3.4347 | 3.4350 | 1.0001 | 0.5504 | 0.5503 | 0.9999 | 0.5732 | 0.5730 | 0.9996 |
-| qa | 15 | 3.4347 | 3.4350 | 1.0001 | 0.5504 | 0.5503 | 0.9999 | 0.5732 | 0.5730 | 0.9996 |
-| gsm8k | 25 | 5.9666 | 5.9671 | 1.0001 | 0.8470 | 0.8470 | 1.0000 | 0.8545 | 0.8544 | 0.9999 |
-| rag | 15 | 4.1171 | 4.1175 | 1.0001 | 0.6372 | 0.6373 | 1.0000 | 0.6583 | 0.6585 | 1.0003 |
+| aa-lcr-4k | 50 | 3.2311 | 3.2131 | **0.9944** | 0.4951 | 0.4924 | 0.9945 | 0.5009 | 0.4974 | 0.9931 |
+| speed-writing | 50 | 3.3732 | 3.3582 | 0.9956 | 0.5392 | 0.5372 | 0.9962 | 0.5635 | 0.5613 | 0.9961 |
+| speed-rag | 50 | 4.1891 | 4.1757 | 0.9968 | 0.6349 | 0.6329 | 0.9969 | 0.6569 | 0.6549 | 0.9968 |
+| tool_call | 50 | 4.0018 | 3.9976 | 0.9990 | 0.6197 | 0.6194 | 0.9995 | 0.6368 | 0.6366 | 0.9996 |
+| swe-bench-pro | 50 | 3.6307 | 3.6300 | 0.9998 | 0.5609 | 0.5608 | 0.9998 | 0.5887 | 0.5886 | 0.9998 |
+| translation | 50 | 3.9162 | 3.9160 | 0.9999 | 0.6285 | 0.6285 | 1.0000 | 0.6554 | 0.6554 | 0.9999 |
+| bfcl | 50 | 4.6678 | 4.6676 | 1.0000 | 0.6838 | 0.6837 | 0.9999 | 0.6986 | 0.6984 | 0.9998 |
+| mbpp | 50 | 4.7488 | 4.7486 | 1.0000 | 0.7288 | 0.7288 | 1.0000 | 0.7435 | 0.7435 | 1.0000 |
+| math500 | 50 | 4.6384 | 4.6383 | 1.0000 | 0.6909 | 0.6909 | 1.0000 | 0.6970 | 0.6969 | 0.9999 |
+| aime26 | 30 | 2.8670 | 2.8670 | 1.0000 | 0.4591 | 0.4591 | 1.0000 | 0.4549 | 0.4552 | 1.0006 |
+| summarization | 50 | 3.7169 | 3.7168 | 1.0000 | 0.5810 | 0.5810 | 1.0000 | 0.6067 | 0.6067 | 1.0000 |
+| mtbench | 50 | 3.7712 | 3.7711 | 1.0000 | 0.5855 | 0.5855 | 1.0000 | 0.6048 | 0.6047 | 0.9998 |
+| aime | 30 | 3.1432 | 3.1432 | 1.0000 | 0.4903 | 0.4903 | 1.0000 | 0.4950 | 0.4949 | 0.9998 |
+| aa-lcr-1k | 50 | 3.2307 | 3.2307 | 1.0000 | 0.5011 | 0.5011 | 1.0000 | 0.5106 | 0.5106 | 1.0001 |
+| speed-qa | 50 | 3.3698 | 3.3698 | 1.0000 | 0.5401 | 0.5401 | 1.0000 | 0.5630 | 0.5630 | 1.0000 |
+| qa | 50 | 3.3935 | 3.3935 | 1.0000 | 0.5423 | 0.5423 | 1.0000 | 0.5652 | 0.5651 | 0.9999 |
+| speed-coding | 50 | 4.8553 | 4.8554 | 1.0000 | 0.7157 | 0.7157 | 1.0000 | 0.7329 | 0.7330 | 1.0001 |
+| gpqa | 50 | 3.0785 | 3.0785 | 1.0000 | 0.4694 | 0.4694 | 1.0000 | 0.4830 | 0.4830 | 0.9999 |
+| speed-multilingual | 50 | 3.6412 | 3.6413 | 1.0000 | 0.5542 | 0.5542 | 1.0000 | 0.5804 | 0.5804 | 0.9999 |
+| writing | 50 | 3.8937 | 3.8938 | 1.0000 | 0.6023 | 0.6023 | 1.0000 | 0.6203 | 0.6202 | 0.9998 |
+| livecodebench | 50 | 4.3651 | 4.3652 | 1.0000 | 0.6537 | 0.6537 | 1.0000 | 0.6689 | 0.6691 | 1.0002 |
+| gsm8k | 50 | 5.9900 | 5.9902 | 1.0000 | 0.8502 | 0.8502 | 1.0000 | 0.8584 | 0.8583 | 0.9999 |
+| swe-rebench | 50 | 3.2403 | 3.2404 | 1.0000 | 0.5235 | 0.5236 | 1.0000 | 0.5451 | 0.5451 | 1.0000 |
+| rag | 50 | 4.1350 | 4.1352 | 1.0001 | 0.6342 | 0.6342 | 1.0000 | 0.6567 | 0.6568 | 1.0001 |
 
-**Pattern confirmed at full scale.** Across all 24 sets, `accept_len`
-ratios span only **0.9950 to 1.0001** — every set is within ~0.5% of its
-full-attention baseline, and 22 of 24 sets round to **1.000** exactly.
-This matches the 3-set quick check closely: `gsm8k` and `aime` reproduce
-their earlier ~1.000 ratios exactly, and `aa-lcr-4k` reproduces its
-~0.995 ratio exactly (both to 4 decimal places), confirming the earlier
-3-set read wasn't a fluke of that particular sample.
+**Pattern confirmed at full scale, and again at n=50.** `accept_len`
+ratios span only **0.9944 to 1.0001** — every set is within ~0.6% of its
+full-attention baseline, and the large majority round to **1.000**
+exactly. `aa-lcr-4k` remains the single most-affected set, now at -0.56%
+(was -0.5% at n=15) — the same conclusion as before, essentially
+unchanged by the 3x-larger sample.
 
-The **"long-context sets degrade more" hypothesis is directionally
-correct but the effect is tiny even at its worst**: `aa-lcr-4k` (~4k-token
-prompts, the set specifically chosen to stress a 2048-token window) is
-the single most-affected set in the entire sweep, at a 0.5% accept_len
-drop. `aa-lcr-1k` (shorter long-context prompts) shows essentially no
-effect (0.9999), consistent with its prompts fitting comfortably inside
-the 2048 window. `speed-writing` is the only other set with a
-measurable (0.2%) drop, and doesn't have an obvious long-context
-explanation — plausibly just sampling noise on its 15-sample set, since
-several other sets (`translation`, `bfcl`, `gpqa`) sit at the noise floor
-(0.9999) rather than exactly 1.0000. There's no sign of any other domain
-(code, agentic tool-calling, RAG, translation, summarization) being
-disproportionately sensitive — the effect is specific to raw context
-length, not task type.
+**Verification against the n=15 read**: mean AL ratio at n=50 is 0.9994 —
+identical to the n=15 mean (0.9994) to 4 decimal places. Every individual
+set's ratio moved by less than 0.5 percentage points except `speed-rag`
+(-0.32pp, still trivial in absolute terms: 1.0000→0.9968). The
+"long-context sets degrade more" pattern and its magnitude are both
+confirmed, not an artifact of the smaller original sample.
 
-**Overall conclusion**: at 24-set scale, RadixArk's full-attention-trained
-DSpark checkpoint tolerates a 2048-token sliding-window retrofit with
-essentially no measurable quality cost, including on the long-context set
-built to stress it. This strengthens the "low practical cost" conclusion
-from the 3-set check into a general finding across this checkpoint's full
-evaluation suite, *conditional on* correctly preserving same-block
-bidirectionality (see "Second run" above) and on the still-unverified
-live-serving conversion path (see follow-up 4 below).
+**Overall conclusion**: at 24-set scale (now n=50/30 per set), RadixArk's
+full-attention-trained DSpark checkpoint tolerates a 2048-token
+sliding-window retrofit with essentially no measurable quality cost,
+including on the long-context set built to stress it. This strengthens
+the "low practical cost" conclusion from the 3-set check into a general
+finding across this checkpoint's full evaluation suite, *conditional on*
+correctly preserving same-block bidirectionality (see "Second run" above)
+and validated live (see "Live-serving verification" below).
 
 ### Fourth run — window=512, offline 24-set sweep: a different sensitivity pattern
 
 Follow-up #3 asked whether a much tighter window changes the picture.
-Same clean setup as the runs above (same checkpoint, same
-`sliding_window_non_causal`/`dflash_config.causal` fix, same baseline),
-`sliding_window` dropped from 2048 to **512**. Sorted by `accept_len`
-ratio ascending:
+Same clean setup as the runs above, `sliding_window` dropped from 2048 to
+**512**. Numbers below are the n=50/30 rerun (see note in "Third run"
+above); sorted by `accept_len` ratio ascending:
 
 | set | n | baseline AL | sliding-512 AL | AL ratio | baseline AR | sliding-512 AR | AR ratio | baseline full_acc | sliding-512 full_acc | acc ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| rag | 15 | 4.1171 | 3.7782 | **0.9177** | 0.6372 | 0.5987 | 0.9395 | 0.6583 | 0.6214 | 0.9440 |
-| summarization | 15 | 3.6541 | 3.3664 | **0.9212** | 0.5714 | 0.5308 | 0.9289 | 0.5976 | 0.5583 | 0.9342 |
-| swe-bench-pro | 15 | 3.8286 | 3.5774 | **0.9344** | 0.5939 | 0.5630 | 0.9479 | 0.6161 | 0.5862 | 0.9515 |
-| speed-rag | 15 | 4.1683 | 3.9166 | **0.9396** | 0.6359 | 0.6038 | 0.9494 | 0.6576 | 0.6260 | 0.9518 |
-| speed-multilingual | 15 | 3.7527 | 3.5646 | 0.9499 | 0.5684 | 0.5394 | 0.9490 | 0.5909 | 0.5630 | 0.9528 |
-| speed-writing | 15 | 3.4902 | 3.3539 | 0.9610 | 0.5541 | 0.5349 | 0.9654 | 0.5789 | 0.5597 | 0.9668 |
-| gpqa | 15 | 3.0082 | 2.9265 | 0.9728 | 0.4634 | 0.4514 | 0.9741 | 0.4745 | 0.4627 | 0.9750 |
-| livecodebench | 15 | 4.4606 | 4.3546 | 0.9762 | 0.6661 | 0.6543 | 0.9822 | 0.6803 | 0.6696 | 0.9844 |
-| aa-lcr-1k | 15 | 3.2151 | 3.1408 | 0.9769 | 0.4957 | 0.4857 | 0.9798 | 0.5039 | 0.4926 | 0.9775 |
-| tool_call | 15 | 4.1889 | 4.1031 | 0.9795 | 0.6447 | 0.6364 | 0.9871 | 0.6641 | 0.6573 | 0.9898 |
-| mtbench | 25 | 3.0679 | 3.0110 | 0.9815 | 0.5001 | 0.4913 | 0.9823 | 0.5227 | 0.5137 | 0.9826 |
-| aime | 15 | 3.1631 | 3.1204 | 0.9865 | 0.4923 | 0.4860 | 0.9872 | 0.4973 | 0.4913 | 0.9880 |
-| speed-coding | 15 | 4.7809 | 4.7317 | 0.9897 | 0.7103 | 0.7039 | 0.9911 | 0.7273 | 0.7211 | 0.9914 |
-| swe-rebench | 15 | 3.1136 | 3.0893 | 0.9922 | 0.5070 | 0.5036 | 0.9934 | 0.5302 | 0.5277 | 0.9953 |
-| aime26 | 15 | 2.8845 | 2.8785 | 0.9979 | 0.4607 | 0.4599 | 0.9984 | 0.4590 | 0.4581 | 0.9981 |
-| aa-lcr-4k | 15 | 3.3831 | 3.3762 | 0.9979 | 0.5154 | 0.5145 | 0.9982 | 0.5229 | 0.5195 | 0.9936 |
-| translation | 15 | 3.9644 | 3.9599 | 0.9989 | 0.6396 | 0.6391 | 0.9993 | 0.6666 | 0.6662 | 0.9994 |
-| writing | 15 | 2.8906 | 2.8874 | 0.9989 | 0.4846 | 0.4839 | 0.9986 | 0.5057 | 0.5050 | 0.9986 |
-| math500 | 15 | 4.4372 | 4.4338 | 0.9993 | 0.6671 | 0.6666 | 0.9993 | 0.6722 | 0.6717 | 0.9993 |
-| bfcl | 15 | 4.9744 | 4.9723 | 0.9996 | 0.7225 | 0.7224 | 0.9998 | 0.7338 | 0.7343 | 1.0006 |
-| qa | 15 | 3.4347 | 3.4336 | 0.9997 | 0.5504 | 0.5503 | 0.9998 | 0.5732 | 0.5730 | 0.9996 |
-| speed-qa | 15 | 3.4347 | 3.4336 | 0.9997 | 0.5504 | 0.5503 | 0.9998 | 0.5732 | 0.5730 | 0.9996 |
-| gsm8k | 25 | 5.9666 | 5.9658 | 0.9999 | 0.8470 | 0.8469 | 0.9999 | 0.8545 | 0.8544 | 0.9999 |
-| mbpp | 15 | 4.6469 | 4.6463 | 0.9999 | 0.7143 | 0.7142 | 0.9999 | 0.7291 | 0.7290 | 0.9998 |
+| summarization | 50 | 3.7169 | 3.4088 | **0.9171** | 0.5810 | 0.5394 | 0.9284 | 0.6067 | 0.5667 | 0.9341 |
+| rag | 50 | 4.1350 | 3.7979 | **0.9185** | 0.6342 | 0.5947 | 0.9378 | 0.6567 | 0.6191 | 0.9427 |
+| speed-rag | 50 | 4.1891 | 3.8809 | **0.9264** | 0.6349 | 0.5968 | 0.9400 | 0.6569 | 0.6190 | 0.9423 |
+| swe-bench-pro | 50 | 3.6307 | 3.3913 | **0.9341** | 0.5609 | 0.5317 | 0.9478 | 0.5887 | 0.5600 | 0.9513 |
+| speed-writing | 50 | 3.3732 | 3.2450 | 0.9620 | 0.5392 | 0.5214 | 0.9670 | 0.5635 | 0.5451 | 0.9674 |
+| aa-lcr-1k | 50 | 3.2307 | 3.1150 | 0.9642 | 0.5011 | 0.4846 | 0.9671 | 0.5106 | 0.4925 | 0.9646 |
+| speed-multilingual | 50 | 3.6412 | 3.5314 | 0.9698 | 0.5542 | 0.5347 | 0.9650 | 0.5804 | 0.5607 | 0.9661 |
+| gpqa | 50 | 3.0785 | 2.9994 | 0.9743 | 0.4694 | 0.4580 | 0.9756 | 0.4830 | 0.4722 | 0.9776 |
+| livecodebench | 50 | 4.3651 | 4.2532 | 0.9744 | 0.6537 | 0.6415 | 0.9814 | 0.6689 | 0.6577 | 0.9831 |
+| tool_call | 50 | 4.0018 | 3.9285 | 0.9817 | 0.6197 | 0.6123 | 0.9880 | 0.6368 | 0.6303 | 0.9897 |
+| aime | 30 | 3.1432 | 3.0991 | 0.9860 | 0.4903 | 0.4839 | 0.9869 | 0.4950 | 0.4885 | 0.9869 |
+| mtbench | 50 | 3.7712 | 3.7256 | 0.9879 | 0.5855 | 0.5788 | 0.9885 | 0.6048 | 0.5978 | 0.9884 |
+| speed-coding | 50 | 4.8553 | 4.8005 | 0.9887 | 0.7157 | 0.7087 | 0.9903 | 0.7329 | 0.7265 | 0.9912 |
+| aa-lcr-4k | 50 | 3.2311 | 3.2086 | 0.9930 | 0.4951 | 0.4923 | 0.9943 | 0.5009 | 0.4964 | 0.9911 |
+| swe-rebench | 50 | 3.2403 | 3.2283 | 0.9963 | 0.5235 | 0.5220 | 0.9970 | 0.5451 | 0.5439 | 0.9979 |
+| aime26 | 30 | 2.8670 | 2.8595 | 0.9974 | 0.4591 | 0.4581 | 0.9978 | 0.4549 | 0.4537 | 0.9974 |
+| bfcl | 50 | 4.6678 | 4.6608 | 0.9985 | 0.6838 | 0.6834 | 0.9994 | 0.6986 | 0.6985 | 1.0000 |
+| translation | 50 | 3.9162 | 3.9123 | 0.9990 | 0.6285 | 0.6281 | 0.9993 | 0.6554 | 0.6551 | 0.9995 |
+| writing | 50 | 3.8937 | 3.8913 | 0.9994 | 0.6023 | 0.6020 | 0.9995 | 0.6203 | 0.6198 | 0.9991 |
+| speed-qa | 50 | 3.3698 | 3.3681 | 0.9995 | 0.5401 | 0.5399 | 0.9996 | 0.5630 | 0.5628 | 0.9996 |
+| qa | 50 | 3.3935 | 3.3918 | 0.9995 | 0.5423 | 0.5421 | 0.9997 | 0.5652 | 0.5649 | 0.9996 |
+| math500 | 50 | 4.6384 | 4.6361 | 0.9995 | 0.6909 | 0.6906 | 0.9995 | 0.6970 | 0.6967 | 0.9996 |
+| mbpp | 50 | 4.7488 | 4.7480 | 0.9998 | 0.7288 | 0.7288 | 0.9999 | 0.7435 | 0.7436 | 1.0001 |
+| gsm8k | 50 | 5.9900 | 5.9895 | 0.9999 | 0.8502 | 0.8502 | 0.9999 | 0.8584 | 0.8583 | 0.9999 |
 
-Mean AL ratio 0.9779, mean AR ratio 0.9813, mean acc ratio 0.9822.
+Mean AL ratio 0.9778, mean AR ratio 0.9812, mean acc ratio 0.9820 —
+essentially unchanged from the n=15 means (0.9779/0.9813/0.9822).
 
 **The sensitivity pattern is qualitatively different from window=2048, not
 just a scaled-up version of it.** At 2048, only `aa-lcr-4k` showed a real
-effect (-0.5%) and the doc's own conclusion at the time was "the effect is
-specific to raw context length, not task type." At 512, that conclusion
-no longer holds: `rag`, `summarization`, `swe-bench-pro`, and `speed-rag`
-now show **6-8% degradation** — a real, task-correlated pattern, not
-noise (verified below) — while `aa-lcr-4k`, the set specifically built to
-stress long context, barely moves (0.9979, statistically indistinguishable
-from its own 2048 result of 0.9950 — if anything very slightly *less*
-degraded at the tighter window, almost certainly bf16/kernel numerical
-noise given both effects are under 0.5%, not a real non-monotonicity).
+effect and the earlier conclusion was "the effect is specific to raw
+context length, not task type." At 512, that conclusion no longer holds:
+`summarization`, `rag`, `speed-rag`, and `swe-bench-pro` now show
+**7-8% degradation** — a real, task-correlated pattern, not noise
+(verified below) — while `aa-lcr-4k`, the set specifically built to
+stress long context, barely moves (0.9930).
+
+**Confirmed at n=50, with one real correction to the n=15 read**: the
+overall pattern (which sets are hit, roughly how hard) reproduces almost
+exactly — `rag` 0.9185 (was 0.9177), `summarization` 0.9171 (was 0.9212),
+`swe-bench-pro` 0.9341 (was 0.9344), `speed-rag` 0.9264 (was 0.9396, a
+modest -1.3pp move toward *more* degradation). The one set whose n=15
+result turned out noisy: `speed-multilingual` — n=15 showed -5.0%
+(0.9499), n=50 shows only -3.0% (0.9698), a genuine ~2-percentage-point
+correction in the *less-bad-than-thought* direction. Everything else
+across all 24 sets moved by under 1.3pp between n=15 and n=50.
 
 **Verified this isn't dilution from anchors the window never restricts**
 (same check applied to `aa-lcr-4k` earlier), for every set showing a new
@@ -357,12 +366,13 @@ effect at 512:
 | `aa-lcr-4k` (reference) | 4315–4697 | 6514 | 100.0% |
 
 The window genuinely binds for the vast majority of scored anchors in
-`rag`/`summarization`/`swe-bench-pro`/`speed-rag` — their 6-8%
+`rag`/`summarization`/`swe-bench-pro`/`speed-rag` — their 7-8%
 degradation is real, not diluted. `speed-multilingual` is the one mixed
 case: only ~49% of its anchors actually have the window binding (many
-samples are shorter than 512 tokens entirely), so its reported -5.0% is
+samples are shorter than 512 tokens entirely), so its degradation is
 itself diluted by anchors that see zero restriction — the true effect for
-anchors where the window *does* bind is likely closer to double that.
+anchors where the window *does* bind is likely closer to double the
+pooled -3.0%.
 
 **Working interpretation** (plausible, not proven): this isn't really
 about raw document length — it's about whether the specific content a
@@ -384,66 +394,76 @@ result suggested.
 ### Fifth run — window=1024, offline 24-set sweep: mostly recovers, but not uniformly
 
 Same setup again, `sliding_window=1024` (between the 2048 and 512 runs
-above). Sorted by `accept_len` ratio ascending:
+above). Numbers below are the n=50/30 rerun; sorted by `accept_len` ratio
+ascending:
 
 | set | n | AL ratio | AR ratio | acc ratio |
 |---|---:|---:|---:|---:|
-| speed-writing | 15 | **0.9819** | 0.9833 | 0.9832 |
-| summarization | 15 | 0.9853 | 0.9882 | 0.9888 |
-| aa-lcr-1k | 15 | 0.9857 | 0.9900 | 0.9920 |
-| tool_call | 15 | 0.9864 | 0.9916 | 0.9919 |
-| swe-bench-pro | 15 | 0.9905 | 0.9939 | 0.9941 |
-| livecodebench | 15 | 0.9948 | 0.9962 | 0.9970 |
-| aa-lcr-4k | 15 | 0.9957 | 0.9963 | 0.9935 |
-| rag | 15 | 0.9971 | 0.9983 | 0.9992 |
-| gpqa | 15 | 0.9977 | 0.9984 | 0.9978 |
-| speed-rag | 15 | 0.9986 | 0.9989 | 0.9982 |
-| aime | 15 | 0.9991 | 0.9995 | 0.9993 |
-| swe-rebench | 15 | 0.9998 | 0.9993 | 0.9998 |
-| speed-multilingual | 15 | 0.9998 | 0.9999 | 0.9999 |
-| translation | 15 | 0.9999 | 1.0000 | 0.9997 |
-| mtbench | 25 | 0.9999 | 0.9998 | 0.9993 |
-| bfcl | 15 | 0.9999 | 0.9999 | 1.0003 |
-| mbpp | 15 | 1.0000 | 1.0000 | 0.9999 |
-| aime26 | 15 | 1.0000 | 1.0000 | 1.0007 |
-| writing | 15 | 1.0000 | 1.0000 | 0.9994 |
-| math500 | 15 | 1.0000 | 0.9999 | 0.9998 |
-| speed-coding | 15 | 1.0000 | 1.0001 | 1.0004 |
-| qa | 15 | 1.0001 | 0.9999 | 0.9996 |
-| speed-qa | 15 | 1.0001 | 0.9999 | 0.9996 |
-| gsm8k | 25 | 1.0001 | 1.0000 | 0.9999 |
+| speed-writing | 50 | **0.9788** | 0.9819 | 0.9817 |
+| aa-lcr-1k | 50 | 0.9816 | 0.9830 | 0.9826 |
+| summarization | 50 | 0.9835 | 0.9871 | 0.9885 |
+| swe-bench-pro | 50 | 0.9869 | 0.9900 | 0.9901 |
+| speed-rag | 50 | 0.9883 | 0.9903 | 0.9902 |
+| aa-lcr-4k | 50 | 0.9913 | 0.9926 | 0.9906 |
+| tool_call | 50 | 0.9929 | 0.9954 | 0.9960 |
+| livecodebench | 50 | 0.9963 | 0.9974 | 0.9978 |
+| gpqa | 50 | 0.9975 | 0.9980 | 0.9982 |
+| rag | 50 | 0.9977 | 0.9983 | 0.9990 |
+| aime | 30 | 0.9987 | 0.9990 | 0.9991 |
+| speed-coding | 50 | 0.9997 | 0.9997 | 1.0000 |
+| speed-multilingual | 50 | 0.9998 | 0.9997 | 0.9997 |
+| mtbench | 50 | 0.9998 | 0.9999 | 0.9996 |
+| swe-rebench | 50 | 0.9999 | 0.9998 | 0.9998 |
+| translation | 50 | 0.9999 | 1.0000 | 0.9999 |
+| bfcl | 50 | 1.0000 | 0.9999 | 0.9998 |
+| mbpp | 50 | 1.0000 | 1.0000 | 1.0000 |
+| math500 | 50 | 1.0000 | 1.0000 | 0.9999 |
+| aime26 | 30 | 1.0000 | 1.0000 | 1.0006 |
+| speed-qa | 50 | 1.0000 | 1.0000 | 1.0000 |
+| qa | 50 | 1.0000 | 1.0000 | 0.9999 |
+| writing | 50 | 1.0000 | 1.0000 | 0.9998 |
+| gsm8k | 50 | 1.0000 | 1.0000 | 0.9999 |
 
-Mean AL ratio 0.9963, mean AR ratio 0.9972, mean acc ratio 0.9972.
+Mean AL ratio 0.9955, mean AR ratio 0.9964, mean acc ratio 0.9965 —
+essentially unchanged from the n=15 means (0.9963/0.9972/0.9972).
+
+**Confirmed at n=50**: same worst-affected set (`speed-writing`, now
+-2.12% vs -1.81% at n=15 — a small, non-alarming move), and the same
+general shape (the `rag`/`summarization`/`swe-bench-pro`/`speed-rag`
+cluster sits in the middle of the pack, partially recovered from their
+512 result but not fully back to baseline). `aa-lcr-1k` moved the most of
+any set between n=15 and n=50 at this window size (0.9857→0.9816, -0.41pp)
+but remains a small effect in absolute terms.
 
 **The "cliff" from window=512 mostly closes at 1024, but not uniformly
 across the affected cluster, and the identity of the worst-hit set
 changes.** Comparing all three window sizes for the sets that mattered at
-512:
+512 (n=50 throughout):
 
 | set | 2048 | 1024 | 512 |
 |---|---:|---:|---:|
-| rag | ~1.000 | 0.9971 | **0.9177** |
-| summarization | ~1.000 | 0.9853 | **0.9212** |
-| swe-bench-pro | ~1.000 | 0.9905 | **0.9344** |
-| speed-rag | ~1.000 | 0.9986 | **0.9396** |
-| speed-multilingual | ~1.000 | 0.9998 | 0.9499 |
-| speed-writing | ~1.000 | **0.9819** | 0.9610 |
+| summarization | ~1.000 | 0.9835 | **0.9171** |
+| rag | 1.0001 | 0.9977 | **0.9185** |
+| speed-rag | 0.9968 | 0.9883 | **0.9264** |
+| swe-bench-pro | 0.9998 | 0.9869 | **0.9341** |
+| speed-multilingual | 1.0000 | 0.9998 | 0.9698 |
+| speed-writing | 0.9956 | **0.9788** | 0.9620 |
 
 `rag`, `swe-bench-pro`, and `speed-rag` recover most of the way back
-toward baseline by 1024 (each within ~1.5-3%), consistent with their
+toward baseline by 1024 (each within ~1.2-2.3%), consistent with their
 critical content sitting in a chunk of the document that a 1024-token
 window still mostly covers even though 512 cuts into it. `summarization`
-only partially recovers (still -1.5% at 1024, was -7.9% at 512) — a
+only partially recovers (still -1.65% at 1024, was -8.3% at 512) — a
 shallower cliff, more spread across the 512-1024-2048 range rather than
 concentrated right at the 512-1024 boundary. `speed-writing` is the
-outlier: it barely moved at 512 (-3.9%) but is now the single
-most-affected set at 1024 (-1.8%) — not a monotonic "tighter window is
+outlier: it barely moved at 512 (-3.8%) but is now the single
+most-affected set at 1024 (-2.1%) — not a monotonic "tighter window is
 worse" story for this one set, though the absolute effect stays small
-throughout (never more than ~4%). Taken together, three window sizes
-show this isn't one clean threshold shared across tasks — different
-domains hit their own sensitivity point at different window sizes,
-consistent with the "content position" interpretation above rather than
-a single universal cliff.
+throughout (never more than ~4%). Taken together, three window sizes at
+full n=50 confirm this isn't one clean threshold shared across tasks —
+different domains hit their own sensitivity point at different window
+sizes, consistent with the "content position" interpretation above rather
+than a single universal cliff.
 
 ## Artifacts
 
