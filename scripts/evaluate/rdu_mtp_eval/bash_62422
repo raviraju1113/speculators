@@ -1,0 +1,128 @@
+#!/bin/bash
+#SBATCH --partition=zd3-long
+#SBATCH --gres=rdu:16,rdu_tile:64,rdu_mem:105197338624,rdu_devmem:1683157417984
+#SBATCH --output=/import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/logs/snrdu.log
+#SBATCH --job-name=gemma4-rdu-mtp-eval-chenw
+#SBATCH --mem=512G
+#SBATCH --exclusive
+
+#SBATCH --time=10080:0
+#SBATCH --mail-type=TIME_LIMIT
+#SBATCH --mail-user=chenw
+#SBATCH --nodes=1
+#SBATCH --constraint="pef_major_version=2&PEF_TS"
+#SBATCH --qos=3
+#SBATCH --licenses=exclusive.zd3-long@slurmdb:1
+################################################################################
+### snrdu invocation: {'gres': None, 'sbatch': '/usr/local/bin/sbatch', 'egrep': '/bin/egrep', 'command': 'bash /import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/run_rdu_eval.sh', 'slurm_partition': 'small-prod.default', 'application': 'bash_62422', 'wait': False, 'test_env': False, 'deployment_env': 'prod', 'pid': 62422, 'username': 'chenw', 'debug': None, 'verbose': None, 'dry_run': False, 'jobname': 'gemma4-rdu-mtp-eval-chenw', 'outfile': '/import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/logs/snrdu.log', 'snlog_outfile': None, 'user_num_tiles': None, 'exclusive_rdu': None, 'copy': None, 'cpus_per_task': 0, 'host_mem': '512G', 'rdu_devmem': 0, 'exclusive_host': False, 'no_exclusive_host': False, 'nodelist': None, 'notify': None, 'host_os': None, 'pef': '/import/snvm-sc-podscratch4/weip/gemma4/0828_mtp_mattf/apps_persistent/gemma4_31b_full_layers_tp16_ssss_cg_ss_kv_ss_tg_parallel_sdk_bf16/coe_pef_bsBS_max8_ssSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072.pef', 'timeout': '7-00:00:00', 'tty': False, 'qos': '3', 'parallel_cmd': None, 'bash_parallel': False, 'pef_version': None, 'pef_major_version': None, 'perf': False, 'scandump': False, 'card': None, 'nodes': 0, 'ntasks': 0, 'original_ntasks': 0, 'reservation': None, 'sbatch_directives': None, 'ntasks_per_node': None, 'zd': False, 'dp_workers': 0, 'pypefapi': None, 'single_rack': None, 'iommu': None, 'custom': None, 'custom_json': None, 'arch': None, 'max_parallel_exit_codes': None, 'dump_sbatch_on_failure': False, 'rdufreq': None}
+### run_info dict: {'gres': '--gres=rdu:16,rdu_tile:64', 'slurm_partition': 'zd3-long', 'deployment_env': 'prod', 'command': 'bash /import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/run_rdu_eval.sh', 'user_num_tiles': None, 'exclusive_rdu': None, 'exclusive_host': False, 'test_env': False, 'pef': '/import/snvm-sc-podscratch4/weip/gemma4/0828_mtp_mattf/apps_persistent/gemma4_31b_full_layers_tp16_ssss_cg_ss_kv_ss_tg_parallel_sdk_bf16/coe_pef_bsBS_max8_ssSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072.pef', 'perf': False, 'timeout': '10080:0', 'host_type': 'zd3', 'dp_workers': 0, 'pypefapi': None, 'arch': None, 'nodes': 0, 'rdu_devmem': 1683157417984, 'rdu_mem': 105197338624, 'rdus': 16, 'tiles': 64, 'jobname': '-u', 'pef_version': 'pef-2.30.0', '_pef_info': [PefInfo(<rdus:16,,,tiles:64,,,rdu_devmem:1683157417984,,,rdu_mem:105197338624,,,version:pef-2.30.0,,,arch_info:{'partition': 'zd3', 'rdus_per_node': 8, 'tiles_per_rdu': 4},,,dp_workers:0,,,nodes:0,,,ntasks:1,,,rawpef:<pypefapi.PyPefApi object at 0x7f3de5c24f10>,,,pef_target_str:PEF_TS,,,partition:zd3,,,rdus_per_node:8,,,arch_constraint:3,,,list_pef_info:['Pef version: 2.30.0', 'Pef target: 3', 'Virtual node count: 16', 'Total tile count: 64', 'Tile topology if vsnodes == 1: PEF_HORIZONTAL', 'Total device memory required: 1683157417984', 'Estimate runtime of the Pef: 60', 'All vsnode information in detail:', ' the 0 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 1 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 2 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 3 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 4 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 5 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 6 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 7 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 8 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 9 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 10 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 11 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 12 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 13 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 14 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624', ' the 15 vsnode:', '     tile number: 4', '     tile orientation: PEF_HORIZONTAL', '     memory_size: 105197338624']>)], 'current_partitions': ['cicd', 'cpuonly', 'gpuonly', 'gpuonly-low', 'rt-cicd', 'zd3', 'zd3-long', 'zd4', 'zd4-long'], 'constraints': {'and': [], 'or': []}, 'hetjobs': None}
+### __file__: /import/pa-tools/sambanova/slurm-tools/1.334/bin/SnrduRun.py
+set +e
+___pwd=$(pwd)
+
+function cleanup {
+export PATH=/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
+rm -- "${___pwd}/bash_62422"
+if [[ -f snrdu-${SLURM_JOBID}.out ]]; then
+  mv snrdu-${SLURM_JOBID}.out /import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/logs/snrdu.log
+fi
+for i in `seq 1 $num_cmds`; do
+  if [[ -f snrdu-${SLURM_JOBID}.$i.out ]]; then
+    mv snrdu-${SLURM_JOBID}.$i.out /import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/logs/snrdu.log.$i
+  fi
+done
+
+}
+
+
+trap cleanup EXIT
+export PATH=/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
+#pypefapi debug: Pef version: 2.30.0
+#pypefapi debug: Pef target: 3
+#pypefapi debug: Virtual node count: 16
+#pypefapi debug: Total tile count: 64
+#pypefapi debug: Tile topology if vsnodes == 1: PEF_HORIZONTAL
+#pypefapi debug: Total device memory required: 1683157417984
+#pypefapi debug: Estimate runtime of the Pef: 60
+#pypefapi debug: All vsnode information in detail:
+#pypefapi debug:  the 0 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 1 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 2 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 3 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 4 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 5 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 6 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 7 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 8 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 9 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 10 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 11 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 12 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 13 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 14 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+#pypefapi debug:  the 15 vsnode:
+#pypefapi debug:      tile number: 4
+#pypefapi debug:      tile orientation: PEF_HORIZONTAL
+#pypefapi debug:      memory_size: 105197338624
+bash /import/ml-sc-scratch1/chenw/speculators/scripts/evaluate/rdu_mtp_eval/run_rdu_eval.sh
+
+retcode=$?
+cd ${___pwd}
+
+KEYWORD=" slurmJobId=$SLURM_JOBID. "
+SYSLOGFILE=/var/log/sambaflow/runtime/sn.log
+
+if [[ -f "/var/log/sambaflow/runtime/sn.log" ]]; then 
+  egrep --text "$KEYWORD" "$SYSLOGFILE"
+else
+  echo "ERROR /var/log/sambaflow/runtime/sn.log not found"
+fi
+
+exit $retcode
+
+# run command: env - PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin USER=chenw /usr/local/bin/sbatch bash_62422
