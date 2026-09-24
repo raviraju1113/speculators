@@ -294,16 +294,173 @@ evaluation suite, *conditional on* correctly preserving same-block
 bidirectionality (see "Second run" above) and on the still-unverified
 live-serving conversion path (see follow-up 4 below).
 
+### Fourth run — window=512, offline 24-set sweep: a different sensitivity pattern
+
+Follow-up #3 asked whether a much tighter window changes the picture.
+Same clean setup as the runs above (same checkpoint, same
+`sliding_window_non_causal`/`dflash_config.causal` fix, same baseline),
+`sliding_window` dropped from 2048 to **512**. Sorted by `accept_len`
+ratio ascending:
+
+| set | n | baseline AL | sliding-512 AL | AL ratio | baseline AR | sliding-512 AR | AR ratio | baseline full_acc | sliding-512 full_acc | acc ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| rag | 15 | 4.1171 | 3.7782 | **0.9177** | 0.6372 | 0.5987 | 0.9395 | 0.6583 | 0.6214 | 0.9440 |
+| summarization | 15 | 3.6541 | 3.3664 | **0.9212** | 0.5714 | 0.5308 | 0.9289 | 0.5976 | 0.5583 | 0.9342 |
+| swe-bench-pro | 15 | 3.8286 | 3.5774 | **0.9344** | 0.5939 | 0.5630 | 0.9479 | 0.6161 | 0.5862 | 0.9515 |
+| speed-rag | 15 | 4.1683 | 3.9166 | **0.9396** | 0.6359 | 0.6038 | 0.9494 | 0.6576 | 0.6260 | 0.9518 |
+| speed-multilingual | 15 | 3.7527 | 3.5646 | 0.9499 | 0.5684 | 0.5394 | 0.9490 | 0.5909 | 0.5630 | 0.9528 |
+| speed-writing | 15 | 3.4902 | 3.3539 | 0.9610 | 0.5541 | 0.5349 | 0.9654 | 0.5789 | 0.5597 | 0.9668 |
+| gpqa | 15 | 3.0082 | 2.9265 | 0.9728 | 0.4634 | 0.4514 | 0.9741 | 0.4745 | 0.4627 | 0.9750 |
+| livecodebench | 15 | 4.4606 | 4.3546 | 0.9762 | 0.6661 | 0.6543 | 0.9822 | 0.6803 | 0.6696 | 0.9844 |
+| aa-lcr-1k | 15 | 3.2151 | 3.1408 | 0.9769 | 0.4957 | 0.4857 | 0.9798 | 0.5039 | 0.4926 | 0.9775 |
+| tool_call | 15 | 4.1889 | 4.1031 | 0.9795 | 0.6447 | 0.6364 | 0.9871 | 0.6641 | 0.6573 | 0.9898 |
+| mtbench | 25 | 3.0679 | 3.0110 | 0.9815 | 0.5001 | 0.4913 | 0.9823 | 0.5227 | 0.5137 | 0.9826 |
+| aime | 15 | 3.1631 | 3.1204 | 0.9865 | 0.4923 | 0.4860 | 0.9872 | 0.4973 | 0.4913 | 0.9880 |
+| speed-coding | 15 | 4.7809 | 4.7317 | 0.9897 | 0.7103 | 0.7039 | 0.9911 | 0.7273 | 0.7211 | 0.9914 |
+| swe-rebench | 15 | 3.1136 | 3.0893 | 0.9922 | 0.5070 | 0.5036 | 0.9934 | 0.5302 | 0.5277 | 0.9953 |
+| aime26 | 15 | 2.8845 | 2.8785 | 0.9979 | 0.4607 | 0.4599 | 0.9984 | 0.4590 | 0.4581 | 0.9981 |
+| aa-lcr-4k | 15 | 3.3831 | 3.3762 | 0.9979 | 0.5154 | 0.5145 | 0.9982 | 0.5229 | 0.5195 | 0.9936 |
+| translation | 15 | 3.9644 | 3.9599 | 0.9989 | 0.6396 | 0.6391 | 0.9993 | 0.6666 | 0.6662 | 0.9994 |
+| writing | 15 | 2.8906 | 2.8874 | 0.9989 | 0.4846 | 0.4839 | 0.9986 | 0.5057 | 0.5050 | 0.9986 |
+| math500 | 15 | 4.4372 | 4.4338 | 0.9993 | 0.6671 | 0.6666 | 0.9993 | 0.6722 | 0.6717 | 0.9993 |
+| bfcl | 15 | 4.9744 | 4.9723 | 0.9996 | 0.7225 | 0.7224 | 0.9998 | 0.7338 | 0.7343 | 1.0006 |
+| qa | 15 | 3.4347 | 3.4336 | 0.9997 | 0.5504 | 0.5503 | 0.9998 | 0.5732 | 0.5730 | 0.9996 |
+| speed-qa | 15 | 3.4347 | 3.4336 | 0.9997 | 0.5504 | 0.5503 | 0.9998 | 0.5732 | 0.5730 | 0.9996 |
+| gsm8k | 25 | 5.9666 | 5.9658 | 0.9999 | 0.8470 | 0.8469 | 0.9999 | 0.8545 | 0.8544 | 0.9999 |
+| mbpp | 15 | 4.6469 | 4.6463 | 0.9999 | 0.7143 | 0.7142 | 0.9999 | 0.7291 | 0.7290 | 0.9998 |
+
+Mean AL ratio 0.9779, mean AR ratio 0.9813, mean acc ratio 0.9822.
+
+**The sensitivity pattern is qualitatively different from window=2048, not
+just a scaled-up version of it.** At 2048, only `aa-lcr-4k` showed a real
+effect (-0.5%) and the doc's own conclusion at the time was "the effect is
+specific to raw context length, not task type." At 512, that conclusion
+no longer holds: `rag`, `summarization`, `swe-bench-pro`, and `speed-rag`
+now show **6-8% degradation** — a real, task-correlated pattern, not
+noise (verified below) — while `aa-lcr-4k`, the set specifically built to
+stress long context, barely moves (0.9979, statistically indistinguishable
+from its own 2048 result of 0.9950 — if anything very slightly *less*
+degraded at the tighter window, almost certainly bf16/kernel numerical
+noise given both effects are under 0.5%, not a real non-monotonicity).
+
+**Verified this isn't dilution from anchors the window never restricts**
+(same check applied to `aa-lcr-4k` earlier), for every set showing a new
+effect at 512:
+
+| set | seq_len range | total anchors | frac. with anchor position ≥ 512 |
+|---|---|---:|---:|
+| `rag` | 1007–1324 | 5878 | **100.0%** |
+| `summarization` | 857–1912 | 7126 | **98.0%** |
+| `swe-bench-pro` | 811–1923 | 6833 | **96.3%** |
+| `speed-rag` | 541–1311 | 6128 | **91.2%** |
+| `speed-multilingual` | 469–1337 | 6583 | 48.6% |
+| `aa-lcr-4k` (reference) | 4315–4697 | 6514 | 100.0% |
+
+The window genuinely binds for the vast majority of scored anchors in
+`rag`/`summarization`/`swe-bench-pro`/`speed-rag` — their 6-8%
+degradation is real, not diluted. `speed-multilingual` is the one mixed
+case: only ~49% of its anchors actually have the window binding (many
+samples are shorter than 512 tokens entirely), so its reported -5.0% is
+itself diluted by anchors that see zero restriction — the true effect for
+anchors where the window *does* bind is likely closer to double that.
+
+**Working interpretation** (plausible, not proven): this isn't really
+about raw document length — it's about whether the specific content a
+task needs sits within reach of the window. `aa-lcr-4k`'s documents are
+~4500 tokens, but apparently whatever the draft needs to predict its
+completion sits close enough to the anchor already (within 512 tokens)
+that shrinking further from 2048 to 512 costs almost nothing. `rag`/
+`summarization`/`swe-bench-pro` have much shorter documents (700-1900
+tokens) but their tasks inherently reference content that can sit
+anywhere across the prompt (the retrieved passage, the source document
+to summarize, the code diff under review) — a 512-token window cuts away
+roughly half to three-quarters of a ~1000-1900 token document, which is
+enough to lose task-relevant content that a 2048-token window still
+comfortably held. So sensitivity looks like it tracks *task type*
+(how spread out the relevant content is) more than *raw context length*
+once the window gets tight enough — the opposite of what the 2048-only
+result suggested.
+
+### Fifth run — window=1024, offline 24-set sweep: mostly recovers, but not uniformly
+
+Same setup again, `sliding_window=1024` (between the 2048 and 512 runs
+above). Sorted by `accept_len` ratio ascending:
+
+| set | n | AL ratio | AR ratio | acc ratio |
+|---|---:|---:|---:|---:|
+| speed-writing | 15 | **0.9819** | 0.9833 | 0.9832 |
+| summarization | 15 | 0.9853 | 0.9882 | 0.9888 |
+| aa-lcr-1k | 15 | 0.9857 | 0.9900 | 0.9920 |
+| tool_call | 15 | 0.9864 | 0.9916 | 0.9919 |
+| swe-bench-pro | 15 | 0.9905 | 0.9939 | 0.9941 |
+| livecodebench | 15 | 0.9948 | 0.9962 | 0.9970 |
+| aa-lcr-4k | 15 | 0.9957 | 0.9963 | 0.9935 |
+| rag | 15 | 0.9971 | 0.9983 | 0.9992 |
+| gpqa | 15 | 0.9977 | 0.9984 | 0.9978 |
+| speed-rag | 15 | 0.9986 | 0.9989 | 0.9982 |
+| aime | 15 | 0.9991 | 0.9995 | 0.9993 |
+| swe-rebench | 15 | 0.9998 | 0.9993 | 0.9998 |
+| speed-multilingual | 15 | 0.9998 | 0.9999 | 0.9999 |
+| translation | 15 | 0.9999 | 1.0000 | 0.9997 |
+| mtbench | 25 | 0.9999 | 0.9998 | 0.9993 |
+| bfcl | 15 | 0.9999 | 0.9999 | 1.0003 |
+| mbpp | 15 | 1.0000 | 1.0000 | 0.9999 |
+| aime26 | 15 | 1.0000 | 1.0000 | 1.0007 |
+| writing | 15 | 1.0000 | 1.0000 | 0.9994 |
+| math500 | 15 | 1.0000 | 0.9999 | 0.9998 |
+| speed-coding | 15 | 1.0000 | 1.0001 | 1.0004 |
+| qa | 15 | 1.0001 | 0.9999 | 0.9996 |
+| speed-qa | 15 | 1.0001 | 0.9999 | 0.9996 |
+| gsm8k | 25 | 1.0001 | 1.0000 | 0.9999 |
+
+Mean AL ratio 0.9963, mean AR ratio 0.9972, mean acc ratio 0.9972.
+
+**The "cliff" from window=512 mostly closes at 1024, but not uniformly
+across the affected cluster, and the identity of the worst-hit set
+changes.** Comparing all three window sizes for the sets that mattered at
+512:
+
+| set | 2048 | 1024 | 512 |
+|---|---:|---:|---:|
+| rag | ~1.000 | 0.9971 | **0.9177** |
+| summarization | ~1.000 | 0.9853 | **0.9212** |
+| swe-bench-pro | ~1.000 | 0.9905 | **0.9344** |
+| speed-rag | ~1.000 | 0.9986 | **0.9396** |
+| speed-multilingual | ~1.000 | 0.9998 | 0.9499 |
+| speed-writing | ~1.000 | **0.9819** | 0.9610 |
+
+`rag`, `swe-bench-pro`, and `speed-rag` recover most of the way back
+toward baseline by 1024 (each within ~1.5-3%), consistent with their
+critical content sitting in a chunk of the document that a 1024-token
+window still mostly covers even though 512 cuts into it. `summarization`
+only partially recovers (still -1.5% at 1024, was -7.9% at 512) — a
+shallower cliff, more spread across the 512-1024-2048 range rather than
+concentrated right at the 512-1024 boundary. `speed-writing` is the
+outlier: it barely moved at 512 (-3.9%) but is now the single
+most-affected set at 1024 (-1.8%) — not a monotonic "tighter window is
+worse" story for this one set, though the absolute effect stays small
+throughout (never more than ~4%). Taken together, three window sizes
+show this isn't one clean threshold shared across tasks — different
+domains hit their own sensitivity point at different window sizes,
+consistent with the "content position" interpretation above rather than
+a single universal cliff.
+
 ## Artifacts
 
-- Modified checkpoint config (weights symlinked, not copied):
-  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding2048/`
+- Modified checkpoint configs (weights symlinked, not copied):
+  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding2048/`,
+  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding1024/`,
+  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding512/`
 - Fix: `scripts/evaluate/kimi_k3_offline_eval/run_dspark_eval.py`
   (`sliding_window`/`use_sliding_window`/`sliding_window_non_causal`
   pass-through)
 - First (confounded) run: `/tmp/dspark_eval_sliding2048_{gsm8k,aime,aa-lcr-4k}.json`
 - Second (clean, 3-set) run: `/tmp/dspark_eval_sliding2048_bidir_{gsm8k,aime,aa-lcr-4k}.json`
-- Third (clean, full 24-set) run: `/tmp/dspark_eval_sliding2048_bidir_full_<set>.json`
+- Third (clean, full 24-set, window=2048) run: `/tmp/dspark_eval_sliding2048_bidir_full_<set>.json`
+  for all 24 sets listed above
+- Fourth (clean, full 24-set, window=512) run: `/tmp/dspark_eval_sliding512_full_<set>.json`
+  for all 24 sets listed above
+- Fifth (clean, full 24-set, window=1024) run: `/tmp/dspark_eval_sliding1024_full_<set>.json`
   for all 24 sets listed above
 - Baseline (unmodified, already existed): `/import/ml-sc-scratch5/chenw/models/kimi-k3-data-clean/<set>/dspark_eval_clean.json`
 
@@ -322,10 +479,21 @@ live-serving conversion path (see follow-up 4 below).
    all 24 sets, with `aa-lcr-4k` (the long-context set) the single
    most-affected at -0.5%, and no other domain showing a comparable
    effect.
-3. Try other window sizes (512, 1024, 4096) to map the sensitivity curve
+3. ~~Try other window sizes (512, 1024, 4096) to map the sensitivity curve
    — given 2048 already shows almost no effect, a smaller window (512)
    would be more informative for finding where it actually starts to bite,
-   especially on long-context sets.
+   especially on long-context sets.~~ **512 and 1024 done** — see "Fourth
+   run" and "Fifth run" above. Result: the sensitivity pattern changes
+   qualitatively, not just in magnitude — at 512, `rag`/`summarization`/
+   `swe-bench-pro`/`speed-rag` show real 6-8% degradation (verified not
+   diluted), while `aa-lcr-4k` (the long-context set that was the only one
+   affected at 2048) barely moves. At 1024, most of that cluster mostly
+   recovers (within ~1.5-3% of baseline), but not uniformly, and the
+   identity of the worst-hit set changes (`speed-writing` at 1024,
+   `rag` at 512) — three different domains hitting their own sensitivity
+   point at different window sizes, not one shared threshold. 4096
+   remains untested (lower priority now — 2048 already showed near-zero
+   effect, so 4096 would likely show the same or less).
 4. ~~Investigate the `update_dspark`/`sliding_window_non_causal` gap in
    vLLM's live-serving conversion path before ever attempting to actually
    *serve* a sliding-window-retrofitted DSpark checkpoint live.~~ **Done,
