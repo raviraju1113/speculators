@@ -5,7 +5,8 @@ drafts (MTP assistant, EAGLE3, DFlash, DSpark, P-EAGLE), the acceptance/throughp
 evals, and two training-time bugs found & fixed here: the **shared-KV attention
 leak** (§2) and a **hidden-state off-by-one** (§4), plus the feature-distillation
 quality push, the six-way 25-benchmark profile (§5), and the 400k DSpark
-scale-up (§6) and its results (§7).
+scale-up (§6), its results (§7), and the continuation run that shows more
+epochs are exhausted (§8).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -521,3 +522,85 @@ metrics (weighted by drafted tokens); `1 + sum` reproduces the measured AL.
 _Results: `scripts/evaluate/experiments/results/gemma4-26b-post400k-eval/`
 (merged from the four parallel `post400k-*` shards + the `heldout_chat` legs).
 Checkpoint: `output/gemma4_26b_dspark_400k/dspark/checkpoints/checkpoint_best`._
+
+---
+
+## 8. Does more training help? Continuation run (4 more epochs) — no
+
+§7 left the 400k run still improving at its 3-epoch cap, so this tests whether
+more epochs pay. **They do not, in any practical sense.**
+
+Not a plain resume: the original run used the default **linear** LR decay and
+ended at lr ≈ 6.5e-07, so resuming into the same `--save-path` would restore
+that dead schedule and train at ~zero LR. Instead the weights were loaded with
+`--from-pretrained` into a fresh save-path and the schedule restarted at a
+lower peak (**1e-4**, vs the original 3e-4) with **cosine** decay, 4 epochs,
+`--early-stop-patience 1`. (`--from-pretrained` carries the architecture, so
+model-definition flags like `--num-layers` must not be passed with it.)
+
+### Validation trajectory
+
+| epoch | val loss | val AL | note |
+|---|---|---|---|
+| — | 0.4950 | 3.520 | the original checkpoint (the bar) |
+| 0 | 0.5172 | 3.386 | LR restart perturbs it — *worse* than the start |
+| 1 | 0.4979 | 3.523 | recovered, ~tie |
+| 2 | 0.4899 | 3.582 | clears the bar |
+| **3 (best)** | **0.4897** | **3.587** | plateaued (LR ≈ 0) |
+
+Early stopping never fired: each epoch improved on the previous. Note it fires
+against *this run's* best, not the previous run's — worth watching when
+continuing into a fresh save-path.
+
+### Served result (26 benchmarks, fresh matched baseline)
+
+| benchmark | continuation (7 ep total) | original (3 ep) |
+|---|---|---|
+| gsm8k | 2.97 / 5.52 | 2.99 / 5.56 |
+| math_reasoning | **2.95 / 5.42** | 2.94 / 5.39 |
+| math500 | **2.75 / 5.17** | 2.71 / 5.11 |
+| humaneval | **2.66 / 4.99** | 2.63 / 4.95 |
+| HumanEval | **2.48 / 4.67** | 2.47 / 4.65 |
+| aime26 | 2.33 / 4.65 | 2.33 / 4.65 |
+| bfcl | 2.29 / 4.35 | 2.31 / 4.40 |
+| aime | 2.28 / 4.54 | 2.31 / 4.55 |
+| mbpp | **2.28 / 4.34** | 2.23 / 4.31 |
+| livecodebench | **2.04 / 4.12** | 2.03 / 4.10 |
+| heldout_chat | **1.98 / 3.75** | 1.95 / 3.69 |
+| speed-coding | 1.90 / 3.87 | 1.93 / 3.91 |
+| gpqa | **1.80 / 3.52** | 1.76 / 3.48 |
+| translation | **1.66 / 3.05** | 1.66 / 3.03 |
+| swe-bench-pro | **1.65 / 3.32** | 1.65 / 3.30 |
+| tool_call | **1.60 / 2.99** | 1.59 / 2.95 |
+| speed-rag | 1.56 / 3.19 | 1.57 / 3.19 |
+| mt-bench | **1.54 / 2.88** | 1.52 / 2.83 |
+| question | **1.54 / 2.88** | 1.52 / 2.83 |
+| rag | **1.49 / 3.00** | 1.48 / 2.98 |
+| qa | **1.34 / 2.45** | 1.34 / 2.44 |
+| speed-writing | **1.26 / 2.57** | 1.25 / 2.55 |
+| summarization | 1.18 / 2.39 | 1.18 / 2.40 |
+| speed-multilingual | 1.06 / 1.91 | 1.06 / 1.92 |
+| **MEAN (24 distinct)** | **1.942× / 3.731** | 1.934× / 3.716 |
+
+Continuation wins 16 of 24 benchmarks — consistent, but the margin is
+**+0.4%**.
+
+### Takeaways
+
+- **4 extra epochs (~4 days on 4 GPUs) bought +0.4% served speedup**
+  (1.934× → 1.942×). The 400k data is **saturated**; more passes are not
+  where the remaining headroom is.
+- **Validation AL overstates deployment gain**: training AL rose +1.9%
+  (3.520 → 3.587) but served speedup moved only +0.4%. Judge
+  drafts by served speedup, not val AL.
+- The LR-restart dip (epoch 0 *worse* than the starting checkpoint) is the
+  expected cost of re-warming; budget at least ~2 epochs before a continuation
+  shows any gain, or it will look like a failure at epoch 0.
+- Standing versus the reference: **1.940× vs the vanilla assistant's
+  1.890×** on the 23 distinct shared benchmarks — still ahead, still
+  by a small margin, still lost on multilingual. The open lever remains a
+  larger `--draft-vocab-size`, plus the ~286k samples never trained on.
+
+_Checkpoint: `output/gemma4_26b_dspark_400k_cont/dspark/checkpoints/checkpoint_best`
+(epoch 3). Results: `scripts/evaluate/experiments/results/gemma4-26b-cont400k-eval/`. Launcher:
+[`examples/train/_continue_400k_detached.sh`](../../examples/train/_continue_400k_detached.sh)._
