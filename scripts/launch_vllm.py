@@ -53,6 +53,15 @@ def parse_args():
     parser.add_argument(
         "model", type=str, help="Model name or path to extract hidden states from"
     )
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help=(
+            "Trust remote code when reading the model config (required for "
+            "models with custom modeling code, e.g. Kimi K3). Also forwarded "
+            "to the spawned `vllm serve`."
+        ),
+    )
 
     parser.add_argument(
         "--hidden-states-backend",
@@ -100,7 +109,9 @@ def main():
 
     from transformers import AutoConfig  # noqa: PLC0415
 
-    config = AutoConfig.from_pretrained(args.model)
+    config = AutoConfig.from_pretrained(
+        args.model, trust_remote_code=args.trust_remote_code
+    )
     if hasattr(config, "text_config"):
         config = config.text_config
     num_hidden_layers = config.num_hidden_layers
@@ -126,6 +137,13 @@ def main():
         "method": "extract_hidden_states",
         "num_speculative_tokens": 1,
         "draft_model_config": {
+            # "eagle_aux_hidden_state_layer_ids" is vLLM's own field name
+            # (vllm/v1/worker/gpu/spec_decode/eagle/eagle3_utils.py), inherited
+            # from EAGLE/EAGLE3 being the first method to need multi-layer aux
+            # hidden states. vLLM reuses this same field to configure aux-layer
+            # capture for every downstream algorithm trained on the dump
+            # (dflash, dspark, mtp, ...) -- it is NOT eagle-specific and must
+            # keep this exact key or vLLM will silently fall back to defaults.
             "hf_config": {"eagle_aux_hidden_state_layer_ids": target_layer_ids}
         },
     }
@@ -142,6 +160,7 @@ def main():
         json.dumps(speculative_config),
         "--kv_transfer_config",
         json.dumps(kv_transfer_config),
+        *(["--trust-remote-code"] if args.trust_remote_code else []),
         *vllm_args,
     ]
 

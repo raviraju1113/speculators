@@ -3,7 +3,7 @@
 set -euxo pipefail
 
 EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_ROOT="${INSTALL_ROOT:-/import/snvm-sc-scratch2/weip/sambaflow_oA0pU8PUsZ}"
+INSTALL_ROOT="${INSTALL_ROOT:-/import/snvm-sc-scratch2/weip/sambaflow_z3sgE9wz-5}"
 PEF="${PEF:-/import/snvm-sc-podscratch4/weip/gemma4/0828_mtp_mattf/apps_persistent/gemma4_31b_full_layers_tp16_ssss_cg_ss_kv_ss_tg_parallel_sdk_bf16/coe_pef_bsBS_max8_ssSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072/gemma4_31b_full_layers_TP16_ssSS_CG_SS_KV_SS_TG_parallel_sdk_bf16_CoE_ckpt_sharing_BSBS_max8_SSSS_CG_max131072_SS_KV_max131072_SS_TG_max131072.pef}"
 CKPT="${CKPT:-/import/mlcp-sc-nlp/gemma-4/gemma-4-31b-it-pad5632-kv8-prefix}"
 ASSISTANT="${ASSISTANT:-/import/ml-sc-nlpcheckpoints-scratch3/weip/gemma-4-31b-it-assistant-pad5632-prefix-split}"

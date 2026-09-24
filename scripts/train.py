@@ -23,6 +23,7 @@ from speculators.models.mtp.data import shift_batch_mtp
 from speculators.models.utils import (
     get_verifier_config,
     resolve_draft_intermediate_size,
+    translate_verifier_config_for_draft,
 )
 from speculators.train.config import TrainConfig
 from speculators.train.dataloader import create_train_val_loaders
@@ -153,6 +154,7 @@ def create_transformer_layer_config(  # noqa: C901
     full_attention_indices: list[int],
     mrope_full_head_hack: bool = True,
     mamba2_args: dict | None = None,
+    trust_remote_code: bool = False,
 ) -> PretrainedConfig:
     if draft_arch not in DRAFT_ARCH_CONFIGS:
         raise ValueError(
@@ -169,7 +171,9 @@ def create_transformer_layer_config(  # noqa: C901
         )
 
     config_class = DRAFT_ARCH_CONFIGS[draft_arch]
-    verifier_config = AutoConfig.from_pretrained(verifier_name_or_path)
+    verifier_config = AutoConfig.from_pretrained(
+        verifier_name_or_path, trust_remote_code=trust_remote_code
+    )
 
     # For multimodal models (Qwen3VL, etc.), extract text_config
     if hasattr(verifier_config, "text_config"):
@@ -295,6 +299,7 @@ def create_transformer_layer_config(  # noqa: C901
 def load_draft_transformer_layer_config(
     draft_config: str,
     verifier_name_or_path: str,
+    trust_remote_code: bool = False,
 ) -> PretrainedConfig:
     """Load the draft decoder ``transformer_layer_config`` from a config source.
 
@@ -324,7 +329,9 @@ def load_draft_transformer_layer_config(
     config_class: type[PretrainedConfig] = type(AutoConfig.for_model(model_type))
     draft_config_obj = config_class.from_dict(config_dict)
 
-    verifier_config = get_verifier_config(verifier_name_or_path)
+    verifier_config = get_verifier_config(
+        verifier_name_or_path, trust_remote_code=trust_remote_code
+    )
     if draft_config_obj.hidden_size != verifier_config.hidden_size:
         raise ValueError(
             f"--draft-config hidden_size ({draft_config_obj.hidden_size}) must match "
@@ -408,7 +415,9 @@ def parse_vocab_mappings(args: argparse.Namespace):
         "None. Using full verifier vocab"
     )
     # When vocab mapping is not provided, use the full verifier vocab
-    verifier_config = AutoConfig.from_pretrained(args.verifier_name_or_path)
+    verifier_config = AutoConfig.from_pretrained(
+        args.verifier_name_or_path, trust_remote_code=args.trust_remote_code
+    )
     if hasattr(verifier_config, "text_config"):
         verifier_config = verifier_config.text_config
     return None, None, verifier_config.vocab_size
@@ -512,12 +521,21 @@ def build_draft_model(
         # MTP uses the verifier's own decoder config as the draft
         # transformer_layer_config and extracts the native MTP head weights from
         # the verifier; the decoder-shaping flags and --draft-config do not apply,
-        # and there is no draft mask token to resolve.
-        transformer_layer_config = get_verifier_config(args.verifier_name_or_path)
+        # and there is no draft mask token to resolve. Trust-remote-code verifiers
+        # whose decoder is not a registered transformers type (Kimi K3) are
+        # translated to an equivalent registered config (deepseek_v3 MLA).
+        transformer_layer_config = translate_verifier_config_for_draft(
+            get_verifier_config(
+                args.verifier_name_or_path,
+                trust_remote_code=args.trust_remote_code,
+            )
+        )
     else:
         if args.draft_config:
             transformer_layer_config = load_draft_transformer_layer_config(
-                args.draft_config, args.verifier_name_or_path
+                args.draft_config,
+                args.verifier_name_or_path,
+                trust_remote_code=args.trust_remote_code,
             )
         else:
             full_attention_indices = args.full_attention_indices
@@ -554,6 +572,7 @@ def build_draft_model(
                     )
                     if hasattr(args, k)
                 },
+                trust_remote_code=args.trust_remote_code,
             )
 
         args.mask_token_id = resolve_mask_token_id(

@@ -57,6 +57,22 @@ model_classes: dict[str, ModelComponents] = {
 }
 
 try:
+    from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
+        DeepseekV3DecoderLayer,
+        DeepseekV3RMSNorm,
+        DeepseekV3RotaryEmbedding,
+    )
+
+    model_classes["deepseek_v3"] = ModelComponents(
+        DeepseekV3DecoderLayer,
+        DeepseekV3DecoderLayer,
+        DeepseekV3RMSNorm,
+        DeepseekV3RotaryEmbedding,
+    )
+except ImportError:
+    pass
+
+try:
     from transformers.models.qwen3_next.modeling_qwen3_next import (
         Qwen3NextDecoderLayer,
         Qwen3NextRMSNorm,
