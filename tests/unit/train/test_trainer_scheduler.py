@@ -71,7 +71,7 @@ def test_scheduler_type_rejects_unsupported_values():
     # --scheduler-type choice (not the missing required verifier arg).
     with pytest.raises(SystemExit):
         TrainConfig.resolve(
-            ["--verifier-name-or-path", "x", "--scheduler-type", "constant"]
+            ["--verifier-name-or-path", "x", "--scheduler-type", "bogus"]
         )
 
 
