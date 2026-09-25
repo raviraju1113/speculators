@@ -40,6 +40,9 @@ CKPT="${CKPT:-/sms-scratch/mengmengj/output/gemma4_31b_dspark_nemo782k_scratch/c
 TAG="${TAG:-scratch_best}"
 METHOD="${METHOD:-dspark}"
 K_MAIN="${K_MAIN:-8}"
+# fullattn1 k8 (job 252) OOMed at engine init with 0.92 (KV cache took the
+# margin; the post-KV warmup wanted 3.6 GiB more) -- rerun with GPU_UTIL=0.88.
+GPU_UTIL="${GPU_UTIL:-0.92}"
 BENCHES="aa-lcr-1k,aa-lcr-2k,aa-lcr-4k,aa-lcr-8k,aa-lcr-16k,aa-lcr-32k,aa-lcr-64k,aa-lcr-96k,aa-lcr-112k"
 PORT=8600
 
@@ -47,14 +50,14 @@ run_pass () {  # $1 = tag (k8|k3|base); remaining args = extra vllm serve args
   local tag=$1; shift
   vllm serve /sms-scratch/checkpoints/gemma-4-31B-it \
     --host 127.0.0.1 --port $PORT --tensor-parallel-size 2 \
-    --gpu-memory-utilization 0.92 --max-model-len 131072 \
+    --gpu-memory-utilization "$GPU_UTIL" --max-model-len 131072 \
     --enforce-eager --no-enable-prefix-caching \
     --chat-template /sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja \
-    "$@" > "logs/lcr_bins_server_${tag}.log" 2>&1 &
+    "$@" > "logs/lcr_bins_server_${TAG}_${tag}.log" 2>&1 &
   local srv=$!
   for _ in $(seq 1 120); do
     curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break
-    kill -0 $srv 2>/dev/null || { echo "!! $tag server died"; tail -20 "logs/lcr_bins_server_${tag}.log"; return 1; }
+    kill -0 $srv 2>/dev/null || { echo "!! $tag server died"; tail -20 "logs/lcr_bins_server_${TAG}_${tag}.log"; return 1; }
     sleep 15
   done
   echo "--- $tag pass $(date '+%H:%M') ---"

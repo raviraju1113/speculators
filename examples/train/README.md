@@ -15,13 +15,21 @@ Obsolete cluster-era and completed one-off scripts are in `archive/`.
 | `..._anchorT_nemo782k` | nemo782k, continued from anchorT ep14 | to 24 | `run_anchorT_nemo782k_local.sh` | `anchortnemo782k` | **checkpoint of record: `checkpoints/24`** (val 4.69) — k8 aime 5.89 / gpqa 4.43 / lcb 5.25, 4.1–5.4× vs 59.5 tok/s baseline |
 | `..._nemo782k_scratch` | nemo782k, from scratch | 26 | `run_nemo782k_scratch_local.sh` | `nemoscratch782k` | `checkpoint_best -> 25`; == continued run at matched exposure (curriculum irrelevant); k8 aime 5.99 / gpqa 4.22 / lcb 5.07 |
 | `..._nemo782k_fullattn2` | nemo782k, from scratch, full-attn layers {0,3} | 26 | `run_nemo782k_fullattn2_local.sh` | `fullattn2nemo` | `checkpoint_best -> 25`; in-window == scratch (k8 aime 6.06/gpqa 4.25/lcb 5.13) but **decays on long context** — see architecture verdict |
-| `..._nemo782k_fullattn1` | nemo782k, from scratch, full-attn layer {0} | 26 (WSD) | `run_nemo782k_fullattn1_local.sh` | `fullattn1nemo` | pending launch (node 100 needs `/dev/shm/hidden_states_*` cleanup first) |
+| `..._nemo782k_fullattn1` | nemo782k, from scratch, full-attn layer {0} | 26 (WSD) | `run_nemo782k_fullattn1_local.sh` | `fullattn1nemo` | done 2026-09-15; `checkpoint_best -> 25` (val 4.50 vs fullattn2 4.75); evals: `gemma4-31b-dspark-fullattn1-ep25.yaml` + LCR bins `TAG=fullattn1_ep25` |
 
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
   same-k, native k=8, stabler outputs. Serving True checkpoints needs the
   bonus-anchor fix — baked into the `dspark-host` venv / local image; upstream
   vLLM main (post-0.26.0) derives it from checkpoint config.
+- (2026-09-17) `dspark-host` venv also carries a per-layer-type RoPE patch for
+  the DFlash/DSpark draft (`qwen3_dflash.py`, `configs/speculators/base.py`;
+  `*.orig` backups alongside): a checkpoint config may set
+  `transformer_layer_config.rope_parameters` in the Transformers-v5 nested
+  form `{"full_attention": {yarn...}, "sliding_attention": {default...}}` so
+  serve-time YaRN applies to the full-attention layers only. Flat configs are
+  unaffected. Example: `..._fullattn1/checkpoints/25_yarn_full` (symlinked
+  weights + edited config).
 - (2026-09) **Architecture: all-sliding draft (window 2048), no full-attention
   layers.** AA-LCR bins (1k–112k): all-sliding flat 3.8→4.0 accept_len;
   full-attention variants decay to ~3.0 at 112k regardless of training dose
