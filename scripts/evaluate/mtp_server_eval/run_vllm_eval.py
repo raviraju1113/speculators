@@ -49,6 +49,10 @@ DATA_FILES = {
     "swe-rebench": "swe-rebench.jsonl",
     "aa-lcr": "aa-lcr.jsonl",
     "bfcl": "bfcl.jsonl",
+    # Held-out slice of the regen training distribution (in-domain sanity check).
+    "heldout_chat": "heldout_chat.jsonl",
+    # MAI Profile V3 delta-extraction traffic (long structured prompts).
+    "sc1_delta": "sc1_delta.jsonl",
     # AA-LCR context-length sweep: same 100 questions truncated to each length,
     # so acceptance differences isolate context length (../prepare_aa_lcr_sweep.py).
     # Needs max_model_len >= bin + max_tokens.
@@ -59,6 +63,8 @@ DATA_FILES = {
     "aa-lcr-16k": "aa-lcr-16k.jsonl",
     "aa-lcr-32k": "aa-lcr-32k.jsonl",
     "aa-lcr-64k": "aa-lcr-64k.jsonl",
+    "aa-lcr-96k": "aa-lcr-96k.jsonl",
+    "aa-lcr-112k": "aa-lcr-112k.jsonl",
     # The source documents top out at ~123k tokens, so this bin is the full
     # untruncated document set (~89k-123k), not an exact 128k point.
     "aa-lcr-128k": "aa-lcr-128k.jsonl",

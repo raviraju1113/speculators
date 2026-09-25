@@ -1,0 +1,40 @@
+# DSpark leg of the tri-draft eval (gemma4-26b-tri-draft-eval.yaml covers the rest).
+# DSpark serving needs vLLM >= 0.28 (Qwen3DSparkModel + method: dspark):
+#
+#   source /nvmedata/chenw/envs/speculator-vllm028/bin/activate
+#   export CUDA_HOME=/usr/local/cuda-12.9 PATH="$CUDA_HOME/bin:$PATH"
+#   python run_experiments.py --config gemma4-26b-dspark-eval.yaml
+#
+# Baseline is re-run in the same env: vLLM 0.24 vs 0.28 decode tok/s are not
+# comparable, so the speedup denominator must come from the same version.
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-26B-A4B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  benchmarks: [aime]
+  num_samples: 30
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/gemma4-26b-tri-draft-dspark
+
+experiments:
+  - name: baseline
+
+  - name: ours_dspark_k8
+    draft: /nvmedata/chenw/speculators/output/gemma4_26b_tri_draft/dspark/checkpoints/checkpoint_best
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark

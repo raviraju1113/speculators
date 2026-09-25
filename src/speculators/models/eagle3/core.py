@@ -15,9 +15,14 @@ from speculators.models.eagle3.attention import (
     extend_dense_mask_for_draft_tokens,
     extend_mask_for_draft_tokens,
 )
+from speculators.models.eagle3.mamba2 import seq_idx_from_document_ids
 from speculators.models.eagle3.metrics import compute_metrics
 from speculators.models.eagle3.model_definitions import model_classes
-from speculators.models.utils import conditional_torch_compile, resolve_target_layer_ids
+from speculators.models.utils import (
+    conditional_torch_compile,
+    resolve_norm_eps,
+    resolve_target_layer_ids,
+)
 from speculators.proposals.greedy import GreedyTokenProposalConfig
 
 
@@ -41,6 +46,12 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
     d2t: torch.Tensor | None
 
     def __init__(self, config: Eagle3SpeculatorConfig):
+        # Recurrent draft mixers (e.g. mamba2) take no attention mask; they isolate
+        # packed documents with seq_idx instead. Skip all mask machinery for them.
+        self.uses_attention = model_classes[
+            config.transformer_layer_config.model_type
+        ].uses_attention
+
         # Forcibly override config settings
         if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001
             config.transformer_layer_config._attn_implementation = (  # noqa: SLF001
@@ -91,33 +102,44 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
 
         # Sliding window attention support
         self.sliding_window = getattr(tl_config, "sliding_window", None)
-        layer_types = getattr(tl_config, "layer_types", None) or []
+        # Mamba2Config.layer_types is ["mamba"] * n, which is not an attention type.
+        layer_types = (
+            (getattr(tl_config, "layer_types", None) or [])
+            if self.uses_attention
+            else []
+        )
         self.sliding_window_indices = [
             i
             for i, layer_type in enumerate(layer_types)
             if layer_type == "sliding_attention"
         ]
         self.uses_sliding_window_attn = bool(self.sliding_window_indices)
-        self.uses_full_attn = bool(num_layers - len(self.sliding_window_indices))
+        self.uses_full_attn = self.uses_attention and bool(
+            num_layers - len(self.sliding_window_indices)
+        )
 
         # ROTARY EMBEDDINGS
         # Create a modified config for the rotary embedding to use 2x the hidden size
-        modified_tl_config = copy.copy(config.transformer_layer_config)
-        modified_tl_config.hidden_size *= 2
-        self.rotary_emb = self._model_definitions.rotary_emb_class(modified_tl_config)
+        rotary_emb_class = self._model_definitions.rotary_emb_class
+        if rotary_emb_class is None:
+            # Recurrent mixers encode position through scan order.
+            self.rotary_emb = None
+        else:
+            modified_tl_config = copy.copy(config.transformer_layer_config)
+            modified_tl_config.hidden_size *= 2
+            self.rotary_emb = rotary_emb_class(modified_tl_config)
 
         # LAYER NORMS
         norm_class = self._model_definitions.norm_class
-        self.norm = norm_class(
-            self.hidden_size, eps=config.transformer_layer_config.rms_norm_eps
-        )
-        self.verifier_norm = norm_class(self.hidden_size, eps=tl_config.rms_norm_eps)
+        norm_eps = resolve_norm_eps(tl_config)
+        self.norm = norm_class(self.hidden_size, eps=norm_eps)
+        self.verifier_norm = norm_class(self.hidden_size, eps=norm_eps)
         self.verifier_norm.weight.requires_grad = False
 
         if config.norm_before_fc:
             self.input_norm = self._model_definitions.norm_class(
                 num_aux * self.hidden_size,
-                eps=config.transformer_layer_config.rms_norm_eps,
+                eps=norm_eps,
             )
         else:
             self.input_norm = None
@@ -128,7 +150,7 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
                 [
                     self._model_definitions.norm_class(
                         self.hidden_size,
-                        eps=config.transformer_layer_config.rms_norm_eps,
+                        eps=norm_eps,
                     )
                     for _ in range(num_aux)
                 ]
@@ -211,6 +233,12 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         past_key_values = DynamicCache()
 
         doc_ids_1d = document_ids.squeeze(0).to(device)
+        # Recurrent mixers isolate packed documents with seq_idx rather than a mask.
+        seq_idx = (
+            None
+            if self.uses_attention
+            else seq_idx_from_document_ids(document_ids.to(device))
+        )
 
         full_attn_mask = (
             self._build_attn_mask(doc_ids_1d, total_seq_len, device)
@@ -276,7 +304,11 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
             hidden_states = torch.cat([input_embeds, hidden_states], dim=-1)
             # shape: [1, total_seq_len, 2 * hidden_size]
 
-            position_embeddings = self.rotary_emb(hidden_states, position_ids)
+            position_embeddings = (
+                self.rotary_emb(hidden_states, position_ids)
+                if self.rotary_emb is not None
+                else None
+            )
 
             for layer_idx, decoder_layer in enumerate(self.layers):
                 layer_mask = (
@@ -284,6 +316,9 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
                     if layer_idx in self.sliding_window_indices
                     else full_attn_mask
                 )
+                layer_kwargs = dict(kwargs)
+                if seq_idx is not None:
+                    layer_kwargs["seq_idx"] = seq_idx
                 hidden_states = decoder_layer(
                     hidden_states,
                     attention_mask=layer_mask,
@@ -291,7 +326,7 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
                     past_key_values=past_key_values,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
-                    **kwargs,
+                    **layer_kwargs,
                 )
 
             if self.config.norm_output:

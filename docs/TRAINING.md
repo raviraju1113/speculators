@@ -5,7 +5,7 @@ D-Flash / P-EAGLE) against a frozen verifier, running on the `sngpu` scheduler i
 the project Docker image. It's meant to get a colleague from a fresh checkout to a
 trained + evaluated draft without rediscovering the cluster-specific gotchas.
 
-If you just want the package overview / model formats, see [README.md](README.md).
+If you just want the package overview / model formats, see [README.md](../README.md).
 This doc is the *operational* recipe.
 
 ---
@@ -282,12 +282,52 @@ torchrun --nproc_per_node=4 scripts/gemma4_mtp/train.py \
     --epochs 1 --bf16 --ttt-steps 5
 ```
 
+### Simultaneous multi-draft training (single node, 4 GPUs)
+
+All registered draft types can be trained **at the same time** on one 4-GPU node by
+sharing the frozen target: one vLLM hidden-states server feeds every generic
+`scripts/train.py` trainer, and the draft models themselves are small enough to
+co-locate two per GPU. Ready-made pipelines (Gemma4-26B-A4B target):
+
+- [`examples/train/gemma4_26b_tri_draft_online.sh`](../examples/train/gemma4_26b_tri_draft_online.sh)
+  — EAGLE3 + DSpark + MTP (one trainer per GPU).
+- [`examples/train/gemma4_26b_penta_draft_online.sh`](../examples/train/gemma4_26b_penta_draft_online.sh)
+  — all five types at once:
+
+| GPU | Component | Observed footprint |
+|---|---|---|
+| 0 | shared vLLM hidden-states server (target, layer ids `2 15 27` +last) | ~68 GB |
+| 1 | EAGLE3 + P-EAGLE trainers (co-located) | ~45 GB |
+| 2 | DSpark + DFlash trainers (co-located) | ~62 GB |
+| 3 | Gemma4-MTP fine-tune (own live target + draft on one GPU) | ~78 GB |
+
+Design points (validated: all trainer GPUs at 100% util, server fetch wait 2–5%):
+
+- **Shared hidden-state cache** (`--on-generate cache`, one `--hidden-states-path` for
+  all trainers): each sample's features are generated once and reused by every trainer
+  and epoch. Budget ~26 MB/sample at seq 4096 (30k samples ≈ 780 GB). Never mix
+  `--on-generate delete` between trainers sharing a cache — they race on files.
+- **Per-draft configuration is independent** (lr, layers, block size, losses, epochs —
+  each leg is its own process with its own optimizer/checkpoints); only
+  `--target-layer-ids` must match the server, and `--total-seq-len` must fit under the
+  server's `--max-model-len`.
+- **Trainings are isolated**, so simultaneity is purely a wall-clock win — this is
+  different from `train_online.py`'s YAML `drafts:` mode, which trains sequentially.
+- The Gemma4-MTP leg runs single-GPU (with one visible device, `train_online.py` puts
+  target and draft on the same GPU) and needs no server.
+
+First results (5k samples × 2 epochs, aime, greedy, k=5 / DSpark k=8; baseline ≈126 tok/s):
+from-scratch DSpark **1.51×** (accept_len 3.00), EAGLE3 **1.40×** (2.88); the vanilla
+assistant reference is 2.03× (4.83). Fine-tuning the assistant at the random-init lr
+6e-4 *degraded* it to 1.26× — fine-tune with lr ≈ 5e-5 instead. Eval configs:
+`scripts/evaluate/experiments/gemma4-26b-tri-draft-eval.yaml` (+ `gemma4-26b-dspark-eval.yaml`).
+
 ---
 
 ## 5. Evaluation
 
 Acceptance rate / throughput / speedup live under
-[scripts/evaluate/experiments/](scripts/evaluate/experiments/). The runner launches one
+[scripts/evaluate/experiments/](../scripts/evaluate/experiments/). The runner launches one
 vLLM server per experiment (backbone alone, or with a draft via `--speculative-config`),
 runs the benchmark, stops the server, and prints a speedup table (first experiment =
 baseline).
@@ -300,13 +340,32 @@ python run_experiments.py --config gemma4-kimi-mtp-300k.yaml --dry-run   # print
 
 Point a config's `experiments[].draft` at the `checkpoint_best` dir your training run
 produced. Benchmarks/samples/temperature are set in the YAML; greedy (`temperature: 0.0`)
-gives canonical acceptance. See [scripts/evaluate/experiments/README.md](scripts/evaluate/experiments/README.md)
+gives canonical acceptance. See [scripts/evaluate/experiments/README.md](../scripts/evaluate/experiments/README.md)
 for the config schema.
 
 ---
 
 ## 6. Gotchas / lessons learned
 
+- **`scripts/train.py` and torchrun:** after the distributed refactor (#656),
+  `maybe_setup_distributed()` returns nothing (topology comes from getter functions).
+  Upstream `scripts/train.py` still unpacked a 4-tuple from it and crashed on every
+  launch (`TypeError: cannot unpack non-iterable NoneType`); fixed here by calling it
+  bare. With the fix, both `torchrun` and plain single-GPU `python` launches work.
+- **Server context headroom:** hidden-state generation sends `prompt + 1` tokens, so
+  samples truncated to exactly `--seq-length` are rejected by a server whose
+  `--max-model-len` equals it (400s, silent sample skips). Give the server headroom:
+  `max-model-len = seq_length + 256`.
+- **FlashInfer JIT picks up `$PATH`'s nvcc:** an old system `/usr/bin/nvcc` (CUDA 10.x)
+  fails with `Unknown option '-generate-dependencies-with-compile'` and kills vLLM
+  startup. Export the toolkit matching your torch build first, e.g.
+  `export CUDA_HOME=/usr/local/cuda-12.9 PATH="$CUDA_HOME/bin:$PATH"`.
+- **DSpark serving needs vLLM ≥ 0.28** (`method: dspark`, `Qwen3DSparkModel`); on this
+  box that's the venv `/nvmedata/chenw/envs/speculator-vllm028`. Training works in the
+  regular `speculator` env; only serving/eval needs the newer vLLM.
+- **Fine-tune lr ≠ from-scratch lr:** lr 6e-4 (the random-init recipe) wrecked the
+  vanilla Gemma4 assistant in a 2-epoch fine-tune (vLLM accept_len 4.83 → 2.98);
+  use ~5e-5 for fine-tuning an already-good draft.
 - **Shared memory:** always run training in the container with `--shm-size` + `--ipc=host`
   (the submit wrapper does this). Bare sngpu containers OOM `/dev/shm`.
 - **Stale code:** when iterating, make sure you're running the mounted checkout, not the

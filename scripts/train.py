@@ -16,6 +16,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from hs_connectors import HiddenStatesBackend
 from speculators.model import SpeculatorModel
+from speculators.models.base_components import model_classes as base_model_classes
 from speculators.models.eagle3.data import shift_batch
 from speculators.models.eagle3.rotary_partial import install_partial_neox_rotary
 from speculators.models.mtp.data import shift_batch_mtp
@@ -47,6 +48,13 @@ DRAFT_ARCH_CONFIGS: dict[str, type] = {
     "llama": LlamaConfig,
     "qwen3": Qwen3Config,
 }
+
+try:
+    from transformers.models.mamba2.configuration_mamba2 import Mamba2Config
+
+    DRAFT_ARCH_CONFIGS["mamba2"] = Mamba2Config
+except ImportError:
+    pass
 MROPE_INVERSE_TOLERANCE = 1e-6
 
 
@@ -104,6 +112,39 @@ def _maybe_apply_mrope_full_head_hack(
         )
 
 
+def _create_mamba2_layer_config(
+    verifier_config: PretrainedConfig,
+    num_layers: int,
+    mamba2_args: dict,
+) -> PretrainedConfig:
+    """Build a Mamba2 draft-block config sized to the verifier.
+
+    :param mamba2_args: the ``--mamba-*`` CLI group; ``mamba_mlp`` selects the
+        capacity-matched arm by giving the block a SwiGLU MLP.
+    """
+    from speculators.models.eagle3.mamba2 import build_mamba2_draft_config
+
+    intermediate_size = (
+        resolve_draft_intermediate_size(verifier_config)
+        if mamba2_args.get("mamba_mlp")
+        else None
+    )
+    return build_mamba2_draft_config(
+        hidden_size=verifier_config.hidden_size,
+        vocab_size=verifier_config.vocab_size,
+        num_hidden_layers=num_layers,
+        expand=mamba2_args.get("mamba_expand", 2),
+        head_dim=mamba2_args.get("mamba_head_dim", 64),
+        state_size=mamba2_args.get("mamba_state_size", 128),
+        n_groups=mamba2_args.get("mamba_n_groups", 8),
+        conv_kernel=mamba2_args.get("mamba_conv_kernel", 4),
+        chunk_size=mamba2_args.get("mamba_chunk_size", 256),
+        intermediate_size=intermediate_size,
+        initializer_range=verifier_config.initializer_range,
+        tie_word_embeddings=False,
+    )
+
+
 def create_transformer_layer_config(  # noqa: C901
     verifier_name_or_path: str,
     num_layers: int,
@@ -112,6 +153,7 @@ def create_transformer_layer_config(  # noqa: C901
     sliding_window: int,
     full_attention_indices: list[int],
     mrope_full_head_hack: bool = True,
+    mamba2_args: dict | None = None,
     trust_remote_code: bool = False,
 ) -> PretrainedConfig:
     if draft_arch not in DRAFT_ARCH_CONFIGS:
@@ -136,6 +178,13 @@ def create_transformer_layer_config(  # noqa: C901
     # For multimodal models (Qwen3VL, etc.), extract text_config
     if hasattr(verifier_config, "text_config"):
         verifier_config = verifier_config.text_config
+
+    if draft_arch == "mamba2":
+        # A recurrent block shares none of the attention shaping below: no heads, no
+        # rotary, no sliding window. Build it from its own knobs instead.
+        return _create_mamba2_layer_config(
+            verifier_config, num_layers, mamba2_args or {}
+        )
 
     hidden_act = (
         hidden_act
@@ -490,7 +539,10 @@ def build_draft_model(
             )
         else:
             full_attention_indices = args.full_attention_indices
-            if not full_attention_indices:
+            # Recurrent draft mixers take no attention mask, so the sliding-window
+            # knobs do not apply to them and reporting them would mislead.
+            draft_uses_attention = base_model_classes[args.draft_arch].uses_attention
+            if not full_attention_indices and draft_uses_attention:
                 logger.info(
                     "All %d draft layers using sliding window attention "
                     "(window=%d). To use full attention on specific layers, "
@@ -507,6 +559,19 @@ def build_draft_model(
                 sliding_window=args.sliding_window,
                 full_attention_indices=full_attention_indices,
                 mrope_full_head_hack=args.draft_mrope_full_head_hack,
+                mamba2_args={
+                    k: getattr(args, k)
+                    for k in (
+                        "mamba_expand",
+                        "mamba_head_dim",
+                        "mamba_state_size",
+                        "mamba_n_groups",
+                        "mamba_conv_kernel",
+                        "mamba_chunk_size",
+                        "mamba_mlp",
+                    )
+                    if hasattr(args, k)
+                },
                 trust_remote_code=args.trust_remote_code,
             )
 
@@ -542,8 +607,10 @@ def main(cfg: TrainConfig):  # noqa: C901
         loggers=args.logger, run_name=args.run_name, output_dir=args.log_dir
     )
 
-    # Setup distributed training
-    local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
+    # Setup distributed training. This populates module-level topology state rather
+    # than returning it; read it back through the getters (is_distributed, get_rank).
+    # Rebinding the getters to locals would shadow the is_distributed() call below.
+    maybe_setup_distributed()
 
     # Record the run hyperparameters (e.g. to the wandb run config). The metric
     # logger's rank0 filter ensures this only fires once in distributed runs.
@@ -694,8 +761,10 @@ def main(cfg: TrainConfig):  # noqa: C901
         scheduler_warmup_ratio=args.scheduler_warmup_ratio,
         scheduler_total_steps=args.scheduler_total_steps,
         scheduler_num_cosine_cycles=args.scheduler_num_cosine_cycles,
+        scheduler_wsd_decay_ratio=args.scheduler_wsd_decay_ratio,
         checkpoint_freq=args.checkpoint_freq,
         save_best=args.save_best,
+        early_stop_patience=args.early_stop_patience,
         hidden_states_dtype=hidden_states_dtype,
         log_freq=args.log_freq,
         fsdp_shard=args.fsdp_shard,
@@ -1198,11 +1267,12 @@ def parse_args():
         "--scheduler-type",
         type=str,
         default="linear",
-        choices=["linear", "cosine", "constant", "none"],
+        choices=["linear", "cosine", "constant", "wsd", "none"],
     )
     parser.add_argument("--scheduler-warmup-steps", type=int, default=None)
     parser.add_argument("--scheduler-total-steps", type=int, default=None)
     parser.add_argument("--scheduler-num-cosine-cycles", type=float, default=0.5)
+    parser.add_argument("--scheduler-wsd-decay-ratio", type=float, default=0.15)
 
     # optimizer
     parser.add_argument(

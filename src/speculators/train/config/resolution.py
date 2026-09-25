@@ -97,6 +97,8 @@ _ALGORITHM_GROUP_USERS: dict[str, frozenset[str]] = {
     "dspark": frozenset({"dspark"}),
     "peagle": frozenset({"peagle"}),
     "mtp": frozenset({"mtp"}),
+    # The Mamba2 draft block is dispatched through eagle3's model_classes table.
+    "mamba2": frozenset({"eagle3"}),
 }
 
 

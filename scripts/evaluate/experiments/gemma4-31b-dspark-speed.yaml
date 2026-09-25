@@ -1,0 +1,85 @@
+# SPEED test: real baseline + CUDA graphs enabled.
+#
+# WHY
+#   The 2026-08-05 anchor-patch run gave accept_len 3.569 (aime, k=8) but only
+#   66.3 decode tok/s = 1.20x over the ~55 tok/s backbone. RedHat's checkpoint
+#   showed the SAME structural overhead: 4.562 / 1.52x. Implied draft cost is
+#   ~2x a verifier step in both cases, i.e. it is the serving config, not the
+#   weights.
+#
+#   Prime suspect: --enforce-eager. DSpark's speculator does a parallel 8-slot
+#   backbone forward PLUS 8 sequential Markov sampling steps per draft, and its
+#   own docstring says "CUDA graphs (FULL, mirroring DFlash) cover the whole
+#   draft step: the parallel backbone forward AND the sequential Markov
+#   sampling." Eager mode pays full kernel-launch cost on every one of those.
+#
+#   So: --enforce-eager is REMOVED here. Everything else is unchanged.
+#
+#   MEMORY RISK: dropping enforce-eager means vLLM allocates a CUDA graph pool.
+#   Verifier 62.6 GB + draft 8.4 GB = ~71 GB on an 80 GB card, so this may OOM.
+#   If it does, the fallback ladder is:
+#     1. gpu_memory_utilization 0.90
+#     2. max_model_len 3072   (30 aime/lcb prompts are all well under this)
+#     3. add "--cuda-graph-sizes" "1,2,4,8,16"  to shrink the captured set
+#   If none of that fits, the honest conclusion is that this draft is too large
+#   to graph alongside this verifier on one A100-80, which is itself a result.
+#
+# baseline is FIRST, so run_experiments.py uses it as the speedup denominator
+# and the printed speedup column is finally meaningful.
+#
+# NOTE: this run REQUIRES the local algos.py patch (sample_from_anchor honoured),
+# since the draft below was trained with sample_from_anchor=True.
+# Original at algos.py.orig; revert with `cp algos.py.orig algos.py`.
+#
+# Node MUST have driver 595.x.
+#
+# Run:
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark-speed.yaml
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    # --enforce-eager deliberately ABSENT: that is the whole point of this run.
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-speed
+
+experiments:
+  # Speedup denominator, measured under the SAME graph settings as the drafts.
+  # The old ~55 tok/s figure came from an enforce-eager run, so it is not a fair
+  # denominator here -- the backbone gets faster with graphs too.
+  - name: baseline
+
+  # Ours, post-anchor-patch. Eager reference: 66.3 (aime) / 59.4 (lcb).
+  - name: ours_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # RedHat, same conditions. Eager reference: 83.7 (aime) / 70.7 (lcb).
+  # Included so the speed conclusion does not rest on our undertrained draft.
+  - name: redhat_k7
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
