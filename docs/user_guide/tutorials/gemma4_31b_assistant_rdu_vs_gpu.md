@@ -25,8 +25,8 @@ tokens at the first terminator. It uses the same k=5 formulas as vLLM:
 `accept_rate = accepted_draft_tokens / (num_drafts * 5)`. It completed on
 16× SN40 (`sc3-s240`, Slurm job `4347944`) in 2h16m with 1,210 successful
 samples, no errors, and no skips. Ten RDU requests reached the 4,096-token
-limit, versus eight on GPU. RDU decode tok/s is intentionally excluded because
-it is not comparable to GPU decode tok/s.
+limit, versus eight on GPU. Decode tok/s is intentionally not reported here,
+since it is not comparable between the two backends (see Takeaway).
 
 ## Launch details
 
@@ -110,4 +110,10 @@ the `snrdu` output is written to `$LOG_DIR/snrdu.log`.
 `accept_len` and `accept_rate` are properties of the draft/target pair, not of
 the hardware: across 25 benchmarks the two backends agree to within 0.17
 `accept_len` (median |Δ| 0.05), and 22 of 25 are within 0.1. Decode tok/s is
-deliberately not compared, since the two stacks are not throughput-comparable.
+deliberately not compared as a hardware benchmark, since the two stacks
+(4x A100 80GB GPU via vLLM vs. 16x SN40 RDU via CoE PEF) are not
+throughput-comparable: this eval sends one request at a time on both sides,
+the RDU PEF is compiled with a static, non-continuous-batching shape while
+vLLM is a full continuous-batching server, and the two stacks' dispatch/setup
+overhead per request differ by orders of magnitude. None of that reflects
+production serving throughput on either backend.
