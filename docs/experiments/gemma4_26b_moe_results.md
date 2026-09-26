@@ -7,7 +7,8 @@ leak** (§2) and a **hidden-state off-by-one** (§4), plus the feature-distillat
 quality push, the six-way 25-benchmark profile (§5), and the 400k DSpark
 scale-up (§6), its results (§7), and the continuation run that shows more
 epochs are exhausted (§8), and a production-style workload where the
-stock assistant wins decisively (§9).
+stock assistant wins decisively (§9), and a concurrency sweep where the
+speedup disappears under load (§10).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -654,3 +655,59 @@ vLLM 0.28. Registered as the `sc1_delta` benchmark in both eval runners.
 
 _Data: `/nvmedata/data/sc1_delta_v2.jsonl` -> `mtp_server_eval/data/sc1_delta.jsonl`
 (100 of 1000 prompts sampled). Results: `scripts/evaluate/experiments/results/sc1-{base,dspark,vanilla}/`._
+
+---
+
+## 10. AgentX: concurrency sweep — the speedup does not survive load
+
+Every other section is **batch=1**, where the GPU idles between tokens and
+speculation is nearly free. AgentX replays agentic traces
+(`semianalysisai/cc-traces-weka-062126`, no trace under 44k tokens) at rising
+concurrency, which is the regime real serving runs in.
+
+Setup: 26B-A4B backbone, **tp=4** on 4xA100, 65,536 context, **1024s per
+concurrency level**, greedy. Config:
+[`gemma4-26b-agentx-cont.yaml`](../../scripts/evaluate/experiments/gemma4-26b-agentx-cont.yaml).
+All rows are stamped `submission_valid=true`.
+
+> **Validity gotcha:** AgentX requires **>=900s per level**. Below that
+> `run_agentx.sh` silently passes `--unsafe-override` and stamps every row
+> `submission_valid=false` ("plumbing validation only, never for reported
+> numbers"). Our first attempt used `duration: 600`, copied from the existing
+> `gemma4-31b-agentx*.yaml` configs — **which still carry 600**, so any 31B
+> AgentX numbers taken from `results/gemma4-31b-agentx/` are sub-threshold too
+> (their matrices predate the `valid` column entirely).
+
+| users | baseline out tok/s | DSpark out tok/s | ratio | baseline decode | DSpark decode | ratio | DSpark AL |
+|---|---|---|---|---|---|---|---|
+| 1 | 48.2 | 47.7 | **0.99x** | 91.2 | 99.2 | 1.09x | 3.17 |
+| 8 | 54.9 | 56.5 | **1.03x** | 87.3 | 83.8 | 0.96x | 2.95 |
+| 16 | 80.4 | 88.1 | **1.10x** | 78.4 | 78.2 | 1.00x | 3.16 |
+| 32 | 148.2 | 139.9 | **0.94x** | 57.4 | 51.4 | 0.90x | 2.80 |
+| 64 | 196.8 | 202.9 | **1.03x** | 14.8 | 18.0 | 1.22x | 2.88 |
+| 128 | 64.8 | 82.4 | **1.27x** | 3.7 | 11.6 | 3.14x | 3.01 |
+
+### Takeaways
+
+- **Speculative decoding buys essentially nothing here at any concurrency.**
+  Output throughput sits at parity (0.94x-1.27x, no trend), versus **1.94x**
+  for the same checkpoint on the batch=1 public suite (§8).
+- **Even at users=1 it is only 1.09x decode**, far below the suite's 1.94x.
+  These traces carry 44k+ token contexts, so attention over a huge KV cache
+  dominates each step and drafting saves proportionally far less. Long context
+  erodes speculative gains *independently* of batching.
+- **Acceptance is not the problem.** AL holds at **2.8-3.2 across every
+  concurrency level** — the draft predicts just as well at 128 users as at 1.
+  The benefit disappears for purely economic reasons: in
+  `speedup = AL / (1 + omega)`, contention inflates `omega` because the draft's
+  extra compute now competes for saturated SMs. Same AL, no speed.
+- **Capacity finding independent of drafts:** aggregate throughput peaks at
+  **64 users** (~197-203 tok/s) and *collapses* at 128 (~65-82 tok/s) for both
+  configs — the serving system thrashes past 64 concurrent 64k-context
+  requests. That is a larger deployment lever than any draft choice.
+- **Practical read:** justify a draft on the regime you actually serve. A
+  1.9x batch=1 number does not transfer to a loaded, long-context agentic
+  server.
+
+_Results: `scripts/evaluate/experiments/results/gemma4-26b-agentx-cont/`.
+The vanilla-assistant sweep (same settings) is a separate run._
