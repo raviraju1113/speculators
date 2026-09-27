@@ -19,10 +19,11 @@ MLA cache (target stays untouched).
   the field (draft KV cache defaults to bf16); the fp8 arm adds
   `"kv_cache_dtype": "fp8"` to the same `--speculative-config` JSON. Nothing
   else changes between the two runs.
-- **Serving**: `vllm serve <target> --trust-remote-code --tensor-parallel-size 8
-  --max-model-len 8192 --speculative-config '{"method":"dspark","model":"<draft>",
-  "num_speculative_tokens":7,"draft_sample_method":"greedy"}'` (+ `kv_cache_dtype`
-  for the fp8 arm), 8x B300 SXM6.
+- **Serving**: canonical 8x B300 launch command in
+  [kimi_k3_draft_eval.md's "Canonical serving command"](kimi_k3_draft_eval.md#canonical-serving-command--kimi-k3--radixark-dspark-8x-b300).
+  This ablation's only change vs. that command: the fp8 arm adds
+  `"kv_cache_dtype":"fp8"` inside `--speculative-config` — nothing else
+  differs between the two runs.
 - **Data**: the same 24-set clean-benchmark suite and cached prompts used
   throughout the sliding-window ablation (`kimi-k3-data-clean/<set>/gen_cache/`,
   n=50 per set, n=30 for aime/aime26), replayed token-id level against a live

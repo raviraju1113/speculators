@@ -759,6 +759,32 @@ do not use for current numbers:**
 - Throughput: `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/throughput_baseline/`
 - Sweep prompt bins: `/import/ml-sc-scratch5/chenw/models/kimi-k3-data/aa_lcr_sweep_kimi/`
 
+## Canonical serving command — Kimi K3 + RadixArk DSpark, 8x B300
+
+The full, copy-pasteable launch used for all live-serving RadixArk-DSpark
+measurements in this doc (post vLLM 0.29.0 upgrade, Bug 2 fixed):
+
+```bash
+export FLASHINFER_WORKSPACE_BASE=/scratch/chenw/kimi_fi_cache  # node-local; NFS causes an 8-worker autotune-cache deadlock
+export FLASHINFER_DISABLE_VERSION_CHECK=1
+export HF_HUB_OFFLINE=1
+
+/import/ml-sc-scratch6/chenw/conda_env/kimi_k3/bin/vllm serve \
+  /import/ml-sc-scratch5/chenw/models/Kimi-K3-patched \
+  --trust-remote-code \
+  --tensor-parallel-size 8 \
+  --max-model-len 8192 \
+  --speculative-config '{"method":"dspark","model":"/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+```
+
+`--max-model-len 8192` is required: without it vLLM reserves KV cache for the
+model's full 1,048,576-token max_seq_len and OOMs (34+ GiB needed vs. ~34 GiB
+available on this node). Swap the `--speculative-config`'s `model` path (and
+`num_speculative_tokens`/other fields) for the other checkpoints in
+Artifacts above; `docs/experiments/kimi_k3_dspark_fp8_kv_cache.md` adds
+`"kv_cache_dtype":"fp8"` to this same config to quantize just the draft's
+own KV cache.
+
 ## Appendix
 
 Bug history and the original (later corrected) per-draft result tables.
