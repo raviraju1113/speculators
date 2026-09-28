@@ -10,7 +10,9 @@
 # auto-load, wandb-offline warning, off-SLURM-squatter wait). Holds the
 # allocation via podman wait; scancel -> graceful stop (5 min for checkpoint).
 #SBATCH -N1
-#SBATCH --exclude=trn-b200x8-101,trn-b200x8-097,trn-b200x8-099
+# No node exclusion (2026-09-27, user request): take any free node. The sick
+# list (097/099 full /tmp, 101 bad GPUs) is NOT applied here -- if the job
+# lands on one of them, the image load / GPU checks below will fail loudly.
 #SBATCH --gres=gpu:b200:8
 #SBATCH -J dspark_nemo_conv
 #SBATCH --chdir=/sms-scratch/mengmengj/speculators
@@ -26,8 +28,14 @@ if [ ! -d "$XDG_RUNTIME_DIR" ]; then
   echo "no user session; using XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
 fi
 mkdir -p /home/mengmengj/container_cache
-podman image exists localhost/mengmengj-vllm-official || \
-  podman load -i /sms-scratch/mengmengj/docker/mengmengj-vllm-official.tar
+echo "disk: $(df -h /home/mengmengj | tail -1)"
+if ! podman image exists localhost/mengmengj-vllm-official; then
+  echo "image missing on $(hostname); loading (~25 GB, needs free space on /home)"
+  podman load -i /sms-scratch/mengmengj/docker/mengmengj-vllm-official.tar || {
+    echo "!! podman load failed on $(hostname) (disk full?) -- exiting so SLURM frees the node" >&2
+    exit 1
+  }
+fi
 [ -f "$HOME/.netrc" ] || echo "NOTE: no ~/.netrc on $(hostname) -> wandb OFFLINE (sync later)"
 
 for i in $(seq 1 72); do
