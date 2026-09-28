@@ -16,6 +16,7 @@ Obsolete cluster-era and completed one-off scripts are in `archive/`.
 | `..._nemo782k_scratch` | nemo782k, from scratch | 26 | `run_nemo782k_scratch_local.sh` | `nemoscratch782k` | `checkpoint_best -> 25`; == continued run at matched exposure (curriculum irrelevant); k8 aime 5.99 / gpqa 4.22 / lcb 5.07 |
 | `..._nemo782k_fullattn2` | nemo782k, from scratch, full-attn layers {0,3} | 26 | `run_nemo782k_fullattn2_local.sh` | `fullattn2nemo` | `checkpoint_best -> 25`; in-window == scratch (k8 aime 6.06/gpqa 4.25/lcb 5.13) but **decays on long context** — see architecture verdict |
 | `..._nemo782k_fullattn1` | nemo782k, from scratch, full-attn layer {0} | 26 (WSD) | `run_nemo782k_fullattn1_local.sh` | `fullattn1nemo` | done 2026-09-15; `checkpoint_best -> 25` (val 4.50 vs fullattn2 4.75); evals: `gemma4-31b-dspark-fullattn1-ep25.yaml` + LCR bins `TAG=fullattn1_ep25` |
+| `..._nemo782k_conv` | nemo782k, from scratch, all-sliding + **DFlash2 local conv** in every draft layer (`DSPARK_CONV_KERNEL=2`, group 16; +72.5M params) | 26 | `run_nemo782k_conv_local.sh` / `sbatch_nemo782k_conv.sh` | `nemoconv782k` | prepared 2026-09-27 on branch `mengmengj/dspark-conv`; 1:1 ablation vs `..._nemo782k_scratch` (identical recipe otherwise). Serving needs a vLLM `gemma4_dspark` conv patch (not written yet) -- compare on val accept_len first |
 
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
