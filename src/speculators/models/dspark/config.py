@@ -53,6 +53,24 @@ class DSparkSpeculatorConfig(DFlashSpeculatorConfig):
         ),
     )
 
+    # Optional DFlash2-style local convolution around each draft layer's
+    # attention and MLP (two-tap grouped dynamic causal conv along the block
+    # axis). Field names match DFlash2SpeculatorConfig so a future serving
+    # patch can read one contract. 0 disables it (plain DSpark layers).
+    conv_kernel_size: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Number of causal taps in each local dynamic convolution wrapped "
+            "around the draft layers' attention and MLP (DFlash2). 0 = off."
+        ),
+    )
+    conv_group_size: int = Field(
+        default=16,
+        ge=1,
+        description="Number of hidden channels sharing each dynamic conv kernel.",
+    )
+
     # Confidence head.
     enable_confidence_head: bool = Field(
         default=True,

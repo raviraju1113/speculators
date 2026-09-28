@@ -522,6 +522,17 @@ class DSparkArgs(_Group):
     confidence_head_alpha: float = Field(
         default=1.0, description="DSpark: weight of the confidence-head BCE term."
     )
+    dspark_conv_kernel_size: int = Field(
+        default=0,
+        ge=0,
+        description="DSpark: taps of the DFlash2-style local dynamic convolution "
+        "wrapped around each draft layer's attention and MLP (0 = off, 2 = DFlash2).",
+    )
+    dspark_conv_group_size: int = Field(
+        default=16,
+        ge=1,
+        description="DSpark: hidden channels per dynamic conv kernel group.",
+    )
 
 
 class PEagleArgs(_Group):

@@ -129,6 +129,18 @@ if [ -n "$FULL_ATTENTION_INDICES" ]; then
 else
   FULL_ATTN_ARGS=()
 fi
+# DFlash2-style local convolution inside each draft layer (two grouped dynamic
+# causal convs per layer, wrapping attention and MLP; taps along the block
+# axis). 0 = plain DSpark layers (checkpoint-of-record architecture); 2 = the
+# DFlash2 default. Serving a conv checkpoint needs a vLLM gemma4_dspark patch.
+DSPARK_CONV_KERNEL="${DSPARK_CONV_KERNEL:-0}"
+DSPARK_CONV_GROUP="${DSPARK_CONV_GROUP:-16}"
+if [ "$DSPARK_CONV_KERNEL" != "0" ]; then
+  CONV_ARGS=(--dspark-conv-kernel-size "$DSPARK_CONV_KERNEL"
+             --dspark-conv-group-size "$DSPARK_CONV_GROUP")
+else
+  CONV_ARGS=()
+fi
 MARKOV_RANK="${MARKOV_RANK:-256}"
 MARKOV_HEAD_TYPE="${MARKOV_HEAD_TYPE:-vanilla}"
 LOSS_FN="${LOSS_FN:-{\"ce\": 0.1, \"tv\": 0.9\}}"
@@ -369,6 +381,7 @@ echo " data        : $DATA_PATH"
 echo " vLLM GPUs   : $VLLM_GPUS  (TP=$VLLM_TP DP=$VLLM_DP)"
 echo " train GPUs  : $TRAIN_GPUS ($TRAIN_GPUS_N ranks)"
 echo " layer ids   : $TARGET_LAYER_IDS"
+echo " draft conv  : kernel $DSPARK_CONV_KERNEL (0 = off), group $DSPARK_CONV_GROUP"
 echo " hidden st.  : $HS_PATH  (on-generate=$ON_GENERATE)"
 echo " save        : $SAVE_PATH"
 echo " shm         : $(df -h /dev/shm | tail -1)"
@@ -488,6 +501,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --target-layer-ids $TARGET_LAYER_IDS \
     --sliding-window "$SLIDING_WINDOW" \
     "${FULL_ATTN_ARGS[@]+"${FULL_ATTN_ARGS[@]}"}" \
+    "${CONV_ARGS[@]+"${CONV_ARGS[@]}"}" \
     --markov-rank "$MARKOV_RANK" \
     --markov-head-type "$MARKOV_HEAD_TYPE" \
     --enable-confidence-head \

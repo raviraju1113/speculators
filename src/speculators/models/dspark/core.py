@@ -2,6 +2,7 @@ from collections.abc import Callable
 from typing import ClassVar
 
 import torch
+from torch import nn
 from transformers import PretrainedConfig
 
 from speculators.losses import (
@@ -11,7 +12,9 @@ from speculators.losses import (
     tv_loss,
 )
 from speculators.model import SpeculatorModel
+from speculators.models.dflash.config import DFlashSpeculatorConfig
 from speculators.models.dflash.core import DFlashDraftModel
+from speculators.models.dflash2.model_definitions import Qwen3DFlash2DecoderLayer
 from speculators.models.dspark.config import DSparkSpeculatorConfig
 from speculators.models.dspark.metrics import compute_metrics
 from speculators.models.dspark.model_definitions import ConfidenceHead, MarkovHead
@@ -34,9 +37,32 @@ class DSparkDraftModel(DFlashDraftModel):
     """
 
     config_class: ClassVar[type[DSparkSpeculatorConfig]] = DSparkSpeculatorConfig  # type: ignore[misc,assignment]
+    _no_split_modules = ["Qwen3DFlashDecoderLayer", "Qwen3DFlash2DecoderLayer"]
+
+    def _make_decoder_layer(
+        self, config: DFlashSpeculatorConfig, layer_idx: int
+    ) -> nn.Module:
+        """Plain DFlash layer, or the DFlash2 conv-wrapped layer when enabled."""
+        assert isinstance(config, DSparkSpeculatorConfig)  # noqa: S101
+        if config.conv_kernel_size <= 0:
+            return super()._make_decoder_layer(config, layer_idx)
+        return Qwen3DFlash2DecoderLayer(
+            config.transformer_layer_config,  # type: ignore[arg-type]
+            layer_idx,
+            block_size=config.block_size,
+            conv_kernel_size=config.conv_kernel_size,
+            conv_group_size=config.conv_group_size,
+        )
 
     def __init__(self, config: DSparkSpeculatorConfig) -> None:
         super().__init__(config=config)
+
+        # post_init() may re-initialize the conv parameters; restore the
+        # identity transform so a conv model starts as the equivalent plain
+        # DSpark model (and can warm-start from a plain DSpark checkpoint).
+        for layer_ in self.layers:
+            if isinstance(layer_, Qwen3DFlash2DecoderLayer):
+                layer_.reset_convolutions()
 
         hidden_size = config.transformer_layer_config.hidden_size
 
@@ -76,6 +102,8 @@ class DSparkDraftModel(DFlashDraftModel):
             **cls._build_base_config_kwargs("dspark", verifier_config, **kwargs),
             markov_rank=kwargs.get("markov_rank", 256),
             markov_head_type=kwargs.get("markov_head_type", "vanilla"),
+            conv_kernel_size=kwargs.get("dspark_conv_kernel_size", 0),
+            conv_group_size=kwargs.get("dspark_conv_group_size", 16),
             enable_confidence_head=(
                 True
                 if enable_confidence_head_arg is None
