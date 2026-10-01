@@ -8,7 +8,8 @@ quality push, the six-way 25-benchmark profile (§5), and the 400k DSpark
 scale-up (§6), its results (§7), and the continuation run that shows more
 epochs are exhausted (§8), and a production-style workload where the
 stock assistant wins decisively (§9), and a concurrency sweep where the
-speedup disappears under load (§10).
+speedup disappears under load (§10), and a draft-vocabulary test that
+refuted its own hypothesis (§11).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -711,3 +712,74 @@ All rows are stamped `submission_valid=true`.
 
 _Results: `scripts/evaluate/experiments/results/gemma4-26b-agentx-cont/`.
 The vanilla-assistant sweep (same settings) is a separate run._
+
+---
+
+## 11. Draft-vocabulary size: the hypothesis did NOT hold
+
+§7/§9 pinned DSpark's weakness on the **32k pruned draft vocab** (12.2% of the
+target's 262,144 ids; measured token coverage 82.8% on sc1_delta, 54.3% on
+multilingual). Every unreachable token is a guaranteed rejection, so doubling
+the vocab should have lifted exactly those domains. **It did not.**
+
+| benchmark | DSpark 32k (400k samples) | DSpark 64k (100k samples) | delta |
+|---|---|---|---|
+| speed-multilingual | 1.06x | 1.03x | -0.03 |
+| translation | 1.66x | 1.60x | -0.06 |
+| summarization | 1.18x | 1.15x | -0.03 |
+| gsm8k | 2.97x | 2.96x | -0.01 |
+| humaneval | 2.66x | 2.49x | -0.17 |
+| bfcl | 2.29x | 2.40x | +0.12 |
+| **suite mean (24 benchmarks)** | **1.942x** | **1.875x** | -0.067 |
+
+sc1_delta, against its own baseline:
+
+| draft | speedup | AL |
+|---|---|---|
+| DSpark 32k (400k samples) | 1.14x | 2.48 |
+| DSpark 64k (100k samples) | 1.21x | 2.75 |
+| **stock DFlash (full vocab)** | **2.14x** | **5.03** |
+
+### Reading
+
+- **The decisive row is multilingual.** Doubling the vocab raised its coverage
+  54.3% -> 63.1%, and speedup moved 1.06x -> **1.03x** — nothing. That is the
+  one domain the coverage story required to improve.
+- sc1_delta gained a little (+0.07, AL 2.48 -> 2.75) but remains far from
+  DFlash's 2.14x / AL 5.03.
+- **Confound:** the 64k run trained on 100k samples vs the 32k run's 400k.
+  That 4x data disadvantage cost only ~3.5% of suite mean, while the vocab
+  doubling bought ~nothing where it was predicted to. The confound weakens the
+  test but does not rescue the hypothesis.
+- With §9's architecture explanation already refuted by stock DFlash (same
+  parallel block drafting, 2.14x on sc1), **the remaining explanation for
+  DFlash's lead is training-data breadth** — consistent with the per-slot decay
+  evidence (DFlash 0.84/slot vs ours 0.52 on sc1), which is a sequence-modeling
+  signal rather than a coverage one.
+
+### Future work (parked)
+
+Reduced draft vocab is **not** exonerated — it was simply not the dominant
+term here, and a larger vocab carries costs we hit directly:
+
+- **Training cost is real.** Full 262k vocab inflates the draft 1,085M ->
+  ~1.8B params (lm_head 90M -> 738M, markov_w2 8M -> 67M) plus optimizer
+  state; the full-vocab run OOMed at 69.8 GiB resident with a 12 GiB loss
+  allocation (`max_anchors x 8 positions x 262144 x 4B`). It needs
+  max_anchors <= ~512, a shorter sequence, or the DFlash approach of
+  **borrowing the verifier's lm_head instead of training its own**
+  (stock DFlash ships *no* lm_head or embed_tokens at all — 430M params total
+  vs our 1,085M, 82% of which is vocabulary tables).
+- **The silent-failure risk is the real concern.** The pruned vocab is derived
+  from *training-data* token frequency, so a checkpoint silently underperforms
+  on any traffic whose token distribution differs — and standard benchmarks do
+  not reveal it. Ours looked fully competitive on the 26-benchmark suite
+  (1.94x, §8) while collapsing to 1.14x on production traffic (§9). Any future
+  pruned-vocab checkpoint should be gated on a production-traffic slice, and
+  coverage measured on the *deployment* distribution rather than assumed.
+- Untested: re-deriving the 32k mapping from domain-matched token frequencies
+  (free, no cost change), and a matched 64k-at-400k run to remove the data
+  confound above.
+
+_Results: `scripts/evaluate/experiments/results/gemma4-26b-vocab64k/`. Checkpoint:
+`output/gemma4_26b_dspark_vocab65536/dspark/checkpoints/checkpoint_best`._
