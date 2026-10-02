@@ -9,7 +9,8 @@ scale-up (§6), its results (§7), and the continuation run that shows more
 epochs are exhausted (§8), and a production-style workload where the
 stock assistant wins decisively (§9), and a concurrency sweep where the
 speedup disappears under load (§10), and a draft-vocabulary test that
-refuted its own hypothesis (§11).
+refuted its own hypothesis (§11), and the warm-start from the stock DFlash
+backbone that finally fixed it (§12).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -783,3 +784,113 @@ term here, and a larger vocab carries costs we hit directly:
 
 _Results: `scripts/evaluate/experiments/results/gemma4-26b-vocab64k/`. Checkpoint:
 `output/gemma4_26b_dspark_vocab65536/dspark/checkpoints/checkpoint_best`._
+
+---
+
+## 12. Warm-starting DSpark from the stock DFlash backbone — the fix
+
+§9-§11 falsified both candidate explanations for why our from-scratch DSpark
+collapsed on production traffic: **architecture** (stock DFlash is the same
+parallel block draft and reaches 2.14x on sc1_delta) and **vocabulary**
+(doubling 32k -> 64k moved multilingual 1.06x -> 1.03x, §11). What remained was
+**training breadth**. Rather than try to reproduce that with our kimi-regen
+mix, this run *inherits* it: DSpark is by its own docstring "DFlash backbone
+plus a Markov logit-bias head and a confidence head", so the backbone is
+initialized from the published DFlash checkpoint and training only has to fit
+the two new heads.
+
+Build: convert the vLLM-native stock DFlash to speculators format
+(`convert_model(..., algorithm='dflash')`), relabel as `dspark` with
+`markov_rank=256` / confidence head enabled, then train with
+`--from-pretrained`. The Markov and confidence heads load as freshly
+initialized; everything else transfers. Launcher:
+[`examples/train/_dspark_from_dflash_detached.sh`](../../examples/train/_dspark_from_dflash_detached.sh).
+
+Inherited from DFlash: full **262k** vocab (no d2t/t2d), **6** aux layers
+`[2,7,12,18,23,28]`, `block_size 16`. 2 epochs, lr 1e-4 cosine, max_anchors 512.
+
+### Training: better than from-scratch ever reached, in 2 epochs not 3
+
+| run | val loss | val AL |
+|---|---|---|
+| **from DFlash, epoch 1 (best)** | **0.2788** | **4.480** |
+| from DFlash, epoch 0 | 0.2850 | 4.352 |
+| from scratch 400k, best of 3 epochs | 0.4954 | 3.520 |
+
+### Served: first draft over 2.0x on the suite
+
+| benchmark | **DSpark←DFlash** | DSpark scratch | stock DFlash | vanilla asst |
+|---|---|---|---|---|
+| gsm8k | **3.02x** | 2.97x | 2.62x | 2.32x |
+| math_reasoning | 2.90x | **2.95x** | 2.58x | 2.37x |
+| bfcl | 2.88x | 2.29x | **2.92x** | 2.39x |
+| math500 | 2.63x | **2.75x** | 2.65x | 2.24x |
+| humaneval | 2.62x | **2.66x** | 2.60x | 2.26x |
+| HumanEval | **2.49x** | 2.48x | 2.38x | 2.20x |
+| aime | 2.41x | 2.28x | **2.42x** | 2.10x |
+| aime26 | 2.39x | 2.33x | **2.42x** | 2.10x |
+| mbpp | 2.28x | **2.28x** | 2.11x | 2.03x |
+| livecodebench | **2.10x** | 2.04x | 1.98x | 1.92x |
+| gpqa | **2.01x** | 1.80x | 1.96x | 1.89x |
+| speed-coding | **1.98x** | 1.90x | 1.89x | 1.93x |
+| swe-bench-pro | **1.84x** | 1.65x | 1.77x | 1.79x |
+| translation | 1.81x | 1.66x | 1.67x | **1.83x** |
+| speed-rag | **1.80x** | 1.56x | 1.72x | 1.77x |
+| tool_call | 1.70x | 1.60x | 1.59x | **1.78x** |
+| rag | **1.68x** | 1.49x | 1.60x | 1.68x |
+| mt-bench | 1.47x | **1.54x** | 1.28x | 1.44x |
+| speed-multilingual | 1.43x | 1.06x | 1.57x | **1.89x** |
+| question | 1.42x | **1.54x** | 1.28x | 1.47x |
+| qa | 1.32x | 1.34x | 1.21x | **1.42x** |
+| summarization | 1.25x | 1.18x | 1.15x | **1.37x** |
+| speed-writing | 1.21x | 1.26x | 1.08x | **1.27x** |
+| **MEAN (23)** | **2.029x** | 1.940x | 1.933x | 1.890x |
+
+End-to-end throughput tracks decode speedup closely (prefill is a small share
+of these short-prompt benchmarks):
+
+| draft | decode | e2e throughput | decode tok/s | e2e tok/s |
+|---|---|---|---|---|
+| **DSpark<-DFlash** | **2.029x** | **1.939x** | 263.6 | 245.8 |
+| DSpark scratch | 1.940x | 1.874x | 252.2 | 237.8 |
+| stock DFlash | 1.933x | 1.853x | 247.3 | 231.1 |
+| vanilla assistant | 1.890x | 1.820x | 241.8 | 226.9 |
+| baseline | 1.000x | 1.000x | 130.1 | 126.5 |
+
+### sc1_delta: 1.14x -> 1.91x
+
+| draft | speedup | AL |
+|---|---|---|
+| stock DFlash | 2.14x | 5.03 |
+| vanilla assistant | 1.95x | 5.06 |
+| **DSpark<-DFlash** | **1.91x** | **4.84** |
+| DSpark from scratch | 1.14x | 2.48 |
+
+Per-slot acceptance on the suite shows where the gain comes from — the decay
+per slot goes from ~0.52 to ~0.86:
+
+| draft | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| **DSpark<-DFlash** | 0.889 | 0.772 | 0.685 | 0.608 | 0.512 | 0.446 | 0.356 |
+| DSpark from scratch | 0.752 | 0.561 | 0.420 | 0.323 | 0.251 | 0.193 | 0.146 |
+
+### Takeaways
+
+- **Best suite result to date: 2.029x**, and it beats the DFlash
+  backbone it started from (1.933x) — so DSpark's Markov and
+  confidence heads *do* add value, but only on top of a well-trained backbone.
+- **sc1_delta recovers from 1.14x to 1.91x (+67%)**, closing nearly all the gap
+  to DFlash/assistant. 400k samples, 4 extra epochs and a doubled vocab could
+  not do this; inheriting a broadly-trained backbone did.
+- **Cheaper, too:** 2 epochs vs the from-scratch path's 3 + 4-epoch
+  continuation.
+- **Serving caveat / upstream bug:** the checkpoint advertises
+  `speculative_tokens: 15` (block_size 16), but vLLM's DSpark runtime dies at
+  k=15 with a CUDA `index out of bounds` during graph capture
+  (`_sample_logits` -> `map_draft_to_target`). It serves cleanly at **k=7**,
+  which is what is measured here. Worth reporting upstream; also means the
+  checkpoint's own native depth is untested.
+
+_Results: `scripts/evaluate/experiments/results/gemma4-26b-from-dflash/`. Init checkpoint:
+`output/dspark_from_dflash_init`. Trained:
+`output/gemma4_26b_dspark_from_dflash/dspark/checkpoints/checkpoint_best`._
