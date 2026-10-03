@@ -10,7 +10,8 @@ epochs are exhausted (§8), and a production-style workload where the
 stock assistant wins decisively (§9), and a concurrency sweep where the
 speedup disappears under load (§10), and a draft-vocabulary test that
 refuted its own hypothesis (§11), and the warm-start from the stock DFlash
-backbone that finally fixed it (§12).
+backbone that finally fixed it (§12), plus what published drafts train on
+(§13).
 
 The dense 31B sibling has its own doc:
 [gemma4_31b_results.md](gemma4_31b_results.md).
@@ -894,3 +895,52 @@ per slot goes from ~0.52 to ~0.86:
 _Results: `scripts/evaluate/experiments/results/gemma4-26b-from-dflash/`. Init checkpoint:
 `output/dspark_from_dflash_init`. Trained:
 `output/gemma4_26b_dspark_from_dflash/dspark/checkpoints/checkpoint_best`._
+
+---
+
+## 13. What other published drafts train on (external registry)
+
+From the shared **"Advanced Speculative Decoding"** registry
+(`docs.google.com/spreadsheets/d/1WSNlOwJgGbBPhCZn47dCPmvOGeORPu8jZ4eZXec_rzA`,
+tab `Speculative_Decoding_Architectures`, read 2026-10-03). Useful because
+§12 concluded that **training breadth**, not architecture or vocabulary, is
+what separated our from-scratch DSpark from the published drafts — so it is
+worth knowing what the published ones actually train on.
+
+| draft model | backbone | training datasets |
+|---|---|---|
+| `Inferact/Kimi-K3-DSpark` | Kimi-K3 | **kimi-mtp, OpenCodeInstruct, Nemotron, aya** (regenerated) |
+| `Inferact/MiniMax-M3-EAGLE3` | MiniMax-M3 | mix2 (SWE-bench, OpenCodeInstruct, kimi-mtp) |
+| `gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math` | Gemma-4-31B | kimi-mtp + 3 nemotron splits (coding, stem, math) |
+| `lightseekorg/kimi-k3-dspark` | Kimi-K3 | kimi-mtp (regenerated) |
+| `lightseekorg/kimi-k2.5-eagle3-mla` | Kimi-K2.5 | open-perfectblend (regenerated) |
+| `RedHatAI/*-speculator.{eagle3,dflash,dspark}` (6 models) | Gemma-4-31B, Gemma-4-26B-A4B, GLM-5.2, GPT-OSS-120b, Kimi-K3 | **Magpie + UltraChat** (regenerated) |
+| `RedHatAI/Qwen3-32B-speculator.eagle3` | Qwen3-32B | ShareGPT + UltraChat |
+
+Rows whose dataset cell reads "HuggingFace" are column-shifted in the source
+sheet — the dataset was not recorded, not that it is unknown-by-design.
+
+### Why this matters here
+
+- **The breadth recipes match the §12 conclusion.** The most ambitious entry
+  (Inferact's Kimi-K3 DSpark) covers chat/math + **code** + reasoning +
+  **multilingual** — exactly the axes where our kimi-regen-only draft was
+  weakest (multilingual 1.06x, §11; sc1_delta 1.14x, §9). `prepare_aya.py`
+  and `prepare_opencodeinstruct.py` are already in this repo
+  (`scripts/response_regeneration/`), so that mix is reproducible here.
+- **The common published baseline is simpler than ours**: six RedHat
+  speculators all use just **Magpie + UltraChat (regenerated)**. Breadth of
+  *domain coverage* appears to matter more than raw sample count — our 400k
+  kimi-regen run lost to drafts trained on a narrower-sounding but
+  better-balanced mix.
+- **A published DSpark exists for our exact backbone:**
+  `RedHatAI/gemma-4-26B-A4B-it-speculator.dspark` (Magpie + UltraChat,
+  Apache 2.0). Earlier sections state no stock DSpark existed for the 26B MoE
+  — that was wrong. It is the proper method-vs-method reference point and has
+  not yet been benchmarked here.
+
+The registry also carries a `Gemma4-dspark_training_eval` tab with another
+team's DSpark runs on this family (15-24 epochs, lr 6e-4, sweeping
+`sample_from_anchor` True/False at k=3/7/8; AL 5.89 at k=8 after 24 epochs,
+AL 4.226 at k=7 `False` after 9). They hit the same `sample_from_anchor`
+convention question documented in `.claude/skills/dspark-train-serve-parity`.
