@@ -105,6 +105,11 @@ Caveats:
   accept_len against a dense run with the same budget.
 - `--topk-warmup-steps` counts from process start; a resumed run restarts the
   count, so pass `0` when resuming a run that already reached the sparse stage.
+- `val/loss` includes the indexer KL, which has heavy outliers (unnormalised
+  scores); select checkpoints by `val/accept_len`, not `val/loss` or `--save-best`.
+
+First result: [DSpark top-k context selection A/B on Gemma-4-26B-A4B](../../experiments/dspark_topk_context_ab.md)
+(32% density on the full-attention layer costs 1.2% accept_len; indexer contribution not yet isolated).
 
 ## Research & Citation
 
