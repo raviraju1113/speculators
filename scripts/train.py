@@ -503,6 +503,24 @@ def build_draft_model(
             # __init__ resolves its own default ("sdpa") when it is absent.
             config = model_class.config_class.from_pretrained(args.from_pretrained)
             config.transformer_layer_config._attn_implementation = args.draft_attn_impl
+            if args.speculator_type == "dspark" and getattr(args, "topk_context", 0):
+                # Warm-start a dense DSpark checkpoint into a top-k variant: the
+                # indexers are new modules and initialise fresh (reported as
+                # missing keys); everything else loads as trained.
+                for key in (
+                    "topk_context",
+                    "topk_layers",
+                    "topk_local_window",
+                    "indexer_heads",
+                    "indexer_head_dim",
+                ):
+                    setattr(config, key, getattr(args, key))
+                logger.info(
+                    "Enabling DSA-style top-k context selection on the pretrained "
+                    "DSpark config: topk_context=%d, topk_layers=%s.",
+                    config.topk_context,
+                    config.topk_layers,
+                )
             return model_class.from_pretrained(
                 args.from_pretrained,
                 config=config,

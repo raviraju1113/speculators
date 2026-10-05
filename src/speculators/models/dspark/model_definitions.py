@@ -5,6 +5,7 @@ from torch import nn
 
 __all__ = [
     "ConfidenceHead",
+    "ContextIndexer",
     "MarkovHead",
 ]
 
@@ -89,3 +90,53 @@ class ConfidenceHead(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.proj(features).squeeze(-1)
+
+
+class ContextIndexer(nn.Module):
+    """Lightning indexer (DeepSeek Sparse Attention) for one draft layer.
+
+    Scores every context position ``s`` for a draft block::
+
+        I[block, s] = sum_{q in block} sum_h  w_h(q) * ReLU(q_h(q) . k(s))
+
+    with a handful of small query heads and a single key projection. The score
+    is pooled over the block's queries because the whole block shares one KV
+    selection (one decoding step drafts one block). Inputs are expected to be
+    detached: the indexer learns only through its KL loss, never through the
+    draft loss (DSA keeps the two gradient paths separate).
+    """
+
+    def __init__(
+        self, hidden_size: int, num_heads: int = 4, head_dim: int = 64
+    ) -> None:
+        super().__init__()
+        if num_heads <= 0 or head_dim <= 0:
+            raise ValueError(
+                "indexer needs num_heads > 0 and head_dim > 0, "
+                f"got {num_heads}, {head_dim}"
+            )
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, head_dim, bias=False)
+        self.w_proj = nn.Linear(hidden_size, num_heads, bias=False)
+
+    def forward(
+        self,
+        block_hidden: torch.Tensor,  # [num_blocks, block_size, hidden]
+        ctx_hidden: torch.Tensor,  # [total_seq_len, hidden]
+        chunk_blocks: int = 256,
+    ) -> torch.Tensor:  # [num_blocks, total_seq_len] float32
+        num_blocks, block_size, _ = block_hidden.shape
+        k = self.k_proj(ctx_hidden)  # [T, d]
+        q = self.q_proj(block_hidden).view(
+            num_blocks, block_size, self.num_heads, self.head_dim
+        )
+        w = self.w_proj(block_hidden)  # [N, B, H]
+        out = []
+        for start in range(0, num_blocks, chunk_blocks):
+            end = min(start + chunk_blocks, num_blocks)
+            scores = torch.einsum("nbhd,td->nbht", q[start:end], k).relu()
+            scores = (scores * w[start:end].unsqueeze(-1)).sum(dim=(1, 2))  # [n, T]
+            out.append(scores.float())
+        return torch.cat(out, dim=0)

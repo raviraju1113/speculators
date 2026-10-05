@@ -507,6 +507,38 @@ class DSparkArgs(_Group):
     confidence_head_alpha: float = Field(
         default=1.0, description="DSpark: weight of the confidence-head BCE term."
     )
+    topk_context: int = Field(
+        default=0,
+        description="DSpark: DSA-style top-k context selection. Number of context "
+        "positions each block attends in the top-k layers (0 = off, dense).",
+    )
+    topk_layers: list[int] | None = Field(
+        default=None,
+        description="DSpark: draft layers using top-k selection (full-attention "
+        "layers only). Default: all full-attention layers except layer 0.",
+    )
+    topk_local_window: int = Field(
+        default=128,
+        description="DSpark: context positions right before the anchor that top-k "
+        "layers always attend (0 = none).",
+    )
+    indexer_heads: int = Field(
+        default=4, description="DSpark: lightning-indexer query heads."
+    )
+    indexer_head_dim: int = Field(
+        default=64, description="DSpark: lightning-indexer head dim."
+    )
+    indexer_loss_weight: float = Field(
+        default=1.0,
+        description="DSpark: weight of the indexer KL (indexer vs dense attention) "
+        "term. Gradients reach only the indexer.",
+    )
+    topk_warmup_steps: int = Field(
+        default=0,
+        description="DSpark: training steps with dense attention while the indexer "
+        "trains by KL before switching the top-k layers to sparse attention. "
+        "Counted from process start (a resumed run restarts the count).",
+    )
 
 
 class PEagleArgs(_Group):
