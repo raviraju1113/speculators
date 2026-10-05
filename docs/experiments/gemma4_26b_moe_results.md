@@ -933,14 +933,363 @@ sheet — the dataset was not recorded, not that it is unknown-by-design.
   *domain coverage* appears to matter more than raw sample count — our 400k
   kimi-regen run lost to drafts trained on a narrower-sounding but
   better-balanced mix.
-- **A published DSpark exists for our exact backbone:**
-  `RedHatAI/gemma-4-26B-A4B-it-speculator.dspark` (Magpie + UltraChat,
-  Apache 2.0). Earlier sections state no stock DSpark existed for the 26B MoE
-  — that was wrong. It is the proper method-vs-method reference point and has
-  not yet been benchmarked here.
+- **CORRECTION (2026-10-04): no published DSpark exists for our backbone.**
+  This section previously claimed `RedHatAI/gemma-4-26B-A4B-it-speculator.dspark`
+  existed and was "the proper method-vs-method reference point". It does not
+  exist. A direct Hub query returns no such repo, and `docs/index.md` agrees:
+  the only published speculator for Gemma-4-26B-A4B is **eagle3**. The earlier
+  sections this entry "corrected" were right. The nearest published DSparks are
+  `RedHatAI/gemma-4-31B-it-speculator.dspark` (dense 31B) and
+  `RedHatAI/Qwen3.6-35B-A3B-speculator.dspark` (a MoE backbone) — useful as
+  recipe references, but neither shares our backbone, so neither can join the
+  six-way table in §5.
 
 The registry also carries a `Gemma4-dspark_training_eval` tab with another
 team's DSpark runs on this family (15-24 epochs, lr 6e-4, sweeping
 `sample_from_anchor` True/False at k=3/7/8; AL 5.89 at k=8 after 24 epochs,
 AL 4.226 at k=7 `False` after 9). They hit the same `sample_from_anchor`
 convention question documented in `.claude/skills/dspark-train-serve-parity`.
+
+
+---
+
+## 14. Registry training corpora — fetched locally (2026-10-04)
+
+§12 concluded that **training breadth** is what separated our from-scratch
+DSpark from the published drafts, and §13 recorded what those drafts train on.
+This section records actually pulling that mix onto this machine.
+
+### What the published DSpark configs specify
+
+Read directly from the Hub (`config.json`), not from the registry sheet:
+
+| speculator | backbone | layers | SWA | block | `draft_vocab_size` | `sample_from_anchor` |
+|---|---|---|---|---|---|---|
+| `RedHatAI/gemma-4-31B-it-speculator.dspark` | dense 31B | 5 | 2048 | 8 | **32000** | False |
+| `RedHatAI/Qwen3.6-35B-A3B-speculator.dspark` | MoE | 5 | 2048 | 8 | **32000** | True |
+| `RedHatAI/GLM-5.3-speculator.dspark` | GLM-5.3 | — | — | 8 | 154880 | True |
+| **ours** (`gemma4_26b_dspark_from_dflash`) | 26B-A4B MoE | 5 | 2048 | 8 | **262144** | False |
+
+**Every published DSpark prunes the draft vocabulary; ours does not.** §11
+rejected reduced vocab on acceptance grounds alone — but acceptance is only
+half of `speedup = AL / (1 + Ω)`, and §15 shows the Ω side is where the full
+vocab costs us. §11's conclusion was drawn on incomplete evidence.
+
+### Corpora fetched
+
+Into `/nvmedata/data/registry_datasets/`. Repo IDs resolved against the Hub
+rather than inferred from the registry's informal names — `aya` in particular
+has moved org (`CohereLabs/`, not `CohereForAI/`, which 404s).
+
+| local dir | repo | covers |
+|---|---|---|
+| `aya_dataset` | `CohereLabs/aya_dataset` | multilingual |
+| `OpenCodeInstruct` | `nvidia/OpenCodeInstruct` | code |
+| `nemotron_post_training` | `nvidia/Llama-Nemotron-Post-Training-Dataset` | coding / stem / math |
+| `open-perfectblend` | `mlabonne/open-perfectblend` | general blend |
+| `magpie_pro_300k` | `Magpie-Align/Magpie-Pro-300K-Filtered` | the common RedHat baseline |
+| `ultrachat_200k` | `HuggingFaceH4/ultrachat_200k` | the other half of that baseline |
+| `sharegpt_vicuna` | `anon8231489123/ShareGPT_Vicuna_unfiltered` | chat |
+| `swe_bench_verified` | `princeton-nlp/SWE-bench_Verified` | part of the `mix2` recipe |
+
+`kimi-mtp` is not re-fetched — already local as `/nvmedata/data/kimi-regen-*`.
+
+Fetched 2026-10-04, 136 GB total, no failures:
+
+| local dir | on disk |
+|---|---|
+| `nemotron_post_training` | **122 GB** |
+| `OpenCodeInstruct` | 6.4 GB |
+| `sharegpt_vicuna` | 4.1 GB |
+| `ultrachat_200k` | 1.6 GB |
+| `open-perfectblend` | 1.4 GB |
+| `magpie_pro_300k` | 538 MB |
+| `aya_dataset` | 134 MB |
+| `swe_bench_verified` | 2.1 MB |
+
+### Nemotron needs subsampling — do not take it whole
+
+`nvidia/Llama-Nemotron-Post-Training-Dataset` is 122 GB because its SFT
+config is enormous. The registry recipe
+(`gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math`) uses the coding,
+stem and math splits — which together are **~32.9 M samples**:
+
+| SFT split | on disk | samples |
+|---|---|---|
+| `math` | 71 GB | 22,066,397 |
+| `code` | 45 GB | 10,108,883 |
+| `science` (the "stem" split) | 5.7 GB | 708,920 |
+| `chat` | 244 MB | 39,792 |
+| `safety` | 56 MB | — |
+
+For scale, our largest run to date (§6–7) used **400 k** samples. Regenerating
+responses for 32.9 M through a 26 B target is not feasible on this machine.
+
+**Sample the mix balanced, not proportional.** Proportional sampling would make
+the corpus ~67% math — precisely the narrowness §12 blamed for our from-scratch
+DSpark losing to better-balanced published drafts. A ~400–500 k mix drawing
+comparably from math / code / science / aya (multilingual) plus the
+Magpie+UltraChat baseline covers the axes where we measured weakness
+(multilingual 1.06×, §11; `sc1_delta` 1.14×, §9).
+
+### These are not yet training data
+
+They are **raw corpora**. A draft must be trained on responses produced by *its
+own target model*; training on the original human or third-model responses
+teaches it to predict the wrong distribution. Every registry entry is marked
+"(regenerated)" for this reason. The remaining pipeline is:
+
+1. convert to conversation JSONL — `scripts/response_regeneration/prepare_aya.py`,
+   `prepare_opencodeinstruct.py` (note: both default to
+   `/import/ml-sc-scratch5/...` paths from the SambaNova scratch cluster that do
+   not exist on this box; pass `--input-dir` explicitly)
+2. **regenerate responses through gemma-4-26B-A4B** — the dominant GPU cost
+3. generate hidden states / train
+
+### Source-access note
+
+The registry sheet could not be re-read on 2026-10-04: the Drive connector
+returns its only visible tab (`Speculative Decoding Architectures Registry`) as
+empty and CSV export fails with an internal error, although the file is 4.3 MB
+and was modified 2026-10-03 16:14 UTC. The dataset list above is therefore the
+2026-10-03 snapshot already captured in §13, not a fresh read.
+
+
+---
+
+## 15. Why DSparkFlash lost under load: draft overhead, not draft quality (2026-10-04)
+
+§9 and §12 left DSparkFlash behind stock DFlash on `sc1_delta` throughput
+despite winning the 25-benchmark suite. The assumption was that our draft was
+simply worse on production traffic. **It is not — it is the better drafter, and
+it was losing on cost.**
+
+### Measurement protocol (read this before trusting any throughput number here)
+
+Earlier `sc1_delta` throughput figures in this doc were measured with
+`--enable-prefix-caching` **on**, over a fixed prompt set. Each run warms the
+cache for the next, so throughput depends on run history. Measured directly:
+three identical back-to-back runs on one unchanged server gave
+
+    524.3  ->  608.4  ->  869.8 tok/s
+
+a **66% drift** with no configuration change. Every number in this section was
+therefore taken with `--no-enable-prefix-caching`, one discarded warmup per
+cell, and 2 measured repeats; spreads are ≤1.4% unless stated. Prefix caching
+remains correct for production — it is just unusable for A/B comparison.
+
+**Consequence for this document:** absolute `sc1_delta` throughput figures in
+§9/§10/§12 and any difference under ~10% are not reliable. Relative orderings
+within a single sweep are, since those arms shared a run history.
+
+### The diagnosis
+
+vLLM's spec-decode counters separate the three candidate causes. With
+`speedup = AL / (1 + Ω)`, measured against a baseline run through the identical
+path (c1 108.5, c128 707.2 tok/s):
+
+| | k_eff | AR | AL | speedup | Ω |
+|---|---|---|---|---|---|
+| DFlash c1 | 7.000 | 0.5346 | 4.742 | 1.852× | 1.560 |
+| DFlash c128 | 7.000 | 0.5414 | 4.790 | 1.567× | 2.057 |
+| DSparkFlash c1 | 7.000 | 0.5568 | **4.898** | 1.830× | 1.676 |
+| DSparkFlash c128 | 7.000 | 0.5581 | **4.907** | 1.397× | **2.513** |
+
+- `k_eff = 7.000` everywhere: the confidence head never shortens a draft. It
+  cannot — `gemma4_dspark.py` **skips `confidence_head` at weight load**, so the
+  head we train is absent at serve time entirely.
+- **AL is flat across a 128× batch change** and DSparkFlash beats DFlash at
+  *every* draft position p0–p6. Drafting quality is not the problem.
+- Ω is: DSparkFlash starts 7% more expensive and grows 50% vs DFlash's 32%.
+
+### Root cause
+
+`draft_vocab_size = 262144` (full vocab; every published DSpark uses 32000,
+see §14). The DSpark Markov head is applied **sequentially, once per draft
+position**, and its `markov_w2` is `262144 × 256` bf16 = **134 MB** — far past
+L2, so it re-streams from HBM 7× per draft, ~0.94 GB of traffic. At batch 1
+that is ~9% on top of the shared draft+lm_head traffic (measured Ω gap: +7.4%);
+at batch 128 the compute term switches on and 7 sequential skinny GEMMs
+(M=128, K=256, N=262144) stop hiding latency (measured gap: +22%).
+
+### The fix: `dspark_draft_topk`
+
+vLLM already ships a gathered path (`_sample_sequential_topk` in
+`v1/worker/gpu/spec_decode/dspark/speculator.py`) that does `topk` once for all
+positions and corrects only those rows. It is off by default
+(`dspark_draft_topk=None`) and absent from every published config — upstream
+does not need it at 32k vocab.
+
+| c128 | tok/s | AL | Ω |
+|---|---|---|---|
+| DSparkFlash full vocab | 987.8 | 4.907 | 2.513 |
+| **DSparkFlash + `dspark_draft_topk=64`** | **1102.3** | **4.912** | **2.151** |
+| DSparkFlash + `dspark_draft_topk=16` | 1097.8 | 4.891 | 2.151 |
+| stock DFlash | 1108.0 | 4.790 | 2.057 |
+
+**+11.6% for a serve-time flag on the existing checkpoint**, with AL unchanged
+(4.912 vs 4.907) and no retraining. The c128 deficit vs DFlash goes from −10.8%
+to −0.5%. At batch 1 it wins outright (203.8 vs 200.9).
+
+`k` is insensitive between 16 and 64 (Ω identical at 2.151) — meaning the Ω
+benefit **saturates below k=16**. That matters given the suite regression below:
+a *larger* k should retain nearly all the Ω gain while giving back the lost
+acceptance. k=256 / k=1024 are the experiments that should decide the setting;
+k=64 is not yet established as the right choice.
+
+### Suite validation: truncation is a TRADE, not free throughput
+
+The sc1_delta result above (AL 4.912 vs 4.907) does **not** generalise. Running
+the full 28-benchmark suite with both arms in one session — k=64 and full vocab,
+same flags, same seed, servers started together — gives:
+
+| | mean | median |
+|---|---|---|
+| ΔAL (k=64 − full vocab) | **−0.18** | −0.08 |
+| Δdecode tok/s | +1.33% | +3.55% |
+
+So top-64 truncation **does** cost acceptance on average. It wins throughput on
+most benchmarks and loses on some (`livecodebench` ΔAL −1.02, −11.4% tok/s).
+Whether it nets positive is workload-dependent — on `sc1_delta` it clearly wins,
+on code benchmarks it does not.
+
+#### The AL noise floor on this suite is ±0.31 — most single rows mean nothing
+
+The suite contains duplicate prompt sets under different names, which gives a
+free internal noise estimate. In the full-vocab arm, `mt-bench`, `question` and
+`writing` each produced **identical total output (13,189 completion tokens** —
+same prompts, same generations), yet reported:
+
+| benchmark | AL | AR |
+|---|---|---|
+| mt-bench | 3.686 | 0.3837 |
+| question | 3.375 | 0.3393 |
+| writing | 3.544 | 0.3634 |
+
+A **0.31 AL spread on byte-identical output**, because the draft's proposals vary
+run to run through nondeterministic GPU reductions — accepted/drafted counts move
+even when greedy output does not. (`qa`/`speed-qa` are likewise duplicates:
+5,218 tokens, AL 2.787 in both.)
+
+Consequences:
+- **Per-benchmark ΔAL below ~0.3 is not interpretable.** The headline
+  "regressions" on `mt-bench` (−0.725) and `writing` (−0.583) are ~2σ *and* are
+  duplicates of each other, so they are neither significant nor independent.
+- **The mean survives**: ~24 distinct benchmarks, σ≈0.31 → SEM≈0.06, so
+  ΔAL = −0.18 ± 0.06 is real at ~3σ.
+- `livecodebench` (−1.02) is the only row large enough to stand alone.
+- Use `--num-samples` well above 20, or duplicate-aware averaging, for any
+  future per-benchmark claim.
+
+#### Do not compare suite runs across sessions
+
+Comparing the k=64 arm against the *previous session's* full-vocab suite gave
+`sc1_delta` ΔAL = −0.495, against +0.005 from the controlled measurement — same
+model, same flag, same benchmark. Server flags (prefix caching), `max_model_len`
+and seed all differ between sessions and move AL and throughput by more than the
+effects under study. **Only compare arms started together in one run.**
+
+### What remains
+
+Ω bottoms out at 2.151 vs DFlash's 2.057 because `compute_draft_logits` still
+runs its lm_head over all 262144 entries — `topk` fixes only the Markov head.
+Retraining with `draft_vocab_size=32000` (the published recipe, §14) should
+close it: at DFlash's Ω our AL would give 4.912/3.057 = **1.607×**, ≈1136 tok/s,
+**beating DFlash outright**. That is the strongest argument yet for revisiting
+§11's rejection of a reduced draft vocabulary.
+
+### Negative result: MoE kernel auto-tuning was not the win
+
+vLLM ships no tuned fused-MoE config for `E=128, N=704`, and baseline decode
+sat at ~45–54% of an estimated A100 roofline, so a 12-hour `benchmark_moe.py`
+tuning run was done on the theory that untuned kernels explained the gap. They
+do not. The tuned config loads correctly
+(`fused_moe.py:1148 Using configuration from …E=128,N=704,…A100_80GB_PCIe.json`)
+and delivers **0% at batch 1** (110.2 untuned vs 110.1 tuned) and nothing
+outside noise at c128. The roofline gap is elsewhere — per-step overheads that
+a GEMM tile config does not touch. Tuned JSON retained at
+`fused_moe/configs/E=128,N=704,device_name=NVIDIA_A100_80GB_PCIe.json`, but it
+is unproven and lives only in `site-packages`, so a venv rebuild silently
+discards it.
+
+
+---
+
+## 16. AgentX with `dspark_draft_topk` — speculation loses on agentic load (2026-10-05)
+
+Concurrency sweep on 4xA100 TP=4, 64k context, 1024s per level
+(`submission_valid=true` on every cell). Config:
+`scratchpad/agentx-topk.yaml`, results `results/agentx-topk{,-rerun}/`.
+
+### Baseline: the server collapses past 64 concurrent users
+
+| users | decode tok/s | wall-clock out tok/s |
+|---|---|---|
+| 1 | 88.4 | 48.2 |
+| 8 | 86.0 | 54.5 |
+| 16 | 77.8 | 80.5 |
+| 32 | 56.4 | 148.8 |
+| 64 | 13.4 | **187.8** (peak) |
+| 128 | 3.5 | **59.5** (collapse) |
+
+Aggregate throughput **peaks at 64 users then falls 3x**, and per-request decode
+degrades 25x (88.4 -> 3.5). This is overload, not saturation: at 64+ concurrent
+44k-token requests the KV cache cannot hold the working set, so the server
+spends its time on preemption and prefill recompute. **For this workload,
+admission control capping concurrency at 32-64 is worth more than any draft-model
+choice.** This is independent of speculative decoding.
+
+Reproducibility: a second run a day later gave 89.2 / 86.9 / 78.8 / 58.1 for
+users 1-32 — within 3%. Unlike the `sc1_delta` harness (section 15), AgentX has
+no prefix-caching confound; the scenario deliberately cache-busts the first-turn
+prefix, so its numbers *are* comparable across runs.
+
+### Speculation is a net loss below 64 users
+
+| users | baseline | DSparkFlash full vocab | speedup | AL |
+|---|---|---|---|---|
+| 1 | 88.4 | 83.4 | **0.94x** | 3.034 |
+| 8 | 86.0 | 69.1 | **0.80x** | 2.697 |
+| 16 | 77.8 | 61.8 | **0.79x** | 2.774 |
+| 32 | 56.4 | 41.0 | **0.73x** | 2.556 |
+| 64 | 13.4 | 14.6 | 1.09x | 2.601 |
+| 128 | 3.5 | 9.8 | 2.80x | 2.664 |
+
+The 2.80x at 128 users is **not a win worth having** — it is one overloaded
+configuration beating another, both an order of magnitude below the server's
+own peak. The real result is 0.73-0.94x everywhere the server is healthy.
+
+**Why acceptance is so low here (AL ~2.6-3.0 vs ~4.9 on `sc1_delta`):** the
+AgentX trace corpus carries **no prompt text** — only per-request token counts
+and KV block hashes — so aiperf synthesizes prompts reproducing each trace's
+length and prefix-sharing structure. Synthetic token streams are far less
+predictable than real text. **AgentX measures the serving regime, not draft
+quality**; its AL is not comparable to the real-text benchmarks, and the
+slowdown here is not evidence that the draft is bad.
+
+With AL ~2.6 and Omega ~2.4, the draft costs more than its acceptance repays —
+which makes this the sharpest possible test of the section 15 Omega work. The
+`dspark_draft_topk=64` arm is pending (see below).
+
+### Gotcha: a failed arm reports success
+
+The first sweep's `dsparkflash_topk64_k7` arm produced **no cells at all** while
+`run_experiments.py` still exited **rc=0**. The server had died at startup:
+
+    pydantic_core.ValidationError: 1 validation error for SpeculativeConfig
+      Value error, dspark_draft_topk is only supported by DSpark
+
+vLLM validates `dspark_draft_topk` against `method == "dspark"` when
+`SpeculativeConfig` is constructed — **before** it auto-detects the method from
+the checkpoint. The YAML runner only sets `model` and `num_speculative_tokens`,
+so `method` was `None`. Passing `--speculative-config` by hand (as section 15
+did) sets `method` explicitly, which is why this never appeared there.
+
+Two things to carry forward:
+
+1. **Always set `method: dspark` in `speculative_config`** when using
+   `dspark_draft_topk` through the YAML runner.
+2. **`run_experiments.py` rc=0 does not mean every arm ran.** Check for
+   `!! server exited early` and count the cells before trusting a sweep.
+   Worth fixing upstream — a silent missing arm is the kind of failure that
+   quietly invalidates a comparison.
