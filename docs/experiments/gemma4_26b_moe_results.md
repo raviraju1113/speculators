@@ -1267,9 +1267,44 @@ predictable than real text. **AgentX measures the serving regime, not draft
 quality**; its AL is not comparable to the real-text benchmarks, and the
 slowdown here is not evidence that the draft is bad.
 
-With AL ~2.6 and Omega ~2.4, the draft costs more than its acceptance repays —
-which makes this the sharpest possible test of the section 15 Omega work. The
-`dspark_draft_topk=64` arm is pending (see below).
+With AL ~2.6 and Omega ~2.4, the draft costs more than its acceptance repays.
+
+### `dspark_draft_topk=64` reverses this completely
+
+Re-run 2026-10-05 with an in-run baseline (which reproduced the previous day's
+curve within 3%, so the full-vocab arm above is comparable):
+
+| users | baseline | full vocab | **k=64** | full-vocab speedup | **k=64 speedup** |
+|---|---|---|---|---|---|
+| 1 | 89.2 | 83.4 | **110.2** | 0.94x | **1.24x** |
+| 8 | 86.9 | 69.1 | **98.4** | 0.80x | **1.13x** |
+| 16 | 78.8 | 61.8 | **89.0** | 0.79x | **1.13x** |
+| 32 | 58.1 | 41.0 | **61.4** | 0.73x | **1.06x** |
+| 64 | 14.3 | 14.6 | **18.5** | 1.09x | **1.29x** |
+| 128 | 3.7 | 9.8 | **13.1** | 2.80x | **3.54x** |
+
+**+27% to +50% over full vocab at every level**, and above 1.0x everywhere the
+server is healthy — speculation goes from a net loss to a net win.
+
+**The gain came from acceptance, not Omega** — the opposite of section 15:
+
+| | AL @1 | AL @32 | Omega @1 |
+|---|---|---|---|
+| full vocab | 3.034 | 2.556 | ~2.22 |
+| k=64 | **4.015** | **3.738** | ~2.25 |
+
+Omega is essentially unchanged; AL rose by **+1.0**. On the 28-benchmark suite
+the same flag *cost* 0.18 AL (section 15). Both are measured; the direction
+depends on the workload.
+
+**Conjecture, not finding:** on synthetic low-predictability token streams the
+full-vocab draft may spread probability over a long noisy tail, and top-64
+truncation concentrates mass on candidates the target might actually pick —
+truncation as denoising. On real text, where the draft is already calibrated,
+the same truncation removes mass that was genuinely needed. This fits both
+observations but is untested. The practical reading is simpler and safer:
+**`dspark_draft_topk` is workload-dependent and must be measured per workload,
+not assumed.**
 
 ### Gotcha: a failed arm reports success
 
