@@ -1328,3 +1328,108 @@ Two things to carry forward:
    `!! server exited early` and count the cells before trusting a sweep.
    Worth fixing upstream — a silent missing arm is the kind of failure that
    quietly invalidates a comparison.
+
+
+---
+
+## 17. Proposals / open work (2026-10-06)
+
+### Settled, no further work needed
+
+- **Draft depth: keep k=7.** The checkpoint is `block_size=16`
+  (`sample_from_anchor=False`, native k=15), inherited from the DFlash warm
+  start. **k=15 does not crash** — it serves cleanly, produces correct output
+  and drafts exactly 15 tokens; whatever caused the earlier CUDA
+  index-out-of-bounds does not reproduce. But on a matched prompt set it buys
+  only **+5% AL (3.026 -> 3.181) for 2.14x the drafted tokens**, and the tail is
+  nearly worthless (p7-p14 run 0.053 down to 0.005). Since
+  `speedup = AL/(1+Omega)` and Omega scales with drafted tokens, k=15 is a net
+  loss. Serving at k=7 is near-optimal, not a workaround.
+  Per-position acceptance is **identical at p0-p1** between k=7 and k=15, so the
+  16-wide-trained block loses nothing measurable when served 8-wide — the
+  train/serve mismatch concern was unfounded.
+- **`block_size`: stay at 16**, matching DFlash. Upstream's own note
+  (`schema.py:741`) is that the block_size=16 recipe "consistently outperformed"
+  8 on DFlash and that DSpark keeps 8 only because "that combination was never
+  tested there". Do not retrain to 8.
+- **MoE kernel auto-tuning: closed, negative** (section 15).
+
+### Proposal 1 — Test DSA context selection where it can actually pay
+
+The DSA top-k context selection (`src/speculators/models/dspark/topk.py`,
+commit 227c3a6) is aimed at the draft's attention cost over long prefixes.
+That is the right target: section 16 shows speculation is a **net loss at
+0.73-0.94x** under agentic load, where prefixes are 44k+ and the draft's
+attention — not its vocabulary — dominates Omega.
+
+**The existing A/B cannot settle it.** `f10ab67` found top-k 128 costs 1.2%
+accept_len at 32% density and concluded the draft's useful context is local.
+But that ran on `data_prep` whose lengths are:
+
+    400,000 rows   median=641  mean=1210  p90=3759  max=4096 (capped)
+
+At a 641-token median a local window covers most of the useful prefix by
+construction, so **locality was favoured by the data, not necessarily by the
+draft**. A three-arm ablation at matched density (dense / 128-ranked+32-local /
+1-ranked+159-local) was built and then abandoned for this reason: its likely
+B ~= C outcome would have been uninformative.
+
+**Blocker: we have no long-context training data.** Approximate token lengths
+of every local source:
+
+| source | median | >8k | >16k |
+|---|---|---|---|
+| `merged_all_regen.jsonl` | 492 | 0.3% | **0%** |
+| `sc1_delta_v2.jsonl` | 2,854 | 15.4% | **0%** |
+| `train_regen.jsonl` | 380 | 0% | **0%** |
+
+So proposal 1 is really two steps:
+
+1. **Source long-context training data** (16k-32k+ documents), re-prep at a
+   matching `--total-seq-len`. Note hidden-state generation cost scales with
+   context, so this is substantially more expensive per sample than the 4k runs.
+2. **Then** run the three-arm ablation. The question it answers —
+   *does indexer ranking beat plain locality when the prefix is long enough that
+   a window must miss relevant content?* — is the one that decides whether the
+   indexer, its KL term and its warm-up phase earn their place.
+
+### Proposal 2 — Decide draft vocabulary on the lm_head, not the recipe
+
+`dspark_draft_topk` and `draft_vocab_size` are the **same lever** pulled at
+different times — a dynamic per-position vocabulary restriction vs a static
+global one:
+
+| | `draft_vocab_size=32000` | `dspark_draft_topk=64` |
+|---|---|---|
+| chosen | once, at training time | per draft position, at runtime |
+| shrinks `markov_w2` | yes | yes (via gather) |
+| shrinks `lm_head` | **yes** | **no** |
+| can a token become unreachable | yes, permanently | no |
+
+This explains why Omega bottoms out at 2.151 with top-k and will not go lower:
+`compute_draft_logits` still runs the full 262144-row lm_head. **The case for a
+32k retrain is specifically that it shrinks the lm_head, which top-k
+structurally cannot** — not "the published recipe does it". Against that,
+section 11 measured static pruning hurting multilingual, and the dynamic variant
+excludes nothing currently probable, so static 32k should be expected to cost
+*at least* the -0.18 AL top-k costs.
+
+### Proposal 3 — Breadth-data retrain
+
+The 8 registry corpora are on disk (section 14, 136 GB). Remaining work is
+convert -> **regenerate responses through gemma-4-26B** -> train. Regeneration
+dominates the cost. Nemotron must be subsampled **balanced, not proportional**
+(32.9M samples, 67% math if taken proportionally — the exact narrowness
+section 12 blamed for our from-scratch draft losing).
+
+`scratchpad/prepare_registry_mix.py` converts all 8 to the pipeline's schema
+and is validated end-to-end; it stride-samples the large JSONL shards so the
+41GB math shard costs ~1 minute, and keeps only prompts (responses are
+regenerated anyway, which is what makes 122GB of Nemotron tractable).
+
+### Proposal 4 — Re-measure the suite under the clean protocol
+
+The 2.03x suite figure (section 12) predates the measurement fixes in
+section 15 and was taken with prefix caching on. It is not comparable to
+anything measured since and should not be quoted until re-run with
+`--no-enable-prefix-caching`, warmup, and repeats.
