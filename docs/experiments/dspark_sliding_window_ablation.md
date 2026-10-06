@@ -437,19 +437,44 @@ but remains a small effect in absolute terms.
 
 **The "cliff" from window=512 mostly closes at 1024, but not uniformly
 across the affected cluster, and the identity of the worst-hit set
-changes.** Comparing all three window sizes for the sets that mattered at
-512 (n=50 throughout):
+changes.** All 24 sets, `accept_len` ratio vs. the unmodified baseline, at
+each window size (n=50/30 throughout, sorted by the window=512 column
+ascending — the same sort order as the "Fourth run" table above):
 
-| set | 2048 | 1024 | 512 |
-|---|---:|---:|---:|
-| summarization | ~1.000 | 0.9835 | **0.9171** |
-| rag | 1.0001 | 0.9977 | **0.9185** |
-| speed-rag | 0.9968 | 0.9883 | **0.9264** |
-| swe-bench-pro | 0.9998 | 0.9869 | **0.9341** |
-| speed-multilingual | 1.0000 | 0.9998 | 0.9698 |
-| speed-writing | 0.9956 | **0.9788** | 0.9620 |
+| set | n | 2048 | 1024 | 512 |
+|---|---:|---:|---:|---:|
+| summarization | 50 | 1.0000 | 0.9835 | **0.9171** |
+| rag | 50 | 1.0001 | 0.9977 | **0.9185** |
+| speed-rag | 50 | 0.9968 | 0.9883 | **0.9264** |
+| swe-bench-pro | 50 | 0.9998 | 0.9869 | **0.9341** |
+| speed-writing | 50 | 0.9956 | 0.9788 | 0.9620 |
+| aa-lcr-1k | 50 | 1.0000 | 0.9816 | 0.9642 |
+| speed-multilingual | 50 | 1.0000 | 0.9998 | 0.9698 |
+| gpqa | 50 | 1.0000 | 0.9975 | 0.9743 |
+| livecodebench | 50 | 1.0000 | 0.9963 | 0.9744 |
+| tool_call | 50 | 0.9990 | 0.9929 | 0.9817 |
+| aime | 30 | 1.0000 | 0.9987 | 0.9860 |
+| mtbench | 50 | 1.0000 | 0.9998 | 0.9879 |
+| speed-coding | 50 | 1.0000 | 0.9997 | 0.9887 |
+| aa-lcr-4k | 50 | 0.9944 | 0.9913 | 0.9930 |
+| swe-rebench | 50 | 1.0000 | 0.9999 | 0.9963 |
+| aime26 | 30 | 1.0000 | 1.0000 | 0.9974 |
+| bfcl | 50 | 1.0000 | 1.0000 | 0.9985 |
+| translation | 50 | 0.9999 | 0.9999 | 0.9990 |
+| writing | 50 | 1.0000 | 1.0000 | 0.9994 |
+| speed-qa | 50 | 1.0000 | 1.0000 | 0.9995 |
+| qa | 50 | 1.0000 | 1.0000 | 0.9995 |
+| math500 | 50 | 1.0000 | 1.0000 | 0.9995 |
+| mbpp | 50 | 1.0000 | 1.0000 | 0.9998 |
+| gsm8k | 50 | 1.0000 | 1.0000 | 0.9999 |
 
-`rag`, `swe-bench-pro`, and `speed-rag` recover most of the way back
+`aa-lcr-4k` is the one set whose order breaks the "tighter window is
+monotonically worse" pattern — it's worse at 2048 (0.9944) than at 512
+(0.9930), i.e. essentially flat and noise-sized across all three window
+sizes (max spread 0.7pp), consistent with its critical content always
+sitting close enough to the anchor to survive even the tightest window
+tested. Every other set is monotonic or near-monotonic in window size, as
+expected. `rag`, `swe-bench-pro`, and `speed-rag` recover most of the way back
 toward baseline by 1024 (each within ~1.2-2.3%), consistent with their
 critical content sitting in a chunk of the document that a 1024-token
 window still mostly covers even though 512 cuts into it. `summarization`
