@@ -1332,7 +1332,7 @@ Two things to carry forward:
 
 ---
 
-## 17. Proposals / open work (2026-10-06)
+## 17. Open experiments (2026-10-06)
 
 ### Settled, no further work needed
 
@@ -1354,7 +1354,23 @@ Two things to carry forward:
   tested there". Do not retrain to 8.
 - **MoE kernel auto-tuning: closed, negative** (section 15).
 
-### Proposal 1 — Test DSA context selection where it can actually pay
+**These are four independent experiments.** None blocks another, they test
+different terms, and each needs its own in-run control. Do not combine them in
+a single run: an earlier plan bundled `block_size=8` with
+`draft_vocab_size=32000` into one retrain, which would have made both
+uninterpretable. Combine only after each is measured alone.
+
+| # | tests | needs GPUs | blocked on |
+|---|---|---|---|
+| E1 | DSA context selection (draft **attention** cost) | 4 (1 server + 3 arms) | long-context data |
+| E2 | draft vocabulary (draft **lm_head** cost) | 4 (1 server + 3 arms) | nothing |
+| E3 | training **breadth** (acceptance, not cost) | 4 + regeneration pass | regeneration |
+| E4 | re-measure the suite under the clean protocol | 2-4 serving only | nothing |
+
+E2 and E4 can start today. E1 is blocked on data. E3 is blocked on a
+regeneration pass that itself needs the GPUs.
+
+### E1 — Test DSA context selection where it can actually pay
 
 The DSA top-k context selection (`src/speculators/models/dspark/topk.py`,
 commit 227c3a6) is aimed at the draft's attention cost over long prefixes.
@@ -1383,7 +1399,7 @@ of every local source:
 | `sc1_delta_v2.jsonl` | 2,854 | 15.4% | **0%** |
 | `train_regen.jsonl` | 380 | 0% | **0%** |
 
-So proposal 1 is really two steps:
+So E1 is really two steps:
 
 1. **Source long-context training data** (16k-32k+ documents), re-prep at a
    matching `--total-seq-len`. Note hidden-state generation cost scales with
@@ -1393,7 +1409,7 @@ So proposal 1 is really two steps:
    a window must miss relevant content?* — is the one that decides whether the
    indexer, its KL term and its warm-up phase earn their place.
 
-### Proposal 2 — Decide draft vocabulary on the lm_head, not the recipe
+### E2 — Decide draft vocabulary on the lm_head, not the recipe
 
 `dspark_draft_topk` and `draft_vocab_size` are the **same lever** pulled at
 different times — a dynamic per-position vocabulary restriction vs a static
@@ -1414,7 +1430,7 @@ section 11 measured static pruning hurting multilingual, and the dynamic variant
 excludes nothing currently probable, so static 32k should be expected to cost
 *at least* the -0.18 AL top-k costs.
 
-### Proposal 3 — Breadth-data retrain
+### E3 — Breadth-data retrain
 
 The 8 registry corpora are on disk (section 14, 136 GB). Remaining work is
 convert -> **regenerate responses through gemma-4-26B** -> train. Regeneration
@@ -1427,7 +1443,7 @@ and is validated end-to-end; it stride-samples the large JSONL shards so the
 41GB math shard costs ~1 minute, and keeps only prompts (responses are
 regenerated anyway, which is what makes 122GB of Nemotron tractable).
 
-### Proposal 4 — Re-measure the suite under the clean protocol
+### E4 — Re-measure the suite under the clean protocol
 
 The 2.03x suite figure (section 12) predates the measurement fixes in
 section 15 and was taken with prefix caching on. It is not comparable to
