@@ -1418,13 +1418,13 @@ uninterpretable. Combine only after each is measured alone.
 
 | # | tests | needs GPUs | blocked on |
 |---|---|---|---|
-| E1 | DSA context selection (draft **attention** cost) | 4 (1 server + 3 arms) | long-context data |
+| E1 | DSA context selection (draft **attention** cost) | 4 (1 server + 3 arms) | ~~long-context data~~ **unblocked, running** |
 | E2 | draft vocabulary (draft **lm_head** cost) | 4 (1 server + 3 arms) | nothing |
 | E3 | training **breadth** (acceptance, not cost) | 4 + regeneration pass | regeneration |
 | E4 | re-measure the suite under the clean protocol | 2-4 serving only | nothing |
 
-E2 and E4 can start today. E1 is blocked on data. E3 is blocked on a
-regeneration pass that itself needs the GPUs.
+E2 and E4 need no new inputs. **E1 is running** (see below). E3 is blocked on
+a regeneration pass that itself needs the GPUs.
 
 ### E1 — Test DSA context selection where it can actually pay
 
@@ -1455,11 +1455,34 @@ B ~= C outcome would have been uninformative.
 | `sc1_delta_v2.jsonl` | 2,993 | 15,257 | 16,227 | 16.7% | 0.4% | **0%** |
 | `train_regen.jsonl` | 486 | 4,123 | 6,600 | 0% | 0% | **0%** |
 
-Long samples are not literally absent — `merged_all_regen` has ~0.1% over 16k
-(roughly 700 rows of 685,722) and a 24.5k maximum — but nothing anywhere
-exceeds 32k, and 700 samples is far too few to train a selection mechanism on.
-The AgentX regime that motivates E1 starts at 44k, which no local source
-reaches at all.
+**UNBLOCKED 2026-10-06 — the blocker above was a bad check, not a fact.** The
+table surveys only the *regen* corpora. The registry datasets fetched in §14
+were never measured, and Nemotron's **code** split (full DeepSeek-R1 reasoning
+traces) is long by construction:
+
+| Nemotron SFT split | median | p90 | >8k | >16k |
+|---|---|---|---|---|
+| **code** | **15,950** | 18,203 | **91.2%** | **49.0%** |
+| math | 4,970 | 11,147 | 26.2% | 2.0% |
+| science | 1,208 | 2,606 | 0% | 0% |
+
+Built `output/dsa_longctx/data_prep_filtered` from it: 20,000 rows prepared at
+`--seq-length 16384`, filtered to the **15,501** with >=64 trainable tokens
+(22% had their assistant span truncated away by the 16k window and carried no
+gradient). Resulting dataset: **seq_len median 11,018, 45.4% over 12k, median
+5,614 trainable tokens** — roughly 17x the context of the old `data_prep`.
+
+Two caveats, recorded rather than buried: responses are DeepSeek-R1's, not
+gemma-4-26B's, so **absolute accept_len on this data is not a production
+number** (all arms share identical data, so the comparison is still valid); and
+nothing reaches the 44k of the AgentX traces, so this tests long context, not
+*that* context.
+
+A stride-sampling bug surfaced while building it: the per-split sample counts
+in the dataset README cover the whole split across several files, so using
+10,108,883 as a per-file hint for `code_v1.1.jsonl` (~0.35M lines, ~50KB each)
+made the stride 500x too large and produced 983 samples instead of 20,000.
+`scratchpad/prepare_registry_mix.py` now estimates line count from file size.
 
 So E1 is really two steps:
 
