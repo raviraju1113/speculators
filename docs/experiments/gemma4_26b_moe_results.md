@@ -1144,7 +1144,14 @@ that is ~9% on top of the shared draft+lm_head traffic (measured Ω gap: +7.4%);
 at batch 128 the compute term switches on and 7 sequential skinny GEMMs
 (M=128, K=256, N=262144) stop hiding latency (measured gap: +22%).
 
-### The fix: `dspark_draft_topk`
+### The fix: `dspark_draft_topk` (logit top-k)
+
+> **Naming — two unrelated "top-k" mechanisms live in this repo.**
+> `dspark_draft_topk` (this section) is **logit top-k**: it restricts the
+> draft's **output vocabulary** to the highest-scoring candidates before
+> sampling. `topk_context` (`src/speculators/models/dspark/topk.py`, DSA-style)
+> is **context top-k**: it restricts which **context/KV positions** the draft
+> attends. Different costs — vocabulary vs attention — and they compose.
 
 vLLM already ships a gathered path (`_sample_sequential_topk` in
 `v1/worker/gpu/spec_decode/dspark/speculator.py`) that does `topk` once for all
@@ -1374,9 +1381,26 @@ Two things to carry forward:
   and drafts exactly 15 tokens; whatever caused the earlier CUDA
   index-out-of-bounds does not reproduce. But on a matched prompt set it buys
   only **+5% AL (3.026 -> 3.181) for 2.14x the drafted tokens**, and the tail is
-  nearly worthless (p7-p14 run 0.053 down to 0.005). Since
-  `speedup = AL/(1+Omega)` and Omega scales with drafted tokens, k=15 is a net
-  loss. Serving at k=7 is near-optimal, not a workaround.
+  nearly worthless (p7-p14 run 0.053 down to 0.005).
+
+  **Measured** (sc1_delta; both depths served simultaneously on separate GPUs,
+  identical flags, no `CUDA_LAUNCH_BLOCKING`, warmup + measured run):
+
+  | | k=7 | k=15 | delta |
+  |---|---|---|---|
+  | c1 | 196.9 | 195.6 | **-0.7% (tied)** |
+  | c128 | **1010.5** | 920.8 | **-8.9%** |
+
+  This corrects an earlier version of this section, which asserted k=15 was a
+  net loss because "Omega scales with drafted tokens". **That is false at
+  batch=1**: the draft forward there is memory-bound, dominated by streaming the
+  draft's weights rather than by how many positions it computes, so the extra
+  depth is free and the two tie. The cost appears only **under batching**, where
+  the draft is compute-bound and the extra 8 positions cost ~9%.
+
+  Conclusion unchanged, reasoning corrected: **keep k=7** — never better at
+  k=15, materially worse under load. Serving at k=7 is near-optimal, not a
+  workaround.
   Per-position acceptance is **identical at p0-p1** between k=7 and k=15, so the
   16-wide-trained block loses nothing measurable when served 8-wide — the
   train/serve mismatch concern was unfounded.
