@@ -614,6 +614,15 @@ _Checkpoint: `output/gemma4_26b_dspark_400k_cont/dspark/checkpoints/checkpoint_b
 
 ## 9. Production-style workload: `sc1_delta` — the assistant wins decisively
 
+> **⚠ Measurement caveat (added 2026-10-05).** The throughput figures below were
+> taken with `--enable-prefix-caching` **on**, before the confound in §15 was
+> found: over a fixed prompt set each run warms the cache for the next, and
+> three identical back-to-back runs drifted **524 → 608 → 870 tok/s**. Absolute
+> numbers here, and any difference under ~10%, are unreliable. Orderings within
+> a single sweep still hold, since those arms shared a run history. See §15 for
+> the clean protocol and §17/E4 for the re-measurement.
+
+
 The 26-benchmark suite (§5-§8) is public benchmarks with short prompts. This
 section evaluates the same drafts on **`/nvmedata/data/sc1_delta_v2.jsonl`**
 (MAI Profile V3 delta interest extraction): long, heavily structured
@@ -662,6 +671,13 @@ _Data: `/nvmedata/data/sc1_delta_v2.jsonl` -> `mtp_server_eval/data/sc1_delta.js
 ---
 
 ## 10. AgentX: concurrency sweep — the speedup does not survive load
+
+> **⚠ Superseded in part (2026-10-05).** §16 re-runs AgentX with an in-run
+> baseline that reproduced this curve within 3%, so these numbers stand — but the
+> conclusion does not generalise: with `dspark_draft_topk=64` speculation goes
+> from 0.73–0.94× to **1.06–1.29×** across the healthy concurrency range. The
+> speedup does survive load; the full-vocab draft's cost was the problem.
+
 
 Every other section is **batch=1**, where the GPU idles between tokens and
 speculation is nearly free. AgentX replays agentic traces
@@ -718,6 +734,13 @@ The vanilla-assistant sweep (same settings) is a separate run._
 ---
 
 ## 11. Draft-vocabulary size: the hypothesis did NOT hold
+
+> **⚠ Reframed (2026-10-06).** This section tested vocabulary on **acceptance**
+> only, which is half of `speedup = AL/(1+Ω)`. §15 shows the full 262k draft vocab
+> is the dominant **Ω** cost (a 134 MB `markov_w2` re-streamed 7× per draft), and
+> every published DSpark prunes to 32k (§14). The conclusion "reduced vocab is not
+> the answer" was drawn on incomplete evidence; see §17/E2.
+
 
 §7/§9 pinned DSpark's weakness on the **32k pruned draft vocab** (12.2% of the
 target's 262,144 ids; measured token coverage 82.8% on sc1_delta, 54.3% on
@@ -789,6 +812,15 @@ _Results: `scripts/evaluate/experiments/results/gemma4-26b-vocab64k/`. Checkpoin
 ---
 
 ## 12. Warm-starting DSpark from the stock DFlash backbone — the fix
+
+> **⚠ Measurement caveat (added 2026-10-05).** The throughput figures below were
+> taken with `--enable-prefix-caching` **on**, before the confound in §15 was
+> found: over a fixed prompt set each run warms the cache for the next, and
+> three identical back-to-back runs drifted **524 → 608 → 870 tok/s**. Absolute
+> numbers here, and any difference under ~10%, are unreliable. Orderings within
+> a single sweep still hold, since those arms shared a run history. See §15 for
+> the clean protocol and §17/E4 for the re-measurement.
+
 
 §9-§11 falsified both candidate explanations for why our from-scratch DSpark
 collapsed on production traffic: **architecture** (stock DFlash is the same
@@ -1390,14 +1422,20 @@ draft**. A three-arm ablation at matched density (dense / 128-ranked+32-local /
 1-ranked+159-local) was built and then abandoned for this reason: its likely
 B ~= C outcome would have been uninformative.
 
-**Blocker: we have no long-context training data.** Approximate token lengths
-of every local source:
+**Blocker: we have no long-context training data.** Real token counts
+(gemma-4-26B-A4B-it tokenizer, not a chars/4 estimate):
 
-| source | median | >8k | >16k |
-|---|---|---|---|
-| `merged_all_regen.jsonl` | 492 | 0.3% | **0%** |
-| `sc1_delta_v2.jsonl` | 2,854 | 15.4% | **0%** |
-| `train_regen.jsonl` | 380 | 0% | **0%** |
+| source | median | p99 | max | >8k | >16k | >32k |
+|---|---|---|---|---|---|---|
+| `merged_all_regen.jsonl` | 608 | 6,174 | 24,518 | 0.5% | 0.1% | **0%** |
+| `sc1_delta_v2.jsonl` | 2,993 | 15,257 | 16,227 | 16.7% | 0.4% | **0%** |
+| `train_regen.jsonl` | 486 | 4,123 | 6,600 | 0% | 0% | **0%** |
+
+Long samples are not literally absent — `merged_all_regen` has ~0.1% over 16k
+(roughly 700 rows of 685,722) and a 24.5k maximum — but nothing anywhere
+exceeds 32k, and 700 samples is far too few to train a selection mechanism on.
+The AgentX regime that motivates E1 starts at 44k, which no local source
+reaches at all.
 
 So E1 is really two steps:
 
