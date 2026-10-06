@@ -14,6 +14,25 @@ reflects the current, corrected state: what each draft is, how it's
 served, standardized metric definitions, the up-to-date real-vs-real
 comparison, conclusions, the block-width ablation, and open follow-ups.
 
+> **Caveat on comparing these numbers to other acceptance runs (added 2026-10-06).**
+> Acceptance is highly sensitive to the **input regime** and the **metric definition** —
+> two runs on the *same* prompts and *same* checkpoint can differ ~2× for reasons that are
+> not model/weights/bugs:
+> - **Metric.** The offline/analytical tables report `accept_rate = 1 − TV` (soft distributional
+>   overlap, teacher-forced on cached clean hidden states, conditional per-slot). The live sweep
+>   reports hard **argmax** acceptance from `vllm:spec_decode_*` counters (cumulative per-slot).
+>   Soft 1−TV ≥ hard argmax; the two are different quantities, not inconsistent measurements.
+> - **Chat template vs raw.** The live sweep sends `/v1/chat/completions` (template + thinking
+>   channel → in-distribution for the draft). A **raw `/v1/completions`** run of the same prompt
+>   is off-distribution and measures markedly **lower** acceptance.
+> - **Temperature.** Temp 0 = hard argmax acceptance; temp > 0 switches to rejection-sampling
+>   acceptance (`min(1, p_target/p_draft)`, expected rate ≈ `1 − TV`), which is higher.
+>
+> A GPU run that fed `prompts_128` **raw at temp 0** (no chat template) lands well below these
+> numbers purely for the above reasons — see `MoEInfer/kimi_k3/dspark_accept_compare/`
+> (`FINDINGS_acceptance_comparison.md`). For apples-to-apples, match endpoint + template +
+> temperature.
+
 **Contents**
 - [Draft under test (EAGLE3)](#draft-under-test)
 - [RadixArk/Kimi-K3-DSpark — draft under test + serving notes](#radixarkkimi-k3-dspark-hf--second-draft-evaluated-2026-09-15)
