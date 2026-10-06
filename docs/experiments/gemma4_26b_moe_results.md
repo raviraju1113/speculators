@@ -1534,3 +1534,66 @@ The 2.03x suite figure (section 12) predates the measurement fixes in
 section 15 and was taken with prefix caching on. It is not comparable to
 anything measured since and should not be quoted until re-run with
 `--no-enable-prefix-caching`, warmup, and repeats.
+
+
+---
+
+## 18. E1 result — the indexer ties a plain window at 11k context (2026-10-06)
+
+Three arms, same init / data / lr / seed / 4,000 steps, run together on the
+long-context corpus built in §17 (`output/dsa_longctx/data_prep_filtered`,
+15,501 rows, seq_len median 11,018). All three attend the **same** number of
+context positions; only the selection rule differs.
+
+| arm | selection | `accept_len` | accept_rate | `topk_recall` | density |
+|---|---|---|---|---|---|
+| **A_dense** | none (full prefix) | **3.835** | 0.461 | — | 1.000 |
+| **B_indexer** | 512 ranked + 128 local | 3.763 | 0.454 | 0.331 | 0.223 |
+| **C_window** | 1 ranked + 639 local | 3.746 | 0.454 | **0.499** | 0.223 |
+
+### B ≈ C — the indexer does not beat locality here
+
+The B-C gap is **0.017 accept_len**, inside the ~0.05 tie band set in advance
+for ~155 validation rows (`--train-data-ratio 0.99`). At matched density, the
+DSA lightning indexer and a plain local window are **equivalent on acceptance**.
+`f10ab67`'s open question — "indexer contribution over a window-only selection
+is not yet isolated" — is answered for this context length: there is none.
+
+### `topk_recall` is NOT a proxy for acceptance
+
+This is the result worth carrying forward. B reaches the **same acceptance as C
+while capturing 34% less dense attention mass** (recall 0.331 vs 0.499). Mid-run
+these notes claimed the indexer "loses on every axis" because its recall was
+lower — that was wrong, and it was wrong because recall is DSA's *training
+target*, not the outcome. An indexer that selects fewer-but-equally-useful
+positions looks bad on recall and fine on acceptance. **Judge selection
+mechanisms on accept_len; use recall only to debug the indexer's training.**
+
+### Selection is cheap
+
+~22% density costs **1.9%** accept_len (3.835 → 3.763). That is consistent with
+`f10ab67` (1.2% at 32% density on 641-token data) and now holds at 11k context,
+so the "draft's useful context is local" finding is not an artifact of short
+sequences — it survives a 17x increase in context length.
+
+### What this does and does not settle
+
+- **Settled**: at <=16k context, prefer the **window**. Same acceptance, and
+  none of the indexer's parameters, KL term or warm-up phase.
+- **Not settled**: the indexer's case rests on contexts long enough that a fixed
+  window must miss relevant content. The AgentX regime is 44k; this data reaches
+  ~16k. That is now a specific testable claim rather than an open question, and
+  it needs data this corpus does not contain.
+- **Caveat on the comparison**: C gets a 639-token window against B's 128. If
+  this draft's useful context is local in an *absolute* sense, C is favoured by
+  construction at any prefix length, and the finding is better stated as
+  "**this draft rarely needs distant context**" than "the indexer is bad".
+
+### Incidental: the indexer KL starts enormous
+
+`train/indexer_kl` opens around **86,000** in both arms before collapsing to
+~1.3 within the first quarter, and with `--indexer-loss-weight 1.0` it dominates
+the total objective (1.44 of 1.76 at the end). It did **not** corrupt draft
+training — `ce_loss`/`tv_loss` track `A_dense` almost exactly throughout — but
+the weight is worth revisiting, and the opening magnitude suggests the KL is
+unnormalised over the candidate set at init.
