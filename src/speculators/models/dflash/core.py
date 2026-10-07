@@ -335,6 +335,43 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
 
         return full_attn_mask, sliding_window_attn_mask, anchor_positions, anchor_valid
 
+    def _run_layers(
+        self,
+        noise_embedding: torch.Tensor,  # [1, num_anchors*block_size, hidden]
+        fc_output: torch.Tensor,  # [1, total_seq_len, hidden]
+        full_attn_mask,
+        sliding_window_attn_mask,
+        position_ids: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        *,
+        document_ids: torch.Tensor,  # noqa: ARG002
+        anchor_positions: torch.Tensor,  # noqa: ARG002
+        anchor_valid: torch.Tensor,  # noqa: ARG002
+        total_seq_len: int,  # noqa: ARG002
+        **kwargs,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Run the draft decoder layers over the anchored blocks.
+
+        Returns ``(hidden, aux)``; ``aux`` carries auxiliary losses/metrics a
+        subclass wants folded into the training loss (empty here). Split out so
+        subclasses can choose a different attention mask per layer (DSpark's
+        top-k context selection). The keyword-only arguments describe the packed
+        batch and are unused here.
+        """
+        for layer_idx, layer in enumerate(self.layers):
+            noise_embedding = layer(
+                hidden_states=noise_embedding,
+                target_hidden=fc_output,
+                attention_mask=sliding_window_attn_mask
+                if layer_idx in self.sliding_window_indices
+                else full_attn_mask,
+                position_ids=position_ids,
+                use_cache=False,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+        return noise_embedding, {}
+
     def _backbone_forward(
         self,
         hidden_states: torch.Tensor,  # [1, total_seq_len, num_hidden*hidden_size]
@@ -348,8 +385,9 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         """Run the anchored-block draft transformer up to the draft logits.
 
         Returns ``(hidden, logits, targets, aligned_loss_mask,
-        anchored_block_indices)``. DSpark reuses this and adds its Markov and
-        confidence heads before computing its own loss.
+        anchored_block_indices, layer_aux)``. DSpark reuses this and adds its
+        Markov and confidence heads before computing its own loss; ``layer_aux``
+        is whatever ``_run_layers`` reported (empty for plain DFlash).
         """
         device = hidden_states.device
         total_seq_len = hidden_states.shape[1]
@@ -413,18 +451,19 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
                 targets = verifier_logits[:, anchored_block_indices]
             # shape: [1, num_anchors*block_size, draft_vocab_size]
 
-        for layer_idx, layer in enumerate(self.layers):
-            noise_embedding = layer(
-                hidden_states=noise_embedding,
-                target_hidden=fc_output,
-                attention_mask=sliding_window_attn_mask
-                if layer_idx in self.sliding_window_indices
-                else full_attn_mask,
-                position_ids=position_ids,
-                use_cache=False,
-                position_embeddings=position_embeddings,
-                **kwargs,
-            )
+        noise_embedding, layer_aux = self._run_layers(
+            noise_embedding,
+            fc_output,
+            full_attn_mask,
+            sliding_window_attn_mask,
+            position_ids,
+            position_embeddings,
+            document_ids=document_ids,
+            anchor_positions=anchor_positions,
+            anchor_valid=anchor_valid,
+            total_seq_len=total_seq_len,
+            **kwargs,
+        )
 
         hidden = self.norm(noise_embedding)
         logits = self.lm_head(hidden)
@@ -444,7 +483,14 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         if not self.config.sample_from_anchor:
             aligned_loss_mask[:, :: self.block_size] = 0
 
-        return hidden, logits, targets, aligned_loss_mask, anchored_block_indices
+        return (
+            hidden,
+            logits,
+            targets,
+            aligned_loss_mask,
+            anchored_block_indices,
+            layer_aux,
+        )
 
     @conditional_torch_compile
     def forward(
@@ -462,7 +508,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         dpace_alpha: float = 0.5,
         **kwargs,
     ):
-        _, logits, targets, aligned_loss_mask, _ = self._backbone_forward(
+        _, logits, targets, aligned_loss_mask, _, _ = self._backbone_forward(
             hidden_states,
             input_ids,
             loss_mask,

@@ -31,6 +31,12 @@ DSpark defaults to `sample_from_anchor: True` -- the anchor and all mask positio
 | `--enable-confidence-head`      | enabled   | Attach the per-position acceptance head                           |
 | `--confidence-head-with-markov` | enabled   | Feed the Markov previous-token embedding into the confidence head |
 | `--confidence-head-alpha`       | 1.0       | Weight of the confidence-head BCE term                            |
+| `--topk-context`                | 0         | DSA-style top-k context selection: positions per block (0 = dense)|
+| `--topk-layers`                 | auto      | Full-attention layers that use the selection (default: all but 0) |
+| `--topk-local-window`           | 128       | Context positions before the anchor always attended               |
+| `--indexer-heads` / `--indexer-head-dim` | 4 / 64 | Lightning-indexer size                                         |
+| `--indexer-loss-weight`         | 1.0       | Weight of the indexer KL term                                     |
+| `--topk-warmup-steps`           | 0         | Dense steps while the indexer trains before going sparse          |
 
 All DFlash parameters (`--block-size`, `--max-anchors`, `--num-layers`, ...) apply unchanged.
 
@@ -43,6 +49,67 @@ Pretrained DSpark speculator models are available on HuggingFace from the [RedHa
 | `zai-org/GLM-5.2-FP8` | [`RedHatAI/GLM-5.2-speculator.dspark-preview`](https://huggingface.co/RedHatAI/GLM-5.2-speculator.dspark-preview) |
 
 To train your own, see `examples/train/dspark_qwen3_0_6b_sharegpt_online.sh`.
+
+## Top-k Context Selection (DSA-style, experimental)
+
+DSpark's draft layers attend from a block of queries (anchor + mask tokens) to
+the verifier's projected hidden states for every earlier token in the document,
+the "context KV". With `--topk-context K` the full-attention layers listed in
+`--topk-layers` attend only to the `K` context positions a small **lightning
+indexer** ranks highest for that block, plus an always-on local window
+(`--topk-local-window`, default 128). This is the DeepSeek Sparse Attention
+recipe (DeepSeek-V3.2-Exp) applied to the draft:
+
+- **Indexer** (per top-k layer): `I[block, s] = Σ_q Σ_h w_h(q) · ReLU(q_h(q) · k(s))`
+  with `--indexer-heads` small query heads of `--indexer-head-dim` and a single
+  key projection of the context. Scores are pooled over the block's queries
+  because one decoding step drafts one block and shares one KV selection.
+- **Indexer training**: KL from the layer's *dense* attention distribution over
+  the context (averaged over heads and block queries) to `softmax(I)`, weighted
+  by `--indexer-loss-weight`. The indexer's inputs are detached, so the draft
+  loss never reaches it and the KL never reaches the draft.
+- **Two stages, one run**: for the first `--topk-warmup-steps` steps attention
+  stays dense while the indexer learns; after that the top-k layers switch to
+  the selected set and the KL is computed over the selected positions only
+  (DSA's sparse stage). `topk_sparse` in the metrics shows which stage a step
+  used.
+- **Default layers**: every full-attention layer except layer 0, whose queries
+  are still bare anchor/mask embeddings and carry little to rank with.
+
+Metrics: `indexer_kl`, `topk_recall` (share of the dense attention mass that
+falls inside the selected set; the number to watch), `topk_density`
+(selected / candidate positions), `topk_sparse`.
+
+```bash
+# fresh draft with top-k layers (dense warm-up for 1k steps, then sparse)
+python scripts/train.py --speculator-type dspark ... \
+    --topk-context 512 --topk-local-window 128 --topk-warmup-steps 1000
+
+# warm-start a dense DSpark checkpoint: indexers initialise fresh, rest loads
+python scripts/train.py --speculator-type dspark --from-pretrained <dense-dspark-dir> ... \
+    --topk-context 512 --topk-warmup-steps 500
+```
+
+Caveats:
+
+- A checkpoint with `topk_context > 0` carries `context_indexers.*` weights and
+  needs engine support for the indexer at serving time. vLLM's DSpark proposer
+  does not have it yet; the offline harness in
+  `scripts/evaluate/kimi_k3_offline_eval/` evaluates such checkpoints through the
+  training forward and is the way to measure acceptance until then.
+- Evidence so far says the draft's useful context is mostly local: a 2048-token
+  sliding window cost a full-attention Kimi-K3 DSpark checkpoint at most 0.5%
+  accept_len on any of 24 sets, and Gemma-4 DSpark acceptance is flat from 1k to
+  32k context. Top-k selection is therefore an efficiency and long-context
+  hypothesis to test, not an established win. Compare `topk_recall` and
+  accept_len against a dense run with the same budget.
+- `--topk-warmup-steps` counts from process start; a resumed run restarts the
+  count, so pass `0` when resuming a run that already reached the sparse stage.
+- `val/loss` includes the indexer KL, which has heavy outliers (unnormalised
+  scores); select checkpoints by `val/accept_len`, not `val/loss` or `--save-best`.
+
+First result: [DSpark top-k context selection A/B on Gemma-4-26B-A4B](../../experiments/dspark_topk_context_ab.md)
+(32% density on the full-attention layer costs 1.2% accept_len; indexer contribution not yet isolated).
 
 ## Research & Citation
 

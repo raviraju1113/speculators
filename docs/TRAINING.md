@@ -376,6 +376,39 @@ for the config schema.
   persistent storage before the job ends.
 - **`WANDB_API_KEY`** is read from your shell env and only baked into the git-ignored
   inner script — rotate it rather than committing it.
+
+### Measurement hygiene (learned the hard way, 2026-10-04/05)
+
+- **Turn prefix caching OFF for any A/B.** With `--enable-prefix-caching` over a
+  fixed prompt set, each run warms the cache for the next: three identical
+  back-to-back runs on one unchanged server gave **524 → 608 → 870 tok/s**, a 66%
+  drift with no config change. That dwarfs most effects worth measuring. Use
+  `--no-enable-prefix-caching`, one discarded warmup, and ≥2 measured repeats;
+  report the spread. (Keep prefix caching ON in production — this is for
+  comparison only.)
+- **Only compare arms started in the same run.** Server flags, `max_model_len`
+  and seeds all move throughput and accept_len by more than the effects under
+  study. Comparing one session's numbers against another's produced a −0.495
+  accept_len "regression" where the matched control showed +0.005.
+- **accept_len noise on 20-sample benchmarks is ±0.3.** The eval suite has
+  duplicate prompt sets under different names (`mt-bench`/`question`/`writing`;
+  `qa`/`speed-qa`). They produce byte-identical output yet report accept_len
+  3.686 / 3.375 / 3.544 — the draft's proposals vary through nondeterministic GPU
+  reductions even when greedy output does not. Treat per-benchmark deltas under
+  ~0.3 as noise, or raise `--num-samples` well above 20.
+- **`pkill -f` matches the shell that launched it.** Creating a script via
+  heredoc *and* launching it in one `bash -c` puts the script's text — including
+  any `vllm serve` inside it — into the launching shell's argv, so
+  `pkill -f 'vllm serve'` kills your own launcher (exit 144). Write the file and
+  launch it in separate commands, and scope kills to what you started (e.g. by
+  `--port`) rather than sweeping every GPU process.
+- **`run_experiments.py` exits rc=0 even when an arm's server never started.**
+  Grep the log for `!! server exited early` and count cells before trusting a
+  sweep; a silently-missing arm looks exactly like a completed run.
+- **`dspark_draft_topk` needs an explicit `method: dspark`** in
+  `speculative_config` when used through the YAML runner. vLLM validates the flag
+  against the method *before* auto-detecting it from the checkpoint, so without
+  it the server dies with `dspark_draft_topk is only supported by DSpark`.
 ---
 
 ## 7. Kimi K3 (branch `feature/kimi-k3`)
