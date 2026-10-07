@@ -239,3 +239,4 @@ google/
 *.yaml
 scripts/evaluate/rdu_mtp_eval/env_*
 .codeguru/
+.claude/
