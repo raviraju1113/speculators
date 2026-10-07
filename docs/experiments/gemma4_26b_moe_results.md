@@ -1597,3 +1597,59 @@ the total objective (1.44 of 1.76 at the end). It did **not** corrupt draft
 training — `ce_loss`/`tv_loss` track `A_dense` almost exactly throughout — but
 the weight is worth revisiting, and the opening magnitude suggests the KL is
 unnormalised over the candidate set at init.
+
+
+---
+
+## 19. MTP assistant vs DSparkFlash, clean protocol (2026-10-07)
+
+§9 concluded "the assistant wins decisively" on `sc1_delta` from 1.95x vs 1.91x
+— a 2% gap measured inside the prefix-caching confound that moved numbers by
+66% (§15). The clean re-measurement (`sc1-diag`) had no assistant arm, so the
+comparison had never actually been made. This run makes it.
+
+Four arms, `--no-enable-prefix-caching`, one discarded warmup per cell, 2
+measured runs, **servers measured one at a time so they never contend** — flags
+copied exactly from `sc1-diag`. In-run baseline reproduced that run within
+0.3% (108.6 vs 108.5 at c1; 709.4 vs 707.2 at c128), and every arm reproduced
+within ~1%, so the two runs are interchangeable.
+
+| arm | c1 tok/s | c1 speedup | c128 tok/s | c128 speedup |
+|---|---|---|---|---|
+| baseline | 108.6 | 1.000x | 709.4 | 1.000x |
+| MTP assistant k=5 | 188.4 | 1.735x | **1070.7** | 1.509x |
+| DSparkFlash k=7 | 196.9 | 1.814x | 980.7 | 1.382x |
+| **DSparkFlash k=7 + `dspark_draft_topk=64`** | **203.8** | **1.877x** | **1089.5** | **1.536x** |
+
+### The verdict depends on one config flag
+
+- **With logit top-k, DSparkFlash wins at both concurrencies**: +8.2% at c1,
+  +1.8% at c128. The c128 margin is only ~2x the measurement spread (1.0% /
+  0.4%), so treat it as a narrow win or a tie, not a clear one.
+- **Without it the verdict flips with load**: DSparkFlash wins at c1 (+4.5%) and
+  loses at c128 (-8.4%).
+- So §9 was right that the assistant beats full-vocab DSparkFlash under load,
+  and the real margin is **9%**, not the 2% the caching-era numbers suggested.
+  It is wrong as a general claim about the assistant beating our draft.
+
+### They differ in cost, not in drafting quality
+
+AL is nearly identical across all three (4.84-4.92) despite different k, so
+`speedup = AL/(1+Omega)` isolates the difference entirely in Omega:
+
+| | Omega @c1 | Omega @c128 | growth |
+|---|---|---|---|
+| DSparkFlash + topk64 | 1.607 | 2.181 | +36% |
+| MTP assistant k=5 | 1.790 | 2.258 | **+26%** |
+| DSparkFlash full vocab | 1.686 | 2.554 | **+51%** |
+
+The assistant reaches comparable AL on **5** drafts rather than 7 (AR 0.783 vs
+0.556 — full 262k vocab, Google's broad training), but its draft is a much
+larger model, so it starts with the highest Omega and only wins under batching
+because it *scales* best. The full-vocab Markov head scales worst (+51%), and
+logit top-k removes most of that penalty.
+
+**Deployment read:** ship DSparkFlash with `dspark_draft_topk=64`. It is the
+best or tied-best arm at both batch sizes, and it is the only configuration that
+beats the assistant everywhere. This supersedes §9's "for traffic like
+sc1_delta, ship the vanilla assistant".
