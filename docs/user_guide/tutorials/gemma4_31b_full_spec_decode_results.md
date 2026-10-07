@@ -118,55 +118,7 @@ Baseline has no speculation, so it is omitted here.
 
 ### RDU vs GPU: Google Assistant (MTP) k=5
 
-The corrected RDU harness uses all termination IDs from
-`generation_config.json` (`[1, 106, 50]`) and truncates generated and accepted
-tokens at the first terminator. It uses the same k=5 formulas as vLLM:
-`accept_len = 1 + accepted_draft_tokens / num_drafts` and
-`accept_rate = accepted_draft_tokens / (num_drafts * 5)`. It completed on
-16× SN40 (`sc3-s240`, Slurm job `4347944`) in 2h16m with 1,210 successful
-samples, no errors, and no skips. Ten RDU requests reached the 4,096-token
-limit, versus eight on GPU. RDU decode tok/s is intentionally excluded because
-it is not comparable to GPU decode tok/s.
-
-| benchmark | n GPU / RDU | GPU AL | RDU AL | Δ AL | GPU AR | RDU AR | Δ AR |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| aime | 30 / 30 | 4.848 | 4.843 | -0.005 | 0.7696 | 0.7687 | -0.0009 |
-| gpqa | 50 / 50 | 4.479 | 4.385 | -0.094 | 0.6958 | 0.6769 | -0.0189 |
-| livecodebench | 50 / 50 | 4.539 | 4.485 | -0.054 | 0.7077 | 0.6970 | -0.0107 |
-| gsm8k | 50 / 50 | 5.068 | 5.005 | -0.063 | 0.8135 | 0.8009 | -0.0126 |
-| humaneval | 50 / 50 | 5.183 | 5.168 | -0.015 | 0.8366 | 0.8336 | -0.0030 |
-| mbpp | 50 / 50 | 4.524 | 4.444 | -0.080 | 0.7049 | 0.6888 | -0.0161 |
-| math500 | 50 / 50 | 5.037 | 5.007 | -0.030 | 0.8075 | 0.8014 | -0.0061 |
-| mt-bench | 50 / 50 | 3.412 | 3.408 | -0.004 | 0.4823 | 0.4816 | -0.0007 |
-| aime26 | 30 / 30 | 4.769 | 4.816 | +0.047 | 0.7538 | 0.7632 | +0.0094 |
-| bfcl | 50 / 50 | 5.587 | 5.420 | -0.167 | 0.9174 | 0.8840 | -0.0334 |
-| swe-bench-pro | 50 / 50 | 4.466 | 4.355 | -0.111 | 0.6932 | 0.6710 | -0.0222 |
-| speed-coding | 50 / 50 | 4.733 | 4.637 | -0.096 | 0.7466 | 0.7274 | -0.0192 |
-| speed-multilingual | 47 / 50 | 4.429 | 4.371 | -0.058 | 0.6859 | 0.6742 | -0.0117 |
-| speed-rag | 50 / 50 | 4.387 | 4.449 | +0.062 | 0.6773 | 0.6899 | +0.0126 |
-| speed-qa | 50 / 50 | 3.157 | 3.126 | -0.031 | 0.4314 | 0.4252 | -0.0062 |
-| speed-writing | 50 / 50 | 3.118 | 3.084 | -0.034 | 0.4235 | 0.4168 | -0.0067 |
-| HumanEval | 50 / 50 | 4.902 | 4.859 | -0.043 | 0.7804 | 0.7719 | -0.0085 |
-| math_reasoning | 50 / 50 | 5.066 | 4.983 | -0.083 | 0.8131 | 0.7965 | -0.0166 |
-| qa | 50 / 50 | 3.157 | 3.126 | -0.031 | 0.4314 | 0.4252 | -0.0062 |
-| question | 50 / 50 | 3.408 | 3.408 | +0.000 | 0.4816 | 0.4816 | +0.0000 |
-| rag | 50 / 50 | 4.154 | 4.106 | -0.048 | 0.6308 | 0.6211 | -0.0097 |
-| summarization | 50 / 50 | 3.290 | 3.225 | -0.065 | 0.4579 | 0.4450 | -0.0129 |
-| tool_call | 50 / 50 | 4.012 | 3.900 | -0.112 | 0.6024 | 0.5800 | -0.0224 |
-| translation | 50 / 50 | 4.023 | 4.024 | +0.001 | 0.6045 | 0.6048 | +0.0003 |
-| writing | 50 / 50 | 3.408 | 3.408 | +0.000 | 0.4817 | 0.4816 | -0.0001 |
-
-- Macro average: GPU `AL=4.286`, `AR=0.6572`; RDU `AL=4.242`,
-  `AR=0.6483` (RDU deltas `-0.045`, `-0.0089`).
-- RDU is higher on `aime26`, `speed-rag`, and `translation`; 22 of 25
-  benchmarks are within `|Δ AL| <= 0.1`.
-- The 22 non-drifting benchmark files use identical sample IDs. The data files
-  changed between runs for `speed-coding`, `speed-multilingual`, and
-  `speed-rag`: only 33/50, 32/47, and 33/50 GPU IDs respectively overlap the
-  RDU sample set. Treat those three aggregate deltas as directional.
-- The corrected totals are 559,702 GPU and 578,386 RDU completion tokens.
-  The table still measures each backend's realized greedy decode trajectory,
-  not token-for-token replay.
+Moved to its own doc: [Gemma-4-31B Google Assistant (MTP) k=5: RDU vs GPU Acceptance](gemma4_31b_assistant_rdu_vs_gpu.md). Summary: the same k=5 configuration on 16× SN40 RDU agrees with GPU to within 0.17 `accept_len` on every benchmark (macro average GPU 4.286 vs RDU 4.242).
 
 ## End-to-end throughput and TTFT
 

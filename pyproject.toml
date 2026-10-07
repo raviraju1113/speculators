@@ -64,6 +64,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Fast CUDA kernels for the Mamba2 (--draft-arch mamba2) draft block. Without them
+# transformers falls back to a pure-PyTorch scan, and -- more importantly -- the
+# packed-sequence path is unavailable, since document isolation needs the kernels'
+# seq_idx argument. Both build CUDA extensions from source and must match the
+# installed torch/CUDA; see docs for the build recipe.
+mamba = [
+    "causal-conv1d>=1.5.0",
+    "mamba-ssm>=2.2.0",
+]
 dev = [
     # build
     "build>=1.5.0",
@@ -121,6 +130,11 @@ dev = [
 
 [project.entry-points.console_scripts]
 speculators = "speculators.__main__:app"
+
+# Loaded by vLLM at startup. Registers draft architectures vLLM does not ship
+# natively (currently the Mamba2 Eagle3 draft) without patching site-packages.
+[project.entry-points."vllm.general_plugins"]
+speculators_drafts = "speculators.integrations.vllm:register"
 
 [project.urls]
 homepage = "https://github.com/vllm-project/speculators"
@@ -227,6 +241,17 @@ select = [
 # conventions differ from the rest of the package. Scoped ignores keep the port
 # faithful (rewriting the cache engine to pathlib/context-managers untested would
 # risk real bugs). All ignored rules are style/convention, not correctness.
+# vLLM integration: mirrors vLLM's own draft-model modules (e.g.
+# `vllm/model_executor/models/qwen3_eagle3.py`) so the two arms of the Mamba2-vs-
+# transformer study stay line-for-line comparable. Upstream vLLM's conventions differ
+# from this package's; the ignores below are style, not correctness.
+"src/speculators/integrations/vllm/**/*.py" = [
+    "PLC0415", # vLLM imported inside functions so `import speculators` stays usable
+               # without vLLM installed, and Qwen3MLP only for the MLP-bearing arm
+    "S101",    # shape assert mirroring the upstream draft models
+    "ARG002",  # unused kwargs required by vLLM's model interface
+]
+
 "src/speculators/models/gemma4_mtp/**/*.py" = [
     "N806", # uppercase tensor-dim locals (B, T, V, H, K, L)
     "N812", # `import torch.nn.functional as F` (universal PyTorch convention)

@@ -22,7 +22,35 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def wait_for_lock(lock_path: str, timeout: float = 10.0, poll_interval: float = 0.1):
+# How long to wait for a producer to finish writing a hidden-states file.
+#
+# The wait must outlast a legitimate write, not just a quick handoff. One sample
+# is num_tokens x num_layers x hidden_size x 2 bytes -- ~350 MB at 8192 tokens
+# with 4 tapped layers on a 5376-wide verifier -- and several vLLM workers may be
+# writing concurrently to a shared (often NFS) path. The previous 10 s default was
+# shorter than such a write and surfaced as spurious "Timed out waiting for lock"
+# warnings that silently dropped samples. vLLM's own reference reader
+# (ExampleHiddenStatesConnector.load_hidden_states) blocks indefinitely on LOCK_SH
+# for the same reason; the timeout here exists only to avoid hanging forever on a
+# crashed producer.
+DEFAULT_LOCK_TIMEOUT = float(os.environ.get("SPECULATORS_HS_LOCK_TIMEOUT", "300"))
+
+
+def wait_for_lock(
+    lock_path: str,
+    timeout: float | None = None,
+    poll_interval: float = 0.1,
+):
+    """Block until the producer releases its exclusive lock on ``lock_path``.
+
+    :param lock_path: path of the ``.lock`` companion file.
+    :param timeout: seconds to wait before giving up; defaults to
+        :data:`DEFAULT_LOCK_TIMEOUT` (override with ``SPECULATORS_HS_LOCK_TIMEOUT``).
+    :param poll_interval: seconds between acquisition attempts.
+    :raises TimeoutError: if the lock is still held when the deadline passes.
+    """
+    if timeout is None:
+        timeout = DEFAULT_LOCK_TIMEOUT
     fd = os.open(lock_path, os.O_RDWR)
     try:
         deadline = time.monotonic() + timeout

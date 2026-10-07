@@ -75,7 +75,7 @@ def parse_args():
         default=0.8,
         help="decay for per-step loss weights (beta**k, normalized)",
     )
-    ap.add_argument("--soft-ce-weight", type=float, default=1.0)
+    ap.add_argument("--soft-ce-weight", type=float, default=0.5)
     ap.add_argument("--hard-ce-weight", type=float, default=0.0)
     ap.add_argument("--bf16", action="store_true", help="load models in bfloat16")
     ap.add_argument("--device", default="cuda")

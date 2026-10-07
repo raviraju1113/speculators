@@ -1,0 +1,45 @@
+# Acceptance eval for the tri-draft training run (examples/train/gemma4_26b_tri_draft_online.sh):
+# baseline vs our from-scratch EAGLE3, our fine-tuned MTP assistant, and the
+# vanilla Google assistant as a same-run reference.
+#
+# DSpark is NOT included: this env's vLLM has no `method: dspark` serving
+# support — its quality signal is the training-time simulated accept_len (2.44).
+#
+# Run:  python run_experiments.py --config gemma4-26b-tri-draft-eval.yaml
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-26B-A4B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  benchmarks: [aime]
+  num_samples: 30
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/gemma4-26b-tri-draft
+
+experiments:
+  - name: baseline
+
+  - name: ours_eagle3_k5
+    draft: /nvmedata/chenw/speculators/output/gemma4_26b_tri_draft/eagle3/checkpoints/checkpoint_best
+    num_speculative_tokens: 5
+
+  - name: ours_mtp_ft_k5
+    draft: /nvmedata/chenw/speculators/output/gemma4_26b_tri_draft/mtp/checkpoints/assistant
+    num_speculative_tokens: 5
+
+  - name: vanilla_assistant_k5
+    draft: /nvmedata/hf_checkpoints/gemma-4-26B-A4B-it-assistant
+    num_speculative_tokens: 5

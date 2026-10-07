@@ -32,6 +32,10 @@ Speculative-decoding results for Gemma-4-31B-it with the official assistant draf
 
 25-benchmark comparison of Gemma-4-31B-it baseline vs Google Assistant (MTP), Eagle-3 Qwen (Ravi), Eagle-3 Llama (John), and DSpark Qwen (Mengmeng), plus an AgentX concurrency sweep (1 / 8 / 16 / 32 / 64 / 128 users).
 
+## [Gemma-4-31B Assistant k=5: RDU vs GPU Acceptance](gemma4_31b_assistant_rdu_vs_gpu.md)
+
+Same Gemma-4-31B-it + Google Assistant (MTP) k=5 configuration on 4× A100 (vLLM) and 16× SN40 RDU (CoE): per-benchmark accept_len / accept_rate agree within 0.17 on all 25 benchmarks. Launch details for the RDU harness.
+
 ## [Serve in vLLM](serve_vllm.md)
 
 Deploy your trained speculator models in vLLM for production inference.

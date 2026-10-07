@@ -24,6 +24,32 @@ def get_verifier_config(
     return verifier_config
 
 
+def resolve_norm_eps(config: PretrainedConfig) -> float:
+    """RMSNorm epsilon, under either of the two names HF configs use.
+
+    Transformer configs expose ``rms_norm_eps``; SSM configs such as
+    :class:`~transformers.models.mamba2.configuration_mamba2.Mamba2Config` call the
+    same quantity ``layer_norm_epsilon``.
+
+    :raises AttributeError: if the config exposes neither name.
+    """
+    for name in ("rms_norm_eps", "layer_norm_epsilon"):
+        eps = getattr(config, name, None)
+        if eps is not None:
+            return eps
+    raise AttributeError(
+        f"{type(config).__name__} exposes neither 'rms_norm_eps' nor "
+        "'layer_norm_epsilon'"
+    )
+
+
+DEFAULT_TARGET_LAYER_IDS_WARNING = (
+    "--target-layer-ids is not explicitly set. Setting target "
+    "layers to {target_layer_ids}. If custom target layers were used "
+    "when launching vllm datagen, please set them explicitly."
+)
+
+
 #: Verifier model_types whose full-attention layers are DeepSeek-style MLA and can
 #: therefore be drafted with a transformers ``deepseek_v3`` decoder layer.
 MLA_VERIFIER_MODEL_TYPES = ("kimi_linear", "kimi_k3")

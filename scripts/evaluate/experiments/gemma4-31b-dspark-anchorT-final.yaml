@@ -1,0 +1,77 @@
+# FINAL checkpoint (epoch 9, 10 epochs complete) of the sample_from_anchor=TRUE
+# run. Completes the endgame comparison set:
+#   - this: True, 10 epochs, native k=8
+#   - gemma4-31b-dspark-final.yaml: False run at ep9 (10 ep) and ep14 (15 ep)
+#   - results_table_b200.csv: baseline 59.5 tok/s, RedHat k7 3.5-3.7x
+#
+# !! REQUIRES patched vllm (dspark-host venv / the container image): stock vllm
+# decodes True checkpoints one slot off and silently halves accept_len.
+#
+# Run on 100 after the anchorT training exits (chain: podman wait dspark_anchorT).
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-anchorT-final
+
+experiments:
+  # native block layout for a True checkpoint: 8 speculative tokens
+  - name: anchorT_ep9_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/9
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # k=7: same draft budget as the False run's native k -- the fair same-k row
+  - name: anchorT_ep9_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/9
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: anchorT_ep9_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/9
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  # 15-epoch continuation result (same warm-restart trajectory as the False
+  # run's ep14) -- completes the matched grid: ep3/ep7/ep9/ep14 on both flags.
+  - name: anchorT_ep14_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/14
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: anchorT_ep14_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/14
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: anchorT_ep14_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/14
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

@@ -1,0 +1,90 @@
+# SINGLE SOURCE OF TRUTH for the meeting table -- B200 edition (trn-b200x8-098).
+#
+# Everything in one run so every cell of the table comes from identical
+# conditions: same server settings, same 30 samples, same greedy decoding, one
+# baseline measured alongside the drafts as the speedup denominator.
+# Speedups measured previously on A100 are NOT comparable to these numbers;
+# that is the point of re-measuring baseline + drafts together on this box.
+#
+# Run INSIDE the container (localhost/mengmengj-vllm-official): the host has no
+# torch/vllm. Its vllm carries the algos.py patch (dspark_bonus_anchor honours
+# the checkpoint's sample_from_anchor). Both drafts below are
+# sample_from_anchor=False, so they decode identically on stock vLLM too --
+# the patch is a no-op safety net here.
+#
+# k PER CHECKPOINT -- both drafts are sample_from_anchor=False, so both have
+# native speculative_tokens = block_size - 1 = 7 (verified in their config.json).
+#   k=7  native block layout for ours AND RedHat -- the honest comparison
+#   k=3  the only k where ours, RedHat, and Ravi's EAGLE-3 numbers
+#        (accept_len 2.4-2.8, speedup 1.47-1.8x, measured at k=3) share one axis
+#
+# --enforce-eager is KEPT, matching how every number so far was measured. The
+# graphs-on question is a separate run (gemma4-31b-dspark-speed.yaml).
+#
+# gpus "1" / port 8500: chosen so this can run alongside the quick ep3 eval
+# (GPU 0 / port 8400). Any free GPU works; adjust if the box is busy.
+#
+# Run:
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark-meeting.yaml
+#   cat results/gemma4-31b-dspark-meeting/results_table.md
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+gpus: "1"
+
+server:
+  host: 127.0.0.1
+  port: 8500
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-meeting
+
+experiments:
+  # FIRST = speedup denominator. Backbone alone, no draft, same server settings.
+  - name: baseline
+
+  # Ours: accum23x4 run (lr 6e-4, accum 23 x 4 ranks, B200), checkpoint 3 =
+  # epoch3_step3664 (mid-epoch save, 3.25 epochs of training).
+  # Trained with --no-sample-from-anchor -> native k=7.
+  - name: ours_ep3_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/3
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  # RedHat's published DSpark at its native k=7 -- the number to beat.
+  # HF id: downloaded on first use into the HF cache (egress works on this box).
+  - name: redhat_k7
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  # k=3 pair, for the EAGLE-3-comparable axis.
+  - name: ours_ep3_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/3
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  - name: redhat_k3
+    draft: RedHatAI/gemma-4-31B-it-speculator.dspark
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

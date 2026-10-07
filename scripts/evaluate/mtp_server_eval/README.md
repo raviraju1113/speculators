@@ -48,6 +48,45 @@ Benchmarks:
   rather than sending prompts from a file. See the [AgentX](#agentx-agentic-trace-replay-load-test)
   section below.
 
+## ⚠️ Measurement caveats — read before comparing anything
+
+Three effects here are larger than most results people try to measure.
+
+**1. Prefix caching makes throughput depend on run history.** With
+`--enable-prefix-caching` over a fixed prompt set, every run warms the cache for
+the next. Three identical back-to-back runs on one unchanged server:
+
+    524.3  ->  608.4  ->  869.8 tok/s        (+66%, no config change)
+
+For any A/B, serve with `--no-enable-prefix-caching`, discard one warmup run per
+cell, and take ≥2 measured repeats. Keep prefix caching **on** in production —
+this is a comparison-hygiene rule, not a serving recommendation.
+
+**2. Only compare arms started in the same run.** Server flags, `max_model_len`
+and seeds differ between sessions and move both throughput and `accept_length`
+by more than the effect under study. A cross-session comparison once showed
+`sc1_delta` accept_length −0.495 where a matched in-run control showed +0.005 —
+same model, same flag, same benchmark.
+
+**3. `accept_length` noise is ±0.3 at `--num-samples 20`.** The suite contains
+duplicate prompt sets under different names — `mt-bench` / `question` /
+`writing` are the same prompts, as are `qa` / `speed-qa`. They generate
+byte-identical output (identical `total_completion_tokens`) yet report:
+
+| benchmark | accept_length |
+|---|---|
+| mt-bench | 3.686 |
+| question | 3.375 |
+| writing | 3.544 |
+
+The draft's proposals vary run to run through nondeterministic GPU reductions,
+so accepted/drafted counts move even when greedy output does not. Treat
+per-benchmark deltas below ~0.3 as noise, raise `--num-samples` well above 20
+for per-benchmark claims, and remember the duplicates are **not independent
+samples** when averaging across the suite (≈24 distinct sets, not 27).
+
+See `docs/experiments/gemma4_26b_moe_results.md` §15 for the full derivation.
+
 ## Backends — the one real difference
 
 Both evaluators are identical except for **how acceptance is read** from

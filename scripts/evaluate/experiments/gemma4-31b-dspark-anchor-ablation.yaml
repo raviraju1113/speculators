@@ -1,0 +1,76 @@
+# ABLATION: does sample_from_anchor change checkpoint quality, at IDENTICAL
+# training progress? Both drafts below are epoch-3-end at global_step 58,611
+# with identical hyperparameters (accum 23 x 4 ranks, lr 6e-4); the ONLY
+# training difference is the flag.
+#
+#   anchorT: sample_from_anchor=True  -> native k=8 (block_size slots)
+#   main:    sample_from_anchor=False -> native k=7
+#
+# 2x2 design: each at its native k (best-foot-forward) and at k=3 (the axis
+# the question was raised on: the old True-trained ep0 run beat False ep3 on
+# aime k=3 -- but that comparison confounded flag, lr/batch, and step count.
+# This one doesn't.)
+#
+# !! REQUIRES the PATCHED vllm (algos.py: dspark_bonus_anchor derived from the
+# checkpoint's sample_from_anchor). The dspark-host venv and the
+# mengmengj-vllm-official image are both patched; a stock pip vllm decodes the
+# True checkpoint one slot off and silently reports ~half the real accept_len.
+#
+# Run (any node with 1 free GPU; ~40 min for 4 experiments):
+#   source /sms-scratch/mengmengj/envs/dspark-host/bin/activate
+#   cd /sms-scratch/mengmengj/speculators/scripts/evaluate/experiments
+#   CUDA_VISIBLE_DEVICES=<free gpu> python run_experiments.py \
+#     --config gemma4-31b-dspark-anchor-ablation.yaml
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES (set it to a genuinely free GPU)
+
+server:
+  host: 127.0.0.1
+  port: 8500   # NOT 8400: allows running concurrently with the -final eval
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-anchor-ablation
+
+experiments:
+  - name: anchorT_ep3_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/3
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: anchorT_ep3_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/3
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  # False-flag control at the SAME global step (epoch-3-end, 58,611) -- note
+  # this is ~9k steps later than the mid-epoch-3 save the first ep3 table used.
+  - name: main_ep3end_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/3
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: main_ep3end_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/3
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

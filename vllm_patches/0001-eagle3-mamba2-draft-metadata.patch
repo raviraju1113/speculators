@@ -1,0 +1,172 @@
+# Prototype patch: EAGLE-3 draft models with recurrent (Mamba2) layers in vLLM 0.25.1
+#
+# Apply with: patch -p1 -d $VLLM_DIR < this-file   (see README.md)
+#
+# 1) The drafting loop builds its own CommonAttentionMetadata and never supplied
+#    is_prefilling / seq_lens_cpu_upper_bound, both asserted by the Mamba builder.
+#    Inside the multi-step loop every request advances exactly one token, so
+#    is_prefilling is all-False there.
+# 2) Mamba's full-CUDAGraph capture asserted a single decode shape
+#    (1 + num_spec_tokens, the target's verify pass). A draft capturing its own
+#    loop has uniform query_len 1, which is equally decode-only.
+
+--- a/v1/worker/gpu/spec_decode/speculator.py
++++ b/v1/worker/gpu/spec_decode/speculator.py
+@@ -22,12 +22,34 @@
+     BatchExecutionDescriptor,
+ )
+ from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
+-from vllm.v1.worker.gpu.model_states.interface import ModelState
++from vllm.v1.worker.gpu.model_states.interface import (
++    ModelSpecificAttnMetadata,
++    ModelState,
++)
+ from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
+ 
+ logger = init_logger(__name__)
+ 
+ 
++class _DraftRecurrentAttnMetadata(ModelSpecificAttnMetadata):
++    """Supplies ``is_prefilling`` for a draft model with recurrent (Mamba) layers.
++
++    ``is_prefilling`` normally comes from ``MambaHybridModelState``, which is only
++    selected when the *target* model is hybrid. When the recurrent layers belong to
++    the *draft* instead, the drafting loop is the only thing that knows whether a step
++    extends the state by several tokens or advances it by exactly one, so it supplies
++    the flag itself.
++    """
++
++    def __init__(self, is_prefilling: torch.Tensor):
++        self.is_prefilling = is_prefilling
++
++    def get_extra_common_attn_kwargs(
++        self, kv_cache_group_id: int, num_reqs: int
++    ) -> dict[str, Any]:
++        return {"is_prefilling": self.is_prefilling[:num_reqs]}
++
++
+ class BaseSpeculator(ABC):
+     @abstractmethod
+     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
+@@ -203,6 +225,8 @@
+         num_tokens_padded: int,
+         num_query_per_req: int = 1,
+         causal: bool = True,
++        is_prefilling: torch.Tensor | None = None,
++        seq_lens_cpu_upper_bound: torch.Tensor | None = None,
+     ) -> dict[str, Any] | None:
+         # Uniform query: query_start_loc[i] = min(i, num_reqs) * num_query_per_req.
+         # Clamp keeps the series non-decreasing past num_reqs, which some
+@@ -215,6 +239,16 @@
+             x[:num_reqs_padded] for x in self.block_tables.input_block_tables
+         ]
+         slot_mappings = self.block_tables.slot_mappings[:, :num_tokens_padded]
++        # Recurrent draft layers (Mamba) need two extra pieces of common metadata
++        # that attention drafts do not: `is_prefilling`, to choose between the
++        # chunked scan and the single-token state update, and an upper bound on the
++        # sequence lengths. Their builder asserts on both. Attention backends ignore
++        # them, so passing them unconditionally is safe.
++        model_specific = (
++            _DraftRecurrentAttnMetadata(is_prefilling)
++            if is_prefilling is not None
++            else None
++        )
+         attn_metadata = build_attn_metadata(
+             attn_groups=self.attn_groups,
+             num_reqs=num_reqs_padded,
+@@ -230,6 +264,8 @@
+             slot_mappings=slot_mappings,
+             kv_cache_config=self.kv_cache_config,
+             causal=causal,
++            seq_lens_cpu_upper_bound=seq_lens_cpu_upper_bound,
++            model_specific_attn_metadata=model_specific,
+         )
+         return attn_metadata
+ 
+--- a/v1/worker/gpu/spec_decode/autoregressive/speculator.py
++++ b/v1/worker/gpu/spec_decode/autoregressive/speculator.py
+@@ -47,6 +47,15 @@
+                 self.max_num_tokens, self.hidden_size, dtype=self.dtype, device=device
+             )
+ 
++        # Recurrent (Mamba) draft layers need `is_prefilling` on their common attn
++        # metadata. Inside the multi-step draft loop every request advances by one
++        # token, so this is all-False for the loop's lifetime and never mutated.
++        self._draft_is_prefilling_cpu = torch.zeros(
++            self.max_num_reqs, dtype=torch.bool, device="cpu"
++        )
++        # Set per `propose` call; the loop itself has no access to the input batch.
++        self._draft_seq_lens_cpu_ub: torch.Tensor | None = None
++
+         self.prefill_cudagraph_manager: PrefillSpeculatorCudaGraphManager | None = None
+         self.decode_cudagraph_manager: DecodeSpeculatorCudaGraphManager | None = None
+ 
+@@ -155,6 +164,7 @@
+         num_reqs = input_batch.num_reqs
+         max_query_len = input_batch.num_scheduled_tokens.max()
+         max_seq_len = input_batch.seq_lens_cpu_upper_bound[:num_reqs].max().item()
++        self._draft_seq_lens_cpu_ub = input_batch.seq_lens_cpu_upper_bound
+         self.draft_max_seq_len = min(
+             max_seq_len + self.num_speculative_steps, self.max_model_len
+         )
+@@ -368,6 +378,22 @@
+             self.hidden_states[:num_reqs] = hidden_states[last_token_indices]
+         self.input_buffers.positions[:num_reqs] = positions
+ 
++    def _draft_is_prefilling(self, num_reqs_padded: int) -> torch.Tensor:
++        """All-False: inside the draft loop every request advances one token."""
++        return self._draft_is_prefilling_cpu[:num_reqs_padded]
++
++    def _draft_seq_lens_cpu(self, num_reqs_padded: int) -> torch.Tensor:
++        """Upper bound on sequence lengths, required by the Mamba metadata builder.
++
++        Only consulted there as `seq_lens_cpu > 1` for rows that are *prefilling*,
++        which is never the case inside the draft loop, so the target's bound is a
++        safe source.
++        """
++        assert self._draft_seq_lens_cpu_ub is not None, (
++            "_draft_seq_lens_cpu called before propose() stashed the bound"
++        )
++        return self._draft_seq_lens_cpu_ub[:num_reqs_padded]
++
+     def _multi_step_decode(
+         self,
+         num_reqs: int,
+@@ -394,10 +420,17 @@
+                 slot_mappings_by_layer = build_slot_mappings_by_layer(
+                     slot_mappings, self.kv_cache_config
+                 )
++                num_reqs_padded = batch_desc.num_reqs or num_reqs
++                # Every step of the multi-step draft loop advances the draft by
++                # exactly one token per request, so a recurrent draft is always on
++                # its single-token state-update path here -- never prefilling.
++                # `seq_lens_cpu_upper_bound` is required by the same builder.
+                 attn_metadata = self._build_draft_attn_metadata(
+                     num_reqs=num_reqs,
+-                    num_reqs_padded=batch_desc.num_reqs or num_reqs,
++                    num_reqs_padded=num_reqs_padded,
+                     num_tokens_padded=batch_desc.num_tokens,
++                    is_prefilling=self._draft_is_prefilling(num_reqs_padded),
++                    seq_lens_cpu_upper_bound=self._draft_seq_lens_cpu(num_reqs_padded),
+                 )
+ 
+             # Update the current draft step.
+--- a/v1/attention/backends/mamba_attn.py
++++ b/v1/attention/backends/mamba_attn.py
+@@ -180,7 +180,15 @@
+             "Make sure all cudagraph capture sizes <= max_num_seq."
+         )
+ 
+-        assert m.max_query_len == 1 + self.num_spec_tokens  # decode-only
++        # Decode-only, but there are two decode shapes. The target's verify pass
++        # presents 1 + num_spec_tokens per request; a *draft* model capturing its own
++        # multi-step loop advances exactly one token per request, so its uniform
++        # decode shape is 1. A prefill shape would be neither.
++        assert m.max_query_len in (1, 1 + self.num_spec_tokens), (
++            "Mamba full CUDAGraph capture is decode-only; got max_query_len="
++            f"{m.max_query_len}, expected 1 (draft step) or "
++            f"{1 + self.num_spec_tokens} (target verify)."
++        )
+ 
+         num_accepted_tokens = None
+         if self.num_spec_tokens > 0:

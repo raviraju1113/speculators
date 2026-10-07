@@ -1,0 +1,71 @@
+# Flag ablation, SECOND matched point: epoch-7-end, both runs at global step
+# 117,216 exactly, identical hyperparameters, only sample_from_anchor differs.
+# Together with the ep3 ablation (step 58,611) this shows whether the True
+# advantage persists/grows/shrinks as training progresses.
+#
+# !! REQUIRES patched vllm (dspark-host venv / container image) for the True
+# checkpoint -- stock vllm silently halves its accept_len.
+#
+# Run (any free GPU; 101 is free now that the -final eval is done):
+#   source /sms-scratch/mengmengj/envs/dspark-host/bin/activate
+#   cd /sms-scratch/mengmengj/speculators/scripts/evaluate/experiments
+#   CUDA_VISIBLE_DEVICES=0 python run_experiments.py \
+#     --config gemma4-31b-dspark-anchor-ablation-ep7.yaml
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-anchor-ablation-ep7
+
+experiments:
+  - name: anchorT_ep7_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/7
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # same-budget row vs the False run's native k=7
+  - name: anchorT_ep7_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/7
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: anchorT_ep7_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4_anchorT/checkpoints/7
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
+
+  - name: main_ep7end_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/7
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: main_ep7end_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/7
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
