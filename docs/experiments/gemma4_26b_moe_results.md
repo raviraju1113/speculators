@@ -286,7 +286,7 @@ _Raw results: `scripts/evaluate/mtp_server_eval/results/26b_compare/results_tabl
 
 ## 4. Second bug + quality push: hidden-state off-by-one → feature distillation
 
-Full write-up: `gemma4_mtp_vllm_hidden_shift_bug.md`.
+Full write-up: Appendix B of this doc.
 
 **Bug (distinct from §2's mask leak).** Even with the mask fix, *from-scratch* drafts
 collapsed to **accept_len ~1.07 in vLLM** while scoring ~0.94 next-token agreement in HF.
@@ -1713,3 +1713,328 @@ logit top-k removes most of that penalty.
 best or tied-best arm at both batch sizes, and it is the only configuration that
 beats the assistant everywhere. This supersedes §9's "for traffic like
 sc1_delta, ship the vanilla assistant".
+---
+
+## Appendix A — first top-k context A/B (superseded by §18)
+
+> Merged here from `dspark_topk_context_ab.md` (2026-10-08): one doc per
+> target model, not per approach.
+>
+> **Superseded by §18.** This A/B ran on `data_prep` at median 641 tokens,
+> where a local window covers most of the useful prefix by construction, so
+> locality was favoured by the data rather than demonstrated of the draft.
+> §18 re-ran it at 11k median context with a matched-density window control.
+> Kept for the implementation notes and the flex-attention compile fix.
+
+
+Does a DSA-style lightning indexer that restricts the draft's full-attention
+layer to its top-k context positions cost acceptance? First controlled test of
+the implementation in commit `227c3a6` (`src/speculators/models/dspark/topk.py`,
+design in [`docs/user_guide/algorithms/dspark.md`](../user_guide/algorithms/dspark.md#top-k-context-selection-dsa-style-experimental)).
+
+**Result: at 32% average density on the one full-attention layer, top-k costs
+1.2% accept_len (3.853 vs 3.898) on the held-out split, with the selection
+capturing only half of the dense attention mass.** The draft is nearly
+indifferent to which two thirds of its context KV it loses, which is the same
+conclusion the sliding-window ablation reached on Kimi-K3 DSpark. The indexer
+trained (KL 2.5 → 1.5) but its recall over an untrained selection is not yet
+isolated; see follow-ups.
+
+### Setup
+
+| item | value |
+|---|---|
+| Base checkpoint | `output/gemma4_26b_dspark_from_dflash/dspark/checkpoints/checkpoint_best` — the warm-start-from-DFlash DSpark (2.03× best result): 5 layers, layers 0–3 sliding (2048), **layer 4 full attention**, block 16, full 262k vocab, aux taps `[2, 7, 12, 18, 23, 28]` |
+| Data | the same run's `data_prep` (400k regen rows, seq 4096). Token length percentiles 10/25/50/75/90: 232 / 366 / 644 / 1515 / 3846 |
+| Both arms | continued training, **8000 steps, 1 GPU each**, lr 1e-4 constant, max_anchors 512, loss `{"ce": 0.1, "tv": 0.9}`, confidence alpha 1.0, `--train-data-ratio 0.99` (shared held-out split), hidden states generated online by one 26B server per arm |
+| A (dense) | nothing else |
+| B (top-k) | `--topk-context 128 --topk-local-window 32 --topk-warmup-steps 1000 --indexer-loss-weight 1.0`; top-k layers default to `[4]`; indexer 4 heads × 64 |
+| Launchers | `examples/train/dspark_topk_ab_local.sh` (A) and `output/gemma4_26b_dspark_topk_ab/run_B_k128.sh` (B, relaunched after the first B attempt OOMed — see "bugs found") |
+| Hardware | 4× A100 80GB: GPU0/2 servers, GPU1 A, GPU3 B. A: 8000 steps in ~62 min; B: ~68 min (indexer target adds ~10%) |
+
+K=512 / window 128 was the first choice and was dropped: with a 644-token
+median sample it would have covered 87% of candidate positions on average, so
+the arm would have measured nothing. K=128 / window 32 gives ~0.5 expected
+density over the length distribution and ~0.1 on 4k-token samples.
+
+### Validation (same held-out split, ~4k samples)
+
+| metric | A dense | B top-k 128+32 | Δ |
+|---|---:|---:|---:|
+| **accept_len** (block 16) | **3.898** | **3.853** | −1.2% |
+| accept_rate | 0.462 | 0.458 | −0.9% |
+| full_acc | 0.494 | 0.489 | −1.0% |
+| position_1 acc | 0.729 | 0.727 | |
+| position_8 acc | 0.466 | 0.461 | |
+| position_15 acc | 0.370 | 0.365 | |
+| ce / tv loss | 0.684 / 0.124 | 0.697 / 0.125 | |
+| topk_density | — | 0.316 | selected / candidate positions |
+| topk_recall | — | 0.496 | dense-attention mass inside the selection |
+| indexer_kl | — | 12.6 (val mean), 1.5 (train, last 500 steps) | see note |
+
+Training-side accept_len over the last 500 steps: A 3.934, B 3.888 (−1.2%,
+consistent with validation). B's indexer KL fell from 2.53 (first 100 steps,
+dense warm-up) to 1.48 (last 500, sparse); recall rose from 0.45 to 0.50 at
+constant density.
+
+**The val-mean KL of 12.6 is an outlier effect, not a different regime.** The
+per-step train KL has a max of 801 with a median of 1.4: on some samples the
+indexer's unnormalised ReLU scores (summed over 16 block queries × 4 heads)
+make `softmax(I)` extremely peaked, and KL(p‖q) explodes wherever the dense
+attention spreads mass outside that peak. It does not affect the draft (the
+KL only reaches the indexer) but it does dominate `val/loss`, so **do not use
+`val/loss` or `--save-best` to pick checkpoints for top-k runs**; use
+`val/accept_len`. Fix candidates: scale the indexer logits (divide by
+block_size·√d or learn a temperature) before the softmax, or clip.
+
+### Reading
+
+- The one full-attention layer tolerates losing ~68% of its context KV for a
+  1.2% accept_len cost, while the selection keeps only ~50% of the attention
+  mass. The layer's output is not very sensitive to the pruned positions; most
+  of what the draft needs is in the block itself and the sliding layers.
+- This matches the Kimi-K3 sliding-window ablation (≤0.5% loss at a 2048
+  window) and the Gemma-4 context sweep (accept_len flat from 1k to 32k). On
+  this suite the draft's useful context is local and small.
+- **It is not yet shown that the indexer matters.** Recall 0.50 at density
+  0.32 is above the 0.32 a random selection would get, but the always-on
+  32-token local window plausibly supplies most of that. A window-only control
+  (same density, no ranking) is the missing arm.
+- Nothing here is measured at long context: 90% of samples are under 3.9k
+  tokens and the eval split has the same distribution. The efficiency case for
+  top-k (cutting the draft's context attention at 32k–128k) is untested, and
+  it needs vLLM-side support for the indexer before it can be served at all.
+
+### Bugs found while running this
+
+1. **Flex attention must be compiled on its own.** Arm B's first attempt
+   OOMed (12 GiB alloc in `sdpa_dense_backward`): building the per-layer top-k
+   mask mid-loop broke the compiled graph, the following `flex_attention` ran
+   eagerly, and eager flex falls back to a dense `[H, Q, KV]` path. Fixed in
+   `src/speculators/models/attention.py` by calling a `torch.compile`d
+   `flex_attention` (PyTorch's recommended usage). Memory went from 78 GB to
+   38 GB, the same as the dense arm.
+2. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` must not be exported to
+   the vLLM hidden-state server; its KV connector refuses it. Set it on the
+   trainer only (the launcher does).
+3. Passing `--loss-fn '{"ce": 0.1, "tv": 0.9}'` through a `$(...)` echo splits
+   the JSON; the launcher now builds the argument list as a bash array.
+
+### Follow-ups, in order of value
+
+1. **Window-only control** at the same density (e.g. `--topk-context 0
+   --topk-local-window 160`, or random scores) to isolate the indexer's
+   contribution to recall and accept_len.
+2. **Indexer score normalisation** (temperature / scale) so the KL is
+   well-conditioned; then re-check recall. If recall climbs well above the
+   window-only control at equal density, the indexer is doing real work.
+3. **Density sweep** (K = 32, 64, 128, 256 at window 32) to find where
+   accept_len starts to drop.
+4. **Long-context arm**: train and validate on ≥16k sequences (AA-LCR style
+   data) where the full layer's context is 4–30× larger than K; this is the
+   only setting where the mechanism can pay for itself.
+5. vLLM proposer support for the indexer, so a top-k checkpoint can be served
+   and measured for real decode throughput.
+
+Raw logs and checkpoints: `output/gemma4_26b_dspark_topk_ab/`
+(`logs/{A_dense,B_topk}.log`, `{A_dense,B_topk}/checkpoints/checkpoint_best`;
+`logs/B_topk_k512_oom.log` and `logs_failed_attempt{1,2}` are the aborted
+attempts).
+
+---
+
+## Appendix B — Gemma4 MTP hidden-state off-by-one (whole Gemma4 family)
+
+> Merged here from `gemma4_mtp_vllm_hidden_shift_bug.md` (2026-10-08): one
+> doc per target model, not per approach.
+>
+> **Applies to the whole Gemma4 family, not just the 26B MoE** — the dense
+> 31B doc links here rather than duplicating it. Read before training any
+> MTP draft on either backbone.
+
+
+### TL;DR
+Training-from-scratch produced Gemma4-MTP drafts that looked perfect in HF/loss but
+collapsed to **accept_length ≈ 1.07** in vLLM (no speedup), regardless of how long they
+trained. Root cause: **the trainer fed the draft the target hidden state from the wrong
+position** — `hidden[t]` instead of `hidden[t-1]`. vLLM (and the EAGLE/MTP convention,
+and Google's vanilla draft) feeds `hidden[t-1]` + `embed(x_t)` → predict `x_{t+1}`.
+A one-position shift in `build_target_signals` fixes it: from-scratch vLLM accept went
+**1.07 → 2.1** (and rising). It was never a vLLM bug, LR, norms, or numerics.
+
+### Symptom
+- `google/gemma-4-26B-A4B-it` target + a **from-scratch-trained** MTP draft:
+  vLLM `accept_length ≈ 1.07`, `accept_rate ≈ 0.02` at k=3/5/7 (pure overhead, tok/s ~59 vs ~190).
+- The **vanilla** assistant draft works fine: accept_length 3.58 (k=3) … 5.68 (k=7).
+- Training loss looked healthy the entire time (`step0_soft_ce ≈ 0.4`).
+
+### How we localized it (elimination)
+| Test | Result | Conclusion |
+|---|---|---|
+| Trained draft via HF training-forward, held-out AIME | 0.94 | not overfitting; generalizes |
+| HF q_len=L (train fwd) == q_len=1 (infer fwd) | identical (A==B=1.0) | training forward self-consistent |
+| Splice vanilla norms into trained ckpt, serve vLLM | still ~0.03 | not the norms |
+| Activation magnitudes / logits (HF) | bounded, no nan, confident | not overflow/precision |
+| Perturb fed hidden / KV by 10% noise (HF) | flat (robust) | not numerical input brittleness |
+| **Dump vLLM's actual fed hidden, compare to HF** | vLLM `fed[t]` ≈ HF `hidden[t-1]` (cos 0.96), not `hidden[t]` (cos 0.57) | **off-by-one hidden shift** |
+| Feed trained draft `h_{t-1}` in HF | **0.058** (= vLLM collapse); `h_t` = 0.942 | confirms the shift is the cause |
+| Same for vanilla | `h_{t-1}` = 0.92 (its best), `h_t` = 0.84 | vanilla natively expects `h_{t-1}` |
+
+Vanilla is robust to either convention, so it survived; a from-scratch draft has no prior
+and overfit the wrong (`h_t`) alignment, so it collapsed when vLLM fed `h_{t-1}`.
+
+### The fix
+`patch_hidden_shift()` in `scripts/gemma4_mtp/train_online.py` (monkeypatch — no edit to
+`training_step.py`): wrap `build_target_signals` so the draft's INPUT hidden is shifted
+right by one (row t → `h_{t-1}`), while the labels (`target_logits`) stay computed from the
+UNSHIFTED hidden.
+
+```python
+lh = sig["last_hidden"]                                   # row t = h_t
+sig["last_hidden"] = torch.cat([lh[:, :1], lh[:, :-1]], 1) # row t = h_{t-1}
+```
+
+Safe because `training_step` uses `last_hidden` only as the step-0 draft input + recurrent
+pad (never for supervision). Applied in `main()` next to the mask patch.
+
+### Validation
+Same broken recipe (random-init, lr 6e-4, 4-GPU), only the alignment corrected
+(`output/gemma4_26b_mtp_rinit_shiftfix`):
+
+| checkpoint | vLLM accept_len (aime, k=3) |
+|---|---|
+| old broken rinit (any # steps) | 1.07 |
+| shift-fixed, 500 steps | 2.175 |
+| shift-fixed, full epoch (10k steps, pure logit-distill) | 2.217 |
+| **+ feature-distillation (step3200)** | **2.512** |
+| vanilla (reference) | 3.58 |
+
+`soft_ce` fell 11.9 → 1.15 by step 500; the draft is servable and improves with training.
+The shift fix (1.07 → ~2.2) is now folded directly into `training_step.py` (not a monkeypatch).
+
+### The ~2.2 plateau — cause and fix (feature distillation)
+After the shift fix, accept plateaued ~2.2 across a full epoch even as `soft_ce` kept
+dropping — so it was a **ceiling, not under-training**. Root cause: the trainer used
+**pure logit-distillation (soft-CE only)** — it never trained the draft's *hidden feature*.
+Evidence: even the accept-2.2 draft has **`feat_l1 ≈ 1.83` (= random init)** — its
+`backbone_hidden` (the recurrent state it feeds forward in TTT) does not resemble the
+target's hidden at all. Since the multi-token tail depends entirely on that recurrent
+hidden, steps 2–3 accept poorly → accept caps ~2.2.
+
+NB: this is *not* a teacher-forcing / free-running bug. The trainer is standard **EAGLE-3
+TTT** — recurrent hidden (the draft's own) + teacher-forced tokens — which is correct
+(acceptance requires draft==target, so the accepted-path token == ground-truth token; only
+the *hidden* has no ground-truth twin, hence it is recurred). An earlier "teacher-forcing"
+hypothesis was walked back.
+
+**Fix — EAGLE/DSpark feature distillation:** add a **smooth-L1 loss between the draft's
+`backbone_hidden` and the target's UNSHIFTED hidden** at the aligned position `t+k`, plus
+DSpark's recipe (loss `0.1 hard-CE + 0.9 feature-L1`, global batch 512, TTT depth 7). Same
+Gemma4 assistant architecture — only the *training recipe* changed. New knobs in
+`training_step.py`/`train_online.py`: `--soft-ce-weight`, `--hard-ce-weight`,
+`--feature-l1-weight`. Result: warm-starting the accept-2.2 draft with the feature loss
+drove `feat_l1` 1.83 → ~0.89 and lifted **vLLM accept 2.217 → 2.512** (rate 0.41 → 0.50) —
+the ceiling was not a wall.
+
+### Loss-weight tuning
+Tune against **vLLM accept**, not training loss (loss dropped while accept stayed flat — the
+same trap as the original bug). Warm-starting the 2.512 feature checkpoint (step3200):
+
+| loss weights | vLLM accept (aime, k=3) |
+|---|---|
+| `hard 0.1 + feat 0.9` (feature-only) | **2.512** |
+| `soft 1.0 + feat 0.9` (no hard-CE) | 2.317 (degraded) |
+
+Adding a **heavy soft-CE hurt**: accept fell 2.512 → 2.317 and `feat_l1` rose 0.89 → 0.96.
+Key signal: **`feat_l1` rising = the recurrent hidden drifting off the target = worse tail =
+lower accept** — watch it as a proxy. Lesson: soft-CE (and hard-CE) must stay *small* so they
+don't erode the feature; keep the **feature term dominant**. Caveat: that run changed two
+things at once (added soft 1.0 AND dropped hard-CE), so the heavy soft-CE — not the missing
+hard-CE — is the likely culprit; hard-CE is cheap/proven so keep it (0.1). Current best bet:
+`soft 0.3 + hard 0.1 + feature 1.0`, else just train feature-only longer (2.512 was step3200,
+not converged). Toward vanilla's 3.58.
+
+### Checkpoint comparison (aime / livecodebench / gpqa, k=3, ~100 prompts)
+Head-to-head of the three trained checkpoints (accept_length / accept_rate):
+
+| checkpoint | recipe | aime | livecodebench | gpqa |
+|---|---|---|---|---|
+| **`assistant_featdistill/step3200`** | **feature-distill** (0.1 hard-CE + 0.9 feat) — **BEST** | **2.51 / 0.50** | **2.18 / 0.39** | **2.01 / 0.34** |
+| `assistant_featdistill_soft03/step1400` | soft 0.3 + hard 0.1 + feat 1.0 | 2.40 | 2.04 | 1.88 |
+| `rinit_shiftfix_4gpu/step10000` | from-scratch, pure soft-CE (no feature) | 2.22 / 0.41 | 1.88 / 0.29 | 1.75 / 0.25 |
+
+**`step3200` wins on all three.** Feature distillation helps *every* domain (step10000→step3200:
+lcb 1.88→2.18, gpqa 1.75→2.01 = below→at break-even). Adding soft-CE (soft03) *hurt* everywhere —
+feature-only is the best recipe. NOTE: the full 15-benchmark eval below was run on the *weaker*
+soft03 checkpoint; `step3200` (lcb/gpqa at-or-above the ~2.0 break-even) would be net-positive on
+more of the suite.
+
+### Full multi-domain evaluation (the draft is a math/code specialist)
+Full-suite eval (`experiments/soft03-full-eval.yaml` → `run_experiments.py`): 26B target
+baseline vs the feature-distilled draft (`assistant_featdistill_soft03/step1400`), k=3,
+~100 prompts/benchmark, greedy, vLLM TP=4. Speedup = draft tok/s ÷ baseline tok/s.
+
+| benchmark | accept_len | speedup |
+|---|---|---|
+| gsm8k | 2.44 | **1.41×** |
+| math500 | 2.57 | **1.38×** |
+| humaneval | 2.32 | **1.28×** |
+| aime26 | 2.43 | 1.21× |
+| aime | 2.40 | 1.20× |
+| mbpp | 2.03 | 1.14× |
+| speed-coding | 1.97 | 1.07× |
+| livecodebench | 2.04 | 1.01× |
+| gpqa | 1.88 | 0.96× ❌ |
+| speed-multilingual | 1.66 | 0.94× ❌ |
+| mt-bench | 1.55 | 0.87× ❌ |
+| swe-bench-pro | 1.71 | 0.84× ❌ |
+| speed-rag | 1.60 | 0.82× ❌ |
+| speed-qa | 1.36 | 0.79× ❌ |
+| speed-writing | 1.37 | **0.68×** ❌ |
+
+**Mean 1.04×, 8/15 positive.** Sharp domain split: it **wins on math/code** (its
+kimi-regen training distribution) and is **net *slower* than baseline on
+chat/QA/writing/RAG/multilingual/SWE** — because there accept_length falls below the
+**~2.0 break-even for k=3**, so the extra draft-forward cost outweighs accepted tokens.
+This is a **data-coverage** limit, not a method bug: the draft only saw math/reasoning
+data. Even in-domain (accept ~2.4 / 1.4×) it trails vanilla's ~3.5. Takeaways: (1) as a
+math/code draft it works; (2) for a *general* draft, broaden the training data
+(chat/QA/writing/diverse code) — that's what lifts accept above break-even everywhere; or
+route spec-decoding by domain (enable only where accept clears ~2.0). Results:
+`scripts/evaluate/experiments/results/full-eval-soft03-step1400/`.
+
+### Recommendations
+1. **[done]** Hidden shift is folded directly into `training_step.py` (draft step-0 consumes
+   the shifted `h_{t-1}`; feature labels use the unshifted hidden). The old `patch_hidden_shift`
+   monkeypatch is now a no-op. Apply the same to the offline cache path
+   (`training_step_from_cache`) if it is used.
+2. **Feature distillation is essential for the tail** — pure logit-distillation caps accept
+   ~2.2. Use `--feature-l1-weight 0.9` (+ soft- and/or hard-CE) to train the recurrent hidden.
+3. Put a **vLLM accept-length eval in the training loop** — loss and HF are blind to the
+   original shift bug; only a vLLM eval exposed it.
+4. TTT (recurrent hidden + teacher-forced token) is correct EAGLE-3 — do NOT "fix" it with
+   free-running tokens (that was a wrong lead). The tail is fixed by feature distillation +
+   bigger batch + more steps, not by changing the token feed.
+5. **Training-data coverage decides generality.** The math/reasoning-only draft is
+   net-negative on chat/QA/writing (full-eval above). For a general-purpose draft, train on a
+   diverse mix (chat/QA/writing/code + math), not more math-only steps — that's what lifts
+   accept above the ~2.0 (k=3) break-even everywhere. Otherwise use vanilla, or route
+   spec-decoding on per-domain accept.
+
+### Code changes (landed)
+- `src/speculators/models/gemma4_mtp/training_step.py`: hidden shift folded in
+  (`_shift_right`), EAGLE feature-distillation loss (`_feature_l1`, smooth-L1 of
+  `backbone_hidden` vs the target's unshifted hidden), `MTPLossConfig.feature_l1_weight`,
+  and a guard that skips the vocab-softmax when `soft_ce_weight == 0`.
+- `scripts/gemma4_mtp/train_online.py`: `--soft-ce-weight`/`--hard-ce-weight`/
+  `--feature-l1-weight` args; `patch_hidden_shift` is now a no-op; windowed (mean/N) loss log.
+
+### Reproduction
+Diagnostic scripts in the session scratchpad: `forward_parity_probe.py`, `aime_overfit_probe.py`,
+`localize_forward.py`, `magnitude_probe.py`, `hidden_sensitivity.py`, `kv_sensitivity.py`,
+`hf_specdecode.py` (dual convention), `dump_run.sh` + `analyze_dump.py`/`compare_hidden*.py`
+(vLLM instrumentation; the vLLM patch was reverted after use), `shift_test.py`, `analyze_recurrence.py`.
+Best-result checkpoints: `output/gemma4_26b_mtp_rinit_shiftfix_4gpu` (shift-fixed, 2.22),
+`output/gemma4_26b_mtp_assistant_featdistill` (+ feature loss, 2.51).
+Env: vLLM 0.24.0+cu129, torch 2.11.0+cu129, conda `speculator`.
+

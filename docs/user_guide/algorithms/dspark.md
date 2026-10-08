@@ -108,7 +108,7 @@ Caveats:
 - `val/loss` includes the indexer KL, which has heavy outliers (unnormalised
   scores); select checkpoints by `val/accept_len`, not `val/loss` or `--save-best`.
 
-First result: [DSpark top-k context selection A/B on Gemma-4-26B-A4B](../../experiments/dspark_topk_context_ab.md)
+First result: [DSpark top-k context selection on Gemma-4-26B-A4B](../../experiments/gemma4_26b_moe_results.md) (§18, and Appendix A for the first A/B)
 (32% density on the full-attention layer costs 1.2% accept_len; indexer contribution not yet isolated).
 
 ## Research & Citation

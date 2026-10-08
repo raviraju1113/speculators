@@ -15,10 +15,16 @@ which to trust.
 The most heavily worked target. Five draft families trained, 25+ benchmarks,
 production traffic, and agentic load.
 
-| doc | covers | state |
-|---|---|---|
-| [gemma4_26b_moe_results.md](gemma4_26b_moe_results.md) | **main doc, 19 sections.** Six-way draft comparison, 400k DSpark scale-up, DFlash warm start, the Ω diagnosis, AgentX, assistant-vs-DSparkFlash | current; **read §0 first** — it indexes by draft model and flags which sections are superseded |
-| [dspark_topk_context_ab.md](dspark_topk_context_ab.md) | first A/B of DSA-style top-k *context* selection (indexer vs dense) on 641-token data | superseded by §18 of the main doc, which re-ran it at 11k context |
+**[gemma4_26b_moe_results.md](gemma4_26b_moe_results.md)** — 19 sections plus
+two appendices. Six-way draft comparison, 400k DSpark scale-up, DFlash warm
+start, the Ω diagnosis, AgentX, assistant-vs-DSparkFlash. **Read §0 first** —
+it indexes by draft model and flags which sections are superseded.
+
+- *Appendix A*: the first top-k context A/B (superseded by §18, which re-ran it
+  at 11k context instead of 641 tokens).
+- *Appendix B*: the Gemma4 MTP hidden-state off-by-one bug — **applies to the
+  whole Gemma4 family**, so the dense 31B doc links here rather than
+  duplicating it.
 
 **Current best draft:** DSparkFlash (DSpark warm-started from stock DFlash)
 served with `dspark_draft_topk=64` — 1.877× at batch 1, 1.536× at batch 128,
@@ -36,9 +42,10 @@ The MoE sibling's dense counterpart. Far less written up than the 26B, despite
 carrying the majority of the eval configs in
 `scripts/evaluate/experiments/*.yaml` (27 of 41 reference this backbone).
 
-| doc | covers | state |
-|---|---|---|
-| [gemma4_31b_results.md](gemma4_31b_results.md) | MTP assistant k-sweep (4×A100, tp=4), and pointers to 31B material elsewhere | thin — 2 sections; most 31B runs are not written up |
+**[gemma4_31b_results.md](gemma4_31b_results.md)** — MTP assistant k-sweep
+(4×A100, tp=4) and pointers to 31B material elsewhere. **Thin**: 2 sections,
+and most 31B runs are not written up. The MTP hidden-state bug that affects
+this backbone lives in the 26B doc's Appendix B.
 
 **Gap worth knowing:** a published DSpark exists for this target
 (`RedHatAI/gemma-4-31B-it-speculator.dspark`, downloaded to
@@ -50,18 +57,29 @@ the reference recipe the 26B work kept comparing itself against
 
 ## Kimi K3
 
-| doc | covers | state |
-|---|---|---|
-| [kimi_k3_draft_eval.md](kimi_k3_draft_eval.md) | **16 sections.** TorchSpec EAGLE3 vs published DSpark drafts, plus three architecturally distinct DSpark checkpoints (`Inferact/`, `lightseekorg/`, native vs converted) | current |
-| [dspark_sliding_window_ablation.md](dspark_sliding_window_ablation.md) | **9 sections.** Can a full-attention DSpark checkpoint be forced into sliding-window attention at serve time with no retraining, and what does it cost? | current; the origin of the "the draft's useful context is local" finding that the 26B DSA work kept running into |
+**[kimi_k3_draft_eval.md](kimi_k3_draft_eval.md)** — 16 sections plus one
+appendix. TorchSpec EAGLE3 vs published DSpark drafts, plus three
+architecturally distinct DSpark checkpoints (`Inferact/`, `lightseekorg/`,
+native vs converted).
+
+- *Appendix A*: the sliding-window attention ablation — can a full-attention
+  DSpark checkpoint be forced into sliding-window at serve time, and what does
+  it cost? This is the **origin of "the draft's useful context is local"**, the
+  finding the Gemma-4-26B DSA work kept rediscovering (26B doc §18).
 
 ---
 
-## Cross-target
+## Cross-target material
 
-| doc | covers | applies to |
-|---|---|---|
-| [gemma4_mtp_vllm_hidden_shift_bug.md](gemma4_mtp_vllm_hidden_shift_bug.md) | **12 sections.** Why from-scratch Gemma4-MTP drafts looked perfect in training and collapsed to accept_len ≈ 1.07 in vLLM: the trainer fed the draft the target hidden state from the wrong position. Root cause + fix | whole Gemma4 family; read before training any MTP draft |
+One doc per target model, so cross-target material lives in the doc for the
+target it was found on, cross-linked from the other:
+
+- **Gemma4 MTP hidden-state off-by-one** — why from-scratch Gemma4-MTP drafts
+  looked perfect in training and collapsed to accept_len ≈ 1.07 in vLLM (the
+  trainer fed the draft the target hidden state from the wrong position). Root
+  cause and fix in
+  [gemma4_26b_moe_results.md, Appendix B](gemma4_26b_moe_results.md).
+  **Applies to both Gemma4 backbones** — read before training any MTP draft.
 
 ---
 
