@@ -27,6 +27,66 @@ via `scripts/evaluate/mtp_server_eval/run_vllm_eval.py`. Metrics:
 
 ---
 
+## 0. Index by draft model
+
+Every draft trained or evaluated on this backbone, what it is, and where it
+landed. **Sections are chronological; this table is not** — later sections
+correct earlier ones, and the "status" column says which number to believe.
+
+Numbers marked **(clean)** come from the post-§15 protocol
+(`--no-enable-prefix-caching`, warmup + repeats, arms measured in one run).
+Everything else predates it and carries the 66% prefix-caching drift — use for
+ordering within its own sweep, not as an absolute.
+
+| draft model | what it is | best result | status |
+|---|---|---|---|
+| **DSparkFlash + logit top-k** | DSparkFlash served with `dspark_draft_topk=64` | **1.877× c1 / 1.536× c128 (clean)** | **current best; ship this** (§19) |
+| **DSparkFlash** | DSpark warm-started from stock DFlash backbone | 1.814× c1 / 1.382× c128 (clean); suite 2.029× | best trained draft; full-vocab Ω penalty under load (§12, §15) |
+| **MTP assistant (vanilla)** | Google's shipped assistant, k=5, untrained by us | 1.735× c1 / 1.509× c128 (clean); suite 1.890× | strongest baseline; wins only vs *full-vocab* DSparkFlash under load (§19) |
+| **stock DFlash** | published RedHat DFlash for this backbone | 1.852× c1 / 1.567× c128 (clean); suite 1.933× | reference; best c128 of any arm measured (§15) |
+| **DSpark from scratch (400k)** | our own DSpark, 400k samples, 32k vocab | suite 1.940×; **sc1_delta 1.14×** | superseded by the warm start; collapsed on production traffic (§7, §9) |
+| **DSpark from scratch (30k)** | first DSpark run | suite 1.53× | superseded by the 400k run (§5) |
+| **DSpark 64k vocab** | 400k run with doubled draft vocab | suite 1.875×, multilingual 1.03× | **refuted its own hypothesis** — reduced vocab was not the cause (§11) |
+| **DSpark continuation** | 400k run + 4 more epochs | +0.4% | **exhausted** — more epochs do not help (§8) |
+| **MTP fine-tuned** | our fine-tune of the Google assistant | suite 1.45× | **worse than leaving it alone** on all 25 benchmarks; lr 6e-4 wrecked it, 5e-5 still worse (§5) |
+| **EAGLE3** | our from-scratch EAGLE3 | suite 1.39× | trained, not competitive here (§5) |
+| **P-EAGLE** | our from-scratch P-EAGLE | suite **0.91×** | below break-even at this budget; no vLLM auto-detect branch (§5) |
+
+### DSA context-selection variants (continued training from DSparkFlash)
+
+Trained on the long-context corpus (§17/§18), 11k median tokens, matched ~22%
+density. These test the *selection rule*, not a new draft:
+
+| arm | selection | held-out accept_len | status |
+|---|---|---|---|
+| A_dense | none (full prefix) | **3.835** | ceiling; the cost we are trying to remove |
+| B_indexer | 512 ranked + 128 local | 3.763 | **ties C** — indexer earns nothing at ≤16k (§18) |
+| C_window | 1 ranked + 639 local | 3.746 | tied with B; simpler, so preferred at this length |
+
+### What decides the ordering
+
+AL is nearly identical across the leading drafts (4.84–4.92), so
+`speedup = AL/(1+Ω)` puts the whole difference in **Ω, the draft's own cost**:
+
+| | Ω @c1 | Ω @c128 | growth |
+|---|---|---|---|
+| DSparkFlash + topk64 | 1.607 | 2.181 | +36% |
+| MTP assistant | 1.790 | 2.258 | **+26%** (best scaling) |
+| DSparkFlash full vocab | 1.686 | 2.554 | **+51%** (worst scaling) |
+
+### Reliability of each section
+
+| sections | measurement quality |
+|---|---|
+| §15, §18, §19 | **clean protocol** — trust absolute values |
+| §16 | clean (AgentX has no caching confound; baseline reproduced within 3%) |
+| §1, §5, §7, §8 | pre-fix; ordering within each sweep holds, absolutes do not |
+| §9, §10, §12 | pre-fix **and** carry inline ⚠ banners; §10 and §12 are partly superseded |
+| §11 | reframed — tested acceptance only, missing the Ω half (§15) |
+| §13 | contains a **corrected error** (claimed a published 26B DSpark that does not exist) |
+
+---
+
 ## 1. Draft comparison + k-depth sweep (1×A100)
 
 Target: `gemma-4-26B-A4B-it`. Drafts (vanilla MTP assistant, EAGLE3, DFlash)
