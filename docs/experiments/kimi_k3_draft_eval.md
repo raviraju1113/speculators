@@ -684,16 +684,19 @@ Roughly in priority order:
    checkpoint even auto-corrected its own architecture declaration);
    lightseekorg's checkpoint needed a fourth fix (Bug 4: vLLM's DSpark
    model support is missing a per-tap normalization step some training
-   contracts require) — see the Update section for all four issues. Still
-   open: (a) RedHatAI's cross-check against its own README shows an
-   unexplained one-directional gap (this measurement 7-39% higher on all
-   5 comparable domains) — not yet root-caused; (b) testing under
-   concurrent-request
-   batching — issue #50851's comment thread reports a separate, unresolved
-   *batched-verify* throughput regression on recent vLLM main, distinct
-   from the correctness bug fixed here; all real numbers in this doc are
-   single-stream
-   (concurrency 1) — worth checking whether 0.29.0 has it.
+   contracts require) — see the Update section for all four issues.
+   ~~(b) testing under concurrent-request batching~~ **Done 2026-10-08** —
+   see Bug 5: 0.29.0's fix does not hold up under concurrency. A real
+   AgentX concurrent-load sweep crashes the engine with
+   `cudaErrorIllegalAddress` as soon as traffic moves past a single
+   stream, in two different kernels across two attempts (rules out
+   cudagraphs), implicating the same AttnRes/KDA mechanism originally
+   suspected for Bug 2 — just triggered by concurrent reject/rewind
+   traffic rather than the single-sequence case 0.29.0 fixed. Blocked on
+   an upstream fix; only `users=1` is measurable today. Still open: (a)
+   RedHatAI's cross-check against its own README shows an unexplained
+   one-directional gap (this measurement 7-39% higher on all 5 comparable
+   domains) — not yet root-caused.
 2. **DSpark aa-lcr 8k/16k.** The one benchmark axis not yet measured for the
    stronger draft, and the most interesting given its yarn rope design —
    directly testable against the EAGLE3 draft's collapse at the same lengths.
@@ -1515,6 +1518,319 @@ smooth and monotonic across all 24 domains (consistent with a genuinely
 working draft), so the working hypothesis is measurement-methodology
 divergence, not an implementation bug — but this is explicitly flagged as
 unresolved, not swept under the rug.
+
+### Bug 5 — concurrent request load crashes the engine with illegal memory access, even on vLLM 0.29.0 (2026-10-08)
+
+All real numbers above (Bugs 1-4, all five checkpoints' sweeps) were
+measured **single-stream (concurrency 1)**. Open follow-up 1(b) flagged
+this explicitly as untested. It's now tested, via a real concurrent-load
+benchmark (AgentX trace replay, not the sequential harness used
+elsewhere in this doc) — and vLLM 0.29.0's fix does **not** hold up under
+concurrency.
+
+**Setup**: full-attention `Kimi-K3-DSpark` draft (the same checkpoint as
+the rest of this doc, not a sliding-window variant), `num_speculative_tokens: 3`,
+served via the canonical command below, TP=8, 8xB300, vLLM 0.29.0.
+Driven with `scripts/evaluate/mtp_server_eval/run_agentx.sh` (SemiAnalysis
+AgentX agentic trace-replay via aiperf), sweeping `users=1,8,16,32,64,128`
+at 600s/cell against the pinned trace corpus
+`semianalysisai/cc-traces-weka-062126`.
+
+Two harness fixes were needed before any real traffic could flow:
+- `run_agentx.sh` didn't pass tokenizer `trust_remote_code` through to
+  aiperf (needed for K3's custom tiktoken-based tokenizer) — fixed by
+  adding a `TOKENIZER_TRUST_REMOTE_CODE` env knob
+  (`--tokenizer-trust-remote-code` to aiperf).
+- aiperf's `--max-context-length` only *filters* which corpus traces it
+  picks; it does not bound what the server can serve. This corpus has
+  **zero traces under ~43K tokens** (median peak context 224K, max
+  ~990K) — the default server `--max-model-len 8192` (used throughout
+  this doc to avoid K3's native-1M-context KV OOM) admits none of them.
+  Raised `--max-model-len` to 128000 (`run_agentx.sh`'s own default
+  `MAX_CONTEXT`), which admits 79/393 traces with ~6-9x KV-pool
+  concurrency headroom (973K-1.19M token pool depending on cudagraph
+  mode). Raising `--max-model-len` does not shrink the KV pool at fixed
+  `gpu_memory_utilization` — it only bounds the per-request cap — so this
+  needed no other memory retuning. Full corpus coverage would need
+  ~990K context per sequence, which the pool can't hold even once.
+
+**The crash**: with the harness fixed, every sweep attempt crashed the
+engine with `cudaErrorIllegalAddress`. The first four attempts all died
+exactly at the `users=1 → users=8` transition, never during `users=1`
+itself (a fifth attempt, below, broke that pattern). **Four attempts,
+across two draft checkpoints (full-attention and the `sliding2048`
+variant) and two block sizes (3 and 7), all crashed with the same
+signature**:
+
+| attempt | draft | `num_speculative_tokens` | mode | kernel that faulted | location |
+|---|---|---|---|---|---|
+| 1 | full-attention `Kimi-K3-DSpark` | 3 | default (cudagraphs on) | flashinfer CuTeDSL `mxfp8_quantize` (MoE activation quant) | `flashinfer/quantization/kernels/mxfp8_quantize.py` |
+| 2 | full-attention `Kimi-K3-DSpark` | 3 | `--enforce-eager` | Kimi K3's native `kimi_k3_attn_res` | `attn_res_kernel.cu:1003` |
+| 3 | `Kimi-K3-DSpark-sliding2048` | 7 (trained block size) | `--enforce-eager` | `kimi_k3_attn_res` | `attn_res_kernel.cu:1003` |
+| 4 | `Kimi-K3-DSpark-sliding2048` | 3 | `--enforce-eager` | `kimi_k3_attn_res` | `attn_res_kernel.cu:1003` |
+
+Every time the fault hit 4+ TP ranks simultaneously with an identical
+traceback (rules out a single flaky GPU). Attempt 2 used
+`--enforce-eager` specifically to test whether attempt 1 was a
+cudagraph-capture/replay interaction — it crashed anyway, in a different
+kernel, which rules cudagraphs out entirely. Attempts 3 and 4 swapped the
+draft checkpoint (sliding-window instead of full-attention) and varied
+`num_speculative_tokens` (7, the trained block size, then 3 again) — both
+crashed identically to attempt 2. **The crash is therefore independent of
+draft checkpoint and block size** — it reproduces on the target side
+(`Kimi-K3-patched`) under concurrent multi-sequence speculative
+reject/rewind traffic regardless of which draft is attached or how many
+tokens it proposes per step. This is the same mechanism flagged as a
+suspect back when Bug 2 was first caught (AttnRes bank commits / KDA
+recurrent-state handling under speculative reject/rewind,
+`vllm/models/kimi_k3/nvidia/kda.py` + `model.py` AttnRes) — the 0.29.0 fix
+evidently only covers the single-sequence case that bug was originally
+caught at, not concurrent multi-sequence reject/rewind traffic.
+
+**Three valid data points** before each crash (`--enforce-eager`,
+`users=1`, each a real completed AgentX cell, 0 errors — 1 warmup + 12
+profiling requests apiece, confirmed against the raw replay logs and
+aiperf's own per-request `profile_export.jsonl`, 13 records each):
+
+| draft | block size | decode_tok_s | accept_len (AL) | accept_rate (AR) |
+|---|---:|---:|---:|---:|
+| full-attention `Kimi-K3-DSpark` | 3 | 7.6† | **2.801** | **0.6004** |
+| `sliding2048` | 7 (trained) | 8.6† | **3.167** | **0.3095** |
+| `sliding2048` | 3 | 7.7† | **2.834** | **0.6112** |
+
+†Not representative of real throughput — eager mode disables CUDA
+graphs, a major decode-speed cost on this model. AL/AR are the genuine
+speculation-quality numbers. A **separate, earlier, non-eager** `users=1`
+attempt (full-attention, block=3 — run before switching to
+`--enforce-eager` to diagnose the crash) measured real throughput of
+`decode_tok_s=125.7` over 64 completed requests (65 sent) before its own
+crash at the `users=8` transition corrupted the post-cell metrics scrape
+(AL/AR came back NA for that specific cell, decode_tok_s survived since
+aiperf times it independently). That 125.7 tok/s figure is the throughput
+number to trust for block=3 — **but note its raw replay log was lost**
+when the ephemeral scratch directory holding it was wiped during an
+unrelated session interruption; only the summary numbers captured in
+real time survive, not a re-verifiable source file. Do not conflate the
+64-request/125.7-tok/s run with the 13-request/AL=2.801 run above — they
+are two different cells.
+
+**Scope caveat — this is not a full or submission-valid AgentX
+evaluation, and the three-row table above is a single-trace case study,
+not a corpus sample.** Worth stating plainly since it's easy to read the
+table as more comprehensive than it is:
+
+- **Corpus coverage**: the `--max-context-length 128000` filter admits
+  only **79 of the corpus's 393 traces (20%)** — everything longer is
+  excluded outright, not sampled around.
+- **Duration**: every cell ran at `DURATION=600s`, below AgentX's own
+  900s minimum for a valid submission. aiperf stamps every result
+  `submission_valid=false` for this reason (visible in the `valid`
+  column of every `result.row` in this doc). Chosen to match an existing
+  quick-comparison shortcut already used elsewhere in this repo
+  (`gemma4-31b-agentx.yaml`'s own 600s cells), not to produce
+  submission-grade numbers.
+- **Concurrency**: a real AgentX run sweeps `users=1,8,16,32,64,128`.
+  Every attempt here died before reaching `users=8` — only the `users=1`
+  point was ever measured for any config.
+- **All three `users=1` rows in the table replay the exact same single
+  trace** (`trace_id 006c98de37d819e95b0840e25426bb7ca99d`), the same 13
+  turns in the same order (`turn_index` 4–16, all main-thread,
+  `agent_depth=0`, no subagent branching), confirmed by direct
+  cross-check of each run's `aiperf/profile_export.jsonl`. This is
+  genuinely useful as an apples-to-apples comparison (AL/AR differences
+  between rows are attributable to the config change, not to different
+  prompt content) but it is **one conversation, not a benchmark sample**
+  — with `random_seed=42` fixed and ~13 turns fitting per 600s window,
+  the sampler picked the same trace out of the 79 eligible ones every
+  time. Input-sequence lengths matched to within 1 token across all 13
+  turns between runs (a small, consistent, likely tokenizer-warmup
+  offset on the very first profiling run — not meaningful noise). All
+  three did run the identical AgentX scenario (`inferencex-agentx-mvp`),
+  same corpus (`semianalysisai/cc-traces-weka-062126`), same
+  `MAX_CONTEXT=128000`, same seed — so it is genuinely AgentX, just a
+  single-trace slice of it, not a corpus-wide result.
+
+Two things fall out of the three rows: (1) `sliding2048` at block=3 is
+nearly identical to full-attention at block=3 (AL 2.834 vs 2.801, AR
+0.6112 vs 0.6004) — consistent with the existing sliding-window ablation
+finding ([`dspark_sliding_window_ablation.md`](dspark_sliding_window_ablation.md))
+that a 2048-token window costs almost nothing. (2) Going from block=3 to
+the trained block=7 (same `sliding2048` draft) raises AL (3.167 vs 2.834,
+longer expected accepted chains from proposing more tokens) while
+lowering AR (0.3095 vs 0.6112, per-token acceptance decays further into a
+longer block) — the expected block-size tradeoff, matching the
+"Ablation: drafting fewer tokens than trained" section earlier in this
+doc, now confirmed on the AgentX long-context trace workload too.
+
+`users=8` and above remain unmeasured for all three configs — blocked on
+this crash until it's fixed upstream.
+
+**Sliding2048 vs full-attention throughput at block=3 (non-eager, the
+real serving mode)**: since the `users=1`/block=3 eager-mode cells don't
+give a usable throughput comparison (eager mode's ~16x cudagraph penalty
+swamps any real attention-compute difference), ran one more cell —
+`sliding2048`/block=3, cudagraphs on, `users=1` only (no need to sweep
+further, `users=8` is already known to crash regardless of config):
+
+| draft | decode_tok_s | accept_len (AL) | accept_rate (AR) |
+|---|---:|---:|---:|
+| full-attention | 125.7 | NA† | NA† |
+| `sliding2048` | **148.9** | 2.412 | 0.4705 |
+
+**`sliding2048` is ~18% faster** (148.9 vs 125.7 tok/s) at the same
+block size. Expected: this corpus's eligible traces run tens of
+thousands of tokens, so a 2048-token sliding window caps the attention
+computation per decode step regardless of how long the actual context
+has grown, while full attention re-scans the whole context every step.
+†Full-attention's AL/AR for this specific non-eager cell came back NA —
+the post-cell metrics scrape landed right as the engine crashed into
+`users=8`; only aiperf's own independently-timed `decode_tok_s` survived.
+Note AL/AR for `sliding2048`/block=3 differ a bit between this run
+(2.412/0.4705) and the earlier eager-mode run of the same config
+(2.834/0.6112) — each `users=1` cell only replays ~12-14 real trace
+turns, so some run-to-run sampling variance in which traces get picked is
+expected; throughput (driven by real wall-clock output, not trace
+identity) is the more stable number to compare across runs.
+
+**A fifth attempt (`RedHatAI/Kimi-K3-speculator.dspark`, K=8, the
+checkpoint's own recommended `draft_sample_method: probabilistic` +
+`rejection_sample_method: block` — every other attempt above used
+`greedy`) surfaced a new variant**: the crash hit **during `users=1`
+itself**, ~9 minutes into the single-stream replay (81 real requests
+completed first), never reaching the `users=8` transition at all. Same
+signature (`kimi_k3_attn_res`, illegal memory access, multiple TP ranks
+simultaneously). This is the first attempt where the crash did *not*
+require a concurrency jump — it's consistent with the underlying
+corruption being driven by *cumulative* reject/rewind events (more
+turns/time → more chances to hit it) rather than concurrency
+specifically, and `probabilistic`+`block` rejection sampling (a
+different, more complex multi-token reject code path than every other
+checkpoint's `greedy` sampling) may simply accumulate qualifying
+reject/rewind events faster per unit time than `greedy` does. No clean
+AL/AR for this cell — the post-crash metrics scrape never ran, so only
+the 81 raw per-request records in `aiperf/profile_export.jsonl` survive,
+not a computed accept-length summary. **This hypothesis was tested and
+refuted** — see the next two attempts, which crashed under pure
+`greedy` sampling too, during `users=1`, just as fast.
+
+**Full-attention block-size coverage (block=3/5/7, 2026-10-09)**: open
+follow-up asked whether full-attention `Kimi-K3-DSpark` (not just
+`sliding2048`) had been AgentX-tested at block sizes other than 3. First
+pass (both `greedy`, non-eager, vanilla vLLM — no engine changes) hit the
+crash in both configs:
+
+| block size | attempt | AL/AR | `users=1` cell outcome | crash point | faulting path |
+|---|---|---|---|---|---|
+| 3 | eager | AL=2.801/AR=0.6004 | completed (13 requests: 1 warmup + 12 profiling), 0 errors | next cell, `users=8` | native `kimi_k3_attn_res` |
+| 3 | non-eager | 125.7 tok/s, AL/AR NA | completed (65 sent, 64 completed), 0 errors | next cell, `users=8` | `mxfp8_quantize` (scrape raced the crash, hence NA AL/AR) |
+| 5 | non-eager | none — crashed before result.row written | crashed mid-cell (63 requests first) | during `users=1` itself, ~9 min in | CUDA graph replay (`torch.AcceleratorError`, async-reported — the actual fault likely happened earlier, same underlying corruption, just surfaced at the next cudagraph sync point) |
+| 7 | non-eager | none — crashed before result.row written | crashed mid-cell (52 requests first) | during `users=1` itself, ~9 min in | **the Triton fallback kernel** (`Triton Error [CUDA]: an illegal memory access`), not the native op |
+
+Block=7 crashing in the Triton fallback (not the native op) was useful
+on its own: it refutes the "native kernel is uniquely buggy" hypothesis
+floated after the `--enforce-eager` test — both implementations hit the
+identical signature, so the corruption is upstream of either kernel
+(shared tensor/state preparation), not a defect isolated to one code
+path. Block=5 crashing under plain `greedy` (not just RedHatAI's
+`probabilistic`+`block`) also closed out the "rejection-sampling method
+is the trigger" theory from the previous section.
+
+**Retried block=5 and block=7 on a fresh node allocation — both
+completed cleanly this time, with real AL/AR, no crash.** This overturns
+the "only block=3 survives `users=1`" reading above: the crash is
+**not deterministic per config** — the identical block=5 command
+(vanilla vLLM, same checkpoint, same `greedy` sampling) crashed on the
+first attempt and ran cleanly on the retry. Block=size, in other words,
+changes something about the odds or timing of hitting the bug, but isn't
+a reliable predictor of whether a given run crashes.
+
+The retry also controlled for a confound found along the way: AL/AR
+comparisons across configs are only meaningful if every run replays the
+**same trace content**. A fast (non-eager) config gets through more
+conversation turns in a fixed 600s window than a slow (eager) one, so by
+default each config samples a different slice of the corpus — e.g. an
+uncontrolled block=5 retry pulled from 3 different traces while block=3
+only ever saw 1. Fixed by adding `--num-dataset-entries` pass-through to
+`run_agentx.sh` (`NUM_DATASET_ENTRIES=1` caps the eligible pool to the
+first match, so every config replays the identical single trace,
+looping back to its start once a fast config exhausts its ~13 turns
+within the window). Confirmed via direct trace_id cross-check that all
+three block sizes below replay `trace_id
+006c98de37d819e95b0840e25426bb7ca99d` — the same trace as every other
+row in this doc's AgentX tables:
+
+| block size | mode | decode_tok_s | accept_len (AL) | accept_rate (AR) | requests | errors |
+|---|---|---:|---:|---:|---:|---:|
+| 3 | eager | 7.6† | **2.801** | **0.6004** | 13 (1 warmup + 12 profiling) | 0 |
+| 5 | non-eager | **148.7** | **2.881** | **0.3762** | 66 (1 warmup + 65 profiling) | 0 |
+| 7 (trained block size) | non-eager | **135.3** | **2.843** | **0.2633** | 64 (1 warmup + 63 profiling) | 0 |
+
+†Eager-mode throughput, not representative — see the general caveat
+earlier in this section. Block=3's row is eager/AL=2.801 rather than a
+matching non-eager rerun; AL/AR should be mode-invariant in principle
+(same computation, cudagraphs vs. not), so this is treated as
+comparable, but it wasn't independently re-verified non-eager.
+
+**AR decays monotonically with block size** (0.6004 → 0.3762 → 0.2633)
+while AL stays roughly flat — the expected tradeoff from proposing more
+tokens per verify step (per-token acceptance decays further into a
+longer block, but each step still nets a similar expected number of
+accepted tokens), matching the "Ablation: drafting fewer tokens than
+trained" section earlier in this doc, now also confirmed on the AgentX
+long-context workload. Block 5 and 7 were measurably **faster** than
+block 3 in this comparison (148.7 and 135.3 vs 7.6 tok/s) but that gap is
+almost entirely the eager-vs-non-eager mode difference, not a block-size
+effect — compare instead to the non-eager block=3 throughput figure
+above (125.7 tok/s): block 5 is ~18% faster, block 7 ~8% faster, both
+plausible given fewer total verify steps needed per unit of generated
+text at a wider block.
+
+**Root-cause hypothesis (static code read only — no instrumentation, no
+vLLM changes made)**: `vllm/models/kimi_k3/nvidia/ops/recoverssm.py`
+implements KDA's linear-attention recurrent state as a **persistent,
+cross-decode-step cache** indexed by `state_indices` (analogous to a
+KV-cache block table) — exactly the "KDA recurrent-state handling of
+rejected speculative tokens" mechanism flagged as a suspect as far back
+as the original 2026-09-14 investigation. `kda_recoverssm_verify` runs a
+speculative window against a cached checkpoint without mutating it;
+`.commit()` later folds only the *actually accepted* prefix into real
+state, with extra "boundary" handling that writes to **two** state slots
+when a commit crosses a `mamba_block_size` boundary. This bookkeeping is
+only meaningfully exercised by **real, varied accept/reject counts across
+many decode steps with genuine block-boundary crossings** — something
+quick smoke tests (near-100% acceptance, few steps) barely touch, but
+which real AgentX multi-turn conversations produce constantly. That
+fits every piece of observed evidence: onset only after sustained real
+load (never instantly); the crash symptom appearing in unrelated kernels
+(consistent with a bad index in this state-table bookkeeping corrupting
+memory that a *different*, later kernel then trips over); and it being
+spec-decode-specific (target-only serving is always healthy, since none
+of this commit/verify machinery runs without a draft attached). This is
+a hypothesis, not a confirmed line-level root cause — going further would
+need either `CUDA_LAUNCH_BLOCKING=1` (a non-invasive runtime diagnostic,
+not yet run) or editing this file to test it (not attempted, per explicit
+instruction to leave the installed vLLM untouched). Left here as the most
+concrete lead for whoever picks this up next.
+
+**Artifacts**: crash tracebacks and result matrices saved to
+`/import/ml-sc-scratch5/chenw/models/kimi-k3-agentx-eval/`
+(`crash1_mxfp8_quantize.log`, `crash2_attn_res_eager.log`,
+`crash3_attn_res_sliding2048_block7.log`,
+`crash4_attn_res_sliding2048_block3.log`,
+`crash5_attn_res_redhatai_users1.log`, `matrix_k3.tsv`,
+`results_eager_k3/`, `results_sliding2048_block7/`,
+`results_sliding2048_block3/`, `results_sliding2048_block3_noneager/`,
+`results_redhatai/`, `results_fullattn_block5/`,
+`results_fullattn_block7/`, `results_fullattn_block5_sametrace/`,
+`results_fullattn_block7_sametrace/`,
+`crash6_cudagraph_replay_fullattn_block5.log`,
+`crash7_triton_fullattn_block7.log`).
+Three harness fixes landed in
+`scripts/evaluate/mtp_server_eval/run_agentx.sh` (committed):
+tokenizer `trust_remote_code` passthrough, `--max-context-length`
+raised to 128000 to admit eligible traces, and a `NUM_DATASET_ENTRIES`
+env knob (`--num-dataset-entries` passthrough) to pin every config to
+the same trace for valid cross-config comparison.
 
 ## Setup (measurement conditions)
 
