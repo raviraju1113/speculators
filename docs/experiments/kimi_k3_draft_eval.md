@@ -1785,6 +1785,128 @@ above (125.7 tok/s): block 5 is ~18% faster, block 7 ~8% faster, both
 plausible given fewer total verify steps needed per unit of generated
 text at a wider block.
 
+**Sliding2048 block-size coverage (block=3/5/7, same trace)**: filled in
+the equivalent matched comparison for the `sliding2048` draft:
+
+| block size | mode | decode_tok_s | accept_len (AL) | accept_rate (AR) | requests | errors |
+|---|---|---:|---:|---:|---:|---:|
+| 3 | eager | 7.7† | 2.834 | 0.6112 | 13 (1 warmup + 12 profiling) | 0 |
+| 3 | non-eager | **148.9** | — | — | 65 (1 warmup + 64 profiling) | 0 |
+| 5 | non-eager | **188.4** | **3.060** | **0.4120** | 71 (1 warmup + 70 profiling) | 0 |
+| 7 (trained) | eager | 8.6† | 3.167 | 0.3095 | 13 (1 warmup + 12 profiling) | 0 |
+| 7 (trained) | non-eager | none — crashed twice, 2/2 | — | — | 66-67 before each crash | — |
+
+Same AR-decay/AL-roughly-flat pattern as full-attention (0.6112 → 0.4120
+→ 0.3095), confirming the tradeoff isn't specific to the full-attention
+draft. Block=5's 188.4 tok/s is the single highest throughput measured
+anywhere in this doc's AgentX tables — faster than both block=3 (148.9)
+and full-attention block=5 (148.7) — consistent with sliding-window
+attention's lower per-step compute cost compounding with the
+non-autoregressive-drafting throughput benefit discussed above.
+
+**sliding2048/block=7 non-eager could not be measured** — two
+independent attempts both crashed with the `mxfp8_quantize` illegal-
+memory-access signature, ~9-9.7 minutes into the `users=1` window, 66-67
+requests completed first each time (`crash8_mxfp8_sliding2048_block7_attempt1.log`,
+`crash9_mxfp8_sliding2048_block7_attempt2.log`). This is a **2/2
+reproduction rate**, notably more reliable than full-attention's
+block=5/block=7 (which each crashed once, then ran clean on retry) —
+worth noting as a data point on crash likelihood, though the sample size
+(2 attempts) is too small to call this config definitively worse, just
+observed to be worse so far. The eager-mode AL/AR for this config
+(3.167/0.3095) remains the only data available for sliding2048/block=7.
+
+**Genuine long-context run (>256K tokens, 900s duration, 2026-10-09)**:
+every AgentX result above used `--max-context-length 128000`, which caps
+*peak* context, not necessarily what any single replayed request
+actually reaches — and `DURATION=600s` (below AgentX's 900s minimum).
+Addressed both gaps for full-attention block=3 (the most-tested config):
+
+- **Trace selection**: aiperf's `--max-context-length` is a ceiling only,
+  no floor exists to select a *minimum* context length. Queried the
+  corpus directly (`semianalysisai/cc-traces-weka-062126`, 393 traces)
+  and found 176 with peak context > 256K. Wrote the 100 traces with
+  256K < peak ≤ 500K (the full >500K tail was left out — at the KV pool's
+  ~1M-token capacity, a single request near the corpus max of 989,824
+  tokens would leave uncomfortably little headroom) to local per-trace
+  JSON files matching aiperf's `WekaTrace` schema exactly, and pointed
+  aiperf at them via `--custom-dataset-type weka_trace --input-file
+  <dir>` (added `CUSTOM_DATASET_DIR` to `run_agentx.sh`) instead of
+  `--public-dataset`. The scenario's corpus-identity check rejects an
+  unpinned local directory outright (`--unsafe-override` required
+  regardless of duration, so `submission_valid` is `false` here on
+  principle, not just because of duration — noted so this isn't confused
+  with the earlier DURATION-driven invalidity).
+- **Duration**: ran at `DURATION=900s`, AgentX's actual minimum, instead
+  of the `600s` shortcut used everywhere else in this doc.
+- **Server**: `--max-model-len` raised to 512,000 to admit the selected
+  traces. Confirmed the KV pool is still governed by
+  `gpu_memory_utilization`, not `max_model_len` (1,034,525 tokens,
+  unchanged in kind from the 128K-cap runs) — **2.02x concurrency even at
+  512K tokens/request**, comfortable headroom, no OOM.
+
+Result (44 completed + 1 cancelled at the 30s grace-period timeout, 0
+errors, single trace, confirmed real input lengths 316,759–393,765
+tokens):
+
+| decode_tok_s | accept_len (AL) | accept_rate (AR) |
+|---:|---:|---:|
+| 71.8 | **1.991** | **0.3303** |
+
+**AL drops meaningfully at this context length** — 1.991 here vs. ~2.8
+for the same config (full-attention, block=3) at ≤128K context earlier
+in this doc. This is the first evidence in this project of real
+long-context degradation for this draft measured on genuine AgentX
+traffic (as opposed to the project's earlier length-sweep work on
+isolated prompts). Only one data point so far (one trace, one config) —
+worth broadening to more traces/configs before treating this as a firm
+quantitative finding, but the direction is a real signal, not noise: AR
+(0.3303) is in the same ballpark as the mid-block-size AR values
+measured at short context, consistent with "long context behaves like
+an effectively harder/later drafting position" rather than a distinct
+mechanism.
+
+**Artifacts**: `/import/ml-sc-scratch5/chenw/models/kimi-k3-agentx-eval/results_longctx_fullattn_block3/`
+and the filtered trace set itself at
+`/import/ml-sc-scratch5/chenw/models/kimi-k3-agentx-eval/longctx_traces_256k_500k/`
+(100 JSON files, reusable for future long-context runs without
+re-querying the HF dataset). `CUSTOM_DATASET_DIR` support is in
+`scripts/evaluate/mtp_server_eval/run_agentx.sh` (committed).
+
+**Follow-up: narrower band right at 256K, and a new crash signature.**
+The 256K-500K selection above spans a wide range; re-ran with a tighter
+256K < peak ≤ 300K band (30 traces, confirmed peaks 257,408-299,584) and
+`--max-model-len 320000` (KV pool still ~1.02M tokens, **3.19x
+concurrency** — even more headroom than the 512K run). This attempt
+**crashed** — but with a signature never seen before in this doc:
+
+```
+Worker proc VllmWorker-0 died unexpectedly (exit code: None), shutting down executor.
+```
+
+No Python exception, no CUDA traceback — a **silent worker death**,
+distinct from every prior Bug 5 instance (which always logged an
+explicit `cudaErrorIllegalAddress`/Triton error before dying). It
+happened ~9.3 minutes after the warmup request completed (consistent
+with the usual onset timing), immediately after a JIT-compile warning
+fired for `_causal_conv1d_fwd_kernel` at a shape (124,416 computed
+tokens) this project has never exercised before (`jit_monitor.py:141`:
+"This causes a latency spike; consider extending warmup to cover this
+shape/config" — stated as a performance note, not a crash risk, in
+vLLM's own warning text). `dmesg` showed no OOM-killer activity and the
+GPUs released cleanly afterward, so this doesn't look like a simple
+memory exhaustion either. Whether this is the same underlying
+corruption surfacing differently (a host-side crash instead of a
+device-side one) or a genuinely separate bug specific to this
+unprecedented sequence-length regime is unresolved — flagged here
+precisely rather than folded into the existing Bug 5 narrative, since
+the signature doesn't match. No retry attempted yet.
+
+**Artifacts**: `/import/ml-sc-scratch5/chenw/models/kimi-k3-agentx-eval/results_longctx256k_fullattn_block3/`
+(partial — crashed before a result.row was written; 43 raw per-request
+records in `aiperf/profile_export.jsonl` survive), filtered trace set at
+`longctx_traces_256k_300k/`, crash log at `crash10_silent_worker_death_longctx256k.log`.
+
 **Root-cause hypothesis (static code read only — no instrumentation, no
 vLLM changes made)**: `vllm/models/kimi_k3/nvidia/ops/recoverssm.py`
 implements KDA's linear-attention recurrent state as a **persistent,
@@ -1823,8 +1945,11 @@ concrete lead for whoever picks this up next.
 `results_redhatai/`, `results_fullattn_block5/`,
 `results_fullattn_block7/`, `results_fullattn_block5_sametrace/`,
 `results_fullattn_block7_sametrace/`,
+`results_sliding2048_block5_sametrace/`,
 `crash6_cudagraph_replay_fullattn_block5.log`,
-`crash7_triton_fullattn_block7.log`).
+`crash7_triton_fullattn_block7.log`,
+`crash8_mxfp8_sliding2048_block7_attempt1.log`,
+`crash9_mxfp8_sliding2048_block7_attempt2.log`).
 Three harness fixes landed in
 `scripts/evaluate/mtp_server_eval/run_agentx.sh` (committed):
 tokenizer `trust_remote_code` passthrough, `--max-context-length`

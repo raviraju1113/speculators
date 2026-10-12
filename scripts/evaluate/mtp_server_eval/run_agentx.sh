@@ -58,12 +58,30 @@ MAX_CONTEXT="${MAX_CONTEXT:-128000}"        # traces longer than this are filter
 # Date-pinned corpus alias; the rolling `..._with_subagents` alias advances when a
 # new drop lands, and two runs on different drops are not comparable.
 PUBLIC_DATASET="${PUBLIC_DATASET:-semianalysis_cc_traces_weka_062126}"
+# Optional: a local directory of pre-filtered Weka trace JSON files (one
+# WekaTrace object per file, same schema as the public dataset's raw rows).
+# Use this instead of PUBLIC_DATASET when you need a selection aiperf's own
+# --max-context-length (a ceiling only, no floor) can't express -- e.g. a
+# minimum-context-length slice. When set, overrides --public-dataset with
+# --custom-dataset-type weka_trace --input-file "$CUSTOM_DATASET_DIR".
+CUSTOM_DATASET_DIR="${CUSTOM_DATASET_DIR:-}"
 RESULT_DIR="${RESULT_DIR:-./results/agentx}"
 POLL_INTERVAL="${POLL_INTERVAL:-0.25}"
 # Model name the server advertises, and the tokenizer aiperf rebuilds prompts
 # with. MODEL is usually the served path/alias; TOKENIZER defaults to it.
 MODEL="${MODEL:-}"
 TOKENIZER="${TOKENIZER:-${MODEL}}"
+# Caps the eligible-trace pool (after the --max-context-length filter) to the
+# first N candidates, so every run -- regardless of decode speed -- replays
+# the same trace(s) instead of a faster server working through more of the
+# pool in the same wall-clock duration. Unset (default) uses the full
+# eligible pool, which makes AL/AR across configs with different throughput
+# NOT comparable (different trace content, not just different draft).
+NUM_DATASET_ENTRIES="${NUM_DATASET_ENTRIES:-}"
+# Needed for any tokenizer repo that ships custom Python (e.g. Kimi K3's
+# trust_remote_code modeling code) -- aiperf's own HF tokenizer load doesn't
+# inherit the server's --trust-remote-code.
+TOKENIZER_TRUST_REMOTE_CODE="${TOKENIZER_TRUST_REMOTE_CODE:-0}"
 # aiperf can live in its own venv so it cannot disturb the serving env's
 # vllm/torch:
 #   python3.11 -m venv ~/.venv-aiperf && ~/.venv-aiperf/bin/pip install aiperf
@@ -79,6 +97,23 @@ fi
 PYTHON="${PYTHON:-python3}"
 # Skip a cell if result.row already exists (set SKIP_EXISTING=0 to rerun).
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
+
+case "$TOKENIZER_TRUST_REMOTE_CODE" in
+    ""|0|no|false) TRUST_REMOTE_CODE_ARGS=() ;;
+    *)             TRUST_REMOTE_CODE_ARGS=(--tokenizer-trust-remote-code) ;;
+esac
+
+if [[ -n "$CUSTOM_DATASET_DIR" ]]; then
+    DATASET_ARGS=(--custom-dataset-type weka_trace --input-file "$CUSTOM_DATASET_DIR")
+else
+    DATASET_ARGS=(--public-dataset "$PUBLIC_DATASET" --max-context-length "$MAX_CONTEXT")
+fi
+
+if [[ -n "$NUM_DATASET_ENTRIES" ]]; then
+    NUM_DATASET_ENTRIES_ARGS=(--num-dataset-entries "$NUM_DATASET_ENTRIES")
+else
+    NUM_DATASET_ENTRIES_ARGS=()
+fi
 
 # GPU telemetry is off by default: aiperf polls a DCGM exporter on :9400, and a
 # host whose exporter omits fields aiperf requires (e.g. `hostname`) floods the
@@ -102,6 +137,12 @@ if (( DURATION < MIN_VALID_DURATION )); then
     echo "!! DURATION=${DURATION}s is below the AgentX minimum of ${MIN_VALID_DURATION}s."
     echo "!! Passing --unsafe-override: results will be stamped submission_valid=false."
     echo "!! Use this for plumbing validation only, never for reported numbers."
+fi
+if [[ -n "$CUSTOM_DATASET_DIR" ]]; then
+    UNSAFE_ARGS=(--unsafe-override)
+    echo "!! CUSTOM_DATASET_DIR set: the scenario can't verify corpus identity for"
+    echo "!! a local weka_trace directory. Passing --unsafe-override: results will"
+    echo "!! be stamped submission_valid=false regardless of DURATION."
 fi
 
 case "$BACKEND" in sglang|vllm) ;; *) echo "BACKEND must be sglang|vllm" >&2; exit 1;; esac
@@ -183,8 +224,7 @@ run_cell() {
         --endpoint-type chat \
         --model "$MODEL" \
         --tokenizer "$TOKENIZER" \
-        --public-dataset "$PUBLIC_DATASET" \
-        --max-context-length "$MAX_CONTEXT" \
+        "${DATASET_ARGS[@]}" \
         --concurrency "$users" \
         --benchmark-duration "$DURATION" \
         --streaming \
@@ -195,6 +235,8 @@ run_cell() {
         --artifact-dir "$out_dir/aiperf" \
         --random-seed 42 \
         --ui simple \
+        "${TRUST_REMOTE_CODE_ARGS[@]}" \
+        "${NUM_DATASET_ENTRIES_ARGS[@]}" \
         "${GPU_TELEMETRY_ARGS[@]}" \
         "${UNSAFE_ARGS[@]}" 2>&1 | tee "$log" || echo "!! [users=$users] replay errored (see $log)"
 
@@ -257,7 +299,11 @@ PY
 }
 
 echo "==> AgentX trace-replay against $BASE_URL (backend=$BACKEND, users: $USERS_LIST, ${DURATION}s/cell)"
-echo "==> model=$MODEL corpus=$PUBLIC_DATASET max_context=$MAX_CONTEXT"
+if [[ -n "$CUSTOM_DATASET_DIR" ]]; then
+    echo "==> model=$MODEL corpus=local:$CUSTOM_DATASET_DIR (pre-filtered, no --max-context-length applied)"
+else
+    echo "==> model=$MODEL corpus=$PUBLIC_DATASET max_context=$MAX_CONTEXT"
+fi
 setup_agentx
 for users in $USERS_LIST; do
     run_cell "$users"

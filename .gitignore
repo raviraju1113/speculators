@@ -240,3 +240,6 @@ google/
 scripts/evaluate/rdu_mtp_eval/env_*
 .codeguru/
 .claude/
+
+# Scratch directory for ad-hoc model launch experiments (Kimi-K3, etc.)
+.scratch_kimi_launch/
