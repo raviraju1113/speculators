@@ -1,5 +1,48 @@
 # Launching Kimi K3 + DSpark across 2x B200 nodes (SLURM `gpuonly`)
 
+## RESOLVED (2026-10-12): working 2-node launch found
+
+After 13 independent attempts (documented below) progressively diagnosed and
+fixed three real bugs — (1) PyTorch/NCCL auto-attempting cross-node
+"symmetric memory" setup, fixed via `NCCL_CUMEM_ENABLE=0`/`NCCL_NVLS_ENABLE=0`/
+`ENABLE_INTRA_NODE_COMM=0`; (2) Kimi K3's own latent-MoE-tail kernel requiring
+genuine GPU peer memory across the *entire* TP group, meaning **TP can never
+span nodes** for this model; (3) a reproducible NCCL P2P/IPC stall between a
+specific local GPU pair — a colleague (ruobingw)'s independently-developed,
+already-validated recipe arrived with the actual fixes for issues we were
+still chasing: `NCCL_P2P_LEVEL=NVL` (not full P2P disable) for the stall, and
+`--language-model-only` for a vision-tower crash we'd just hit. Their recipe
+also uses a parallelism dimension we hadn't configured at all — **DCP
+(decode-context-parallel-size), sized to match TP** — for sharding KDA's
+recurrent linear-attention state, on top of TP=8 (intra-node) × PP=2
+(cross-node).
+
+**Working launch (2026-10-12, job `10368001`=cp82/head,
+`10368011`=cp81/second node)**: vLLM `0.30.1rc1.dev493+gac9126e58` (wheels.vllm.ai,
+NOT our conda env's vLLM 0.24.0 fork — this build has native Kimi K3 support
+plus flags like `--decode-context-parallel-size`, `--language-model-only`,
+`TOKENSPEED_MLA` attention backend that our older install lacks), torch
+2.13.0+cu130, NCCL 2.29.7 (2.30.7 is known to hang on the second
+communicator). `TP=8 × PP=2 × DCP=8`, `--language-model-only`,
+`NCCL_P2P_LEVEL=NVL`, `NCCL_CUMEM_ENABLE=1` (fine once TP is correctly
+intra-node), raw checkpoint directly off NFS (no local copy needed — same
+source as our existing `Kimi-K3-patched`, used unpatched since this vLLM
+build has its own native modeling code), `--load-format fastsafetensors`,
+no speculative decoding yet (`NO_SPEC=1`), no Mooncake KV connector (not
+needed for basic serving). Confirmed via a real `/v1/chat/completions`
+request. Full scripts: `.scratch_kimi_launch/k3-b200-exp/scripts/`
+(adapted from `/import/snvm-sc-podscratch4/ruobingw/k3-b200-exp/scripts/`
+for our own paths/job IDs — ruobingw's originals are hardcoded to their
+own home/scratch directories).
+
+**Not yet done**: re-attaching the DSpark speculative draft, and the
+Mooncake KV-cache tier (needed only for large prefix-cache-sharing
+workloads, per ruobingw's `RECIPE.md`). Both are described in ruobingw's
+`RECIPE.md`/`serve_k3_host.sh` and should layer on cleanly now that the
+base topology works.
+
+---
+
 **Status: blocked on a cross-node NCCL data-plane hang, not yet working end-to-end.**
 This doc is the recipe for everything that *does* work, plus the full evidence
 trail for the one thing that doesn't, so the next attempt doesn't have to
