@@ -1,0 +1,12 @@
+--- vllm/transformers_utils/configs/speculators/algos.py.orig	2026-08-09 20:28:40.314163174 -0700
++++ vllm/transformers_utils/configs/speculators/algos.py	2026-08-09 20:28:40.321163220 -0700
+@@ -149,7 +149,8 @@
+     """
+     pre_trained_config["architectures"] = ["Qwen3DSparkModel"]
+     # Speculators DSpark uses the 1+N fill-in block (anchor is a bonus token).
+-    pre_trained_config["dspark_bonus_anchor"] = True
++    pre_trained_config["dspark_bonus_anchor"] = not config_dict.get(
++        "sample_from_anchor", False)
+ 
+     aux_layer_ids = config_dict["aux_hidden_state_layer_ids"]
+     pre_trained_config["eagle_aux_hidden_state_layer_ids"] = aux_layer_ids

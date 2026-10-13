@@ -1,0 +1,166 @@
+--- vllm/model_executor/models/qwen3_dflash.py.orig	2026-09-17 10:59:10.145141386 -0700
++++ vllm/model_executor/models/qwen3_dflash.py	2026-09-17 10:59:55.211422368 -0700
+@@ -32,7 +32,10 @@
+     VocabParallelEmbedding,
+ )
+ from vllm.multimodal.inputs import NestedTensors
+-from vllm.transformers_utils.config import set_default_rope_theta
++from vllm.transformers_utils.config import (
++    is_rope_parameters_nested,
++    set_default_rope_theta,
++)
+ from vllm.transformers_utils.repo_utils import get_hf_file_bytes
+ from vllm.v1.attention.backend import AttentionType
+ 
+@@ -132,6 +135,42 @@
+     return sliding_window, _dflash_layer_causal(config, layer_idx)
+ 
+ 
++def _resolve_layer_rope(config: Qwen3Config, layer_idx: int) -> dict:
++    """RoPE parameters for one draft layer.
++
++    ``rope_parameters`` is either one flat dict shared by every layer (the
++    usual case) or, Transformers-v5 style, a dict keyed by layer type, e.g.
++    ``{"full_attention": {yarn...}, "sliding_attention": {default...}}``.
++    The nested form lets a mixed sliding/full draft scale RoPE only on its
++    full-attention layers (serve-time YaRN) while the sliding layers keep the
++    encoding they were trained with.
++    """
++    rope_parameters = config.rope_parameters
++    if not is_rope_parameters_nested(rope_parameters):
++        return rope_parameters
++    layer_types = getattr(config, "layer_types", None)
++    layer_type = layer_types[layer_idx] if layer_types else "full_attention"
++    if layer_type not in rope_parameters:
++        raise ValueError(
++            f"rope_parameters is keyed by layer type {sorted(rope_parameters)} "
++            f"but draft layer {layer_idx} has layer_type {layer_type!r}"
++        )
++    return rope_parameters[layer_type]
++
++
++def _set_default_rope_theta_per_layer_type(
++    config: Qwen3Config, default_theta: float
++) -> None:
++    """``set_default_rope_theta`` that understands the per-layer-type form."""
++    rope_parameters = getattr(config, "rope_parameters", None)
++    if rope_parameters and is_rope_parameters_nested(rope_parameters):
++        for rp in rope_parameters.values():
++            rp.setdefault("rope_type", "default")
++            rp.setdefault("rope_theta", default_theta)
++        return
++    set_default_rope_theta(config, default_theta=default_theta)
++
++
+ class DFlashQwen3Attention(nn.Module):
+     """Attention for DFlash speculative decoding.
+ 
+@@ -262,7 +301,7 @@
+     ) -> None:
+         super().__init__()
+         self.hidden_size = config.hidden_size
+-        set_default_rope_theta(config, default_theta=1000000)
++        _set_default_rope_theta_per_layer_type(config, default_theta=1000000)
+         attn_type = AttentionType.DECODER
+ 
+         # DFlash drafts store the sink-bias flag inside dflash_config; fall back
+@@ -290,7 +329,7 @@
+             head_dim=getattr(config, "head_dim", None),
+             cache_config=cache_config,
+             quant_config=quant_config,
+-            rope_parameters=config.rope_parameters,
++            rope_parameters=_resolve_layer_rope(config, layer_idx),
+             prefix=f"{prefix}.self_attn",
+             attn_type=attn_type,
+         )
+@@ -470,12 +509,25 @@
+         self._rope_head_size = attn0.rotary_emb.head_size
+         self._rope_cos_sin_cache = attn0.rotary_emb.cos_sin_cache
+         self._rope_is_neox = attn0.rotary_emb.is_neox_style
+-        # Validation that RoPE params are the same across all layers
++        # Validation that RoPE layout is the same across all layers
+         for attn in layers_attn[1:]:
+             assert (
+                 attn.rotary_emb.head_size == self._rope_head_size
+                 and attn.rotary_emb.is_neox_style == self._rope_is_neox
+-            ), "All layers must have the same RoPE parameters for DFlash precomputation"
++            ), "All layers must have the same RoPE layout for DFlash precomputation"
++        # Per-layer-type rope_parameters give layers different cos/sin tables
++        # (e.g. YaRN on full-attention layers only). get_rope() caches by
++        # parameters, so identical layers share one table object; when every
++        # layer shares layer 0's, the fused single-batch RoPE path applies.
++        self._rope_cos_sin_caches = [a.rotary_emb.cos_sin_cache for a in layers_attn]
++        self._rope_uniform = all(
++            c is self._rope_cos_sin_cache for c in self._rope_cos_sin_caches
++        )
++        if not self._rope_uniform:
++            logger.info_once(
++                "DFlash draft uses per-layer RoPE tables; context-KV RoPE runs "
++                "per layer instead of fused."
++            )
+ 
+         # Layer metadata
+         self._num_attn_layers = len(layers_attn)
+@@ -572,28 +624,46 @@
+         all_k, all_v = self._project_context_kv(context_states, num_ctx, L, nkv, hd)
+         all_k_normed = self._normalize_context_k(all_k)
+ 
+-        # --- Fused RoPE across all layers ---
+-        # View as [L * num_ctx, kv] so RoPE sees one big batch (no copy).
+         # In-place RoPE: pass K as the "query" arg with key=None.
+-        all_k_flat = all_k_normed.view(L * num_ctx, kv)
+-        positions_repeated = context_positions.repeat(L)
+-        cos_sin_cache = self._rope_cos_sin_cache
+-        if cos_sin_cache.dtype != all_k_flat.dtype:
+-            cos_sin_cache = cos_sin_cache.to(dtype=all_k_flat.dtype)
+-        ops.rotary_embedding(
+-            positions_repeated,
+-            all_k_flat,
+-            None,
+-            self._rope_head_size,
+-            cos_sin_cache,
+-            self._rope_is_neox,
+-        )
++        if getattr(self, "_rope_uniform", True):
++            # --- Fused RoPE across all layers ---
++            # View as [L * num_ctx, kv] so RoPE sees one big batch (no copy).
++            all_k_flat = all_k_normed.view(L * num_ctx, kv)
++            positions_repeated = context_positions.repeat(L)
++            cos_sin_cache = self._rope_cos_sin_cache
++            if cos_sin_cache.dtype != all_k_flat.dtype:
++                cos_sin_cache = cos_sin_cache.to(dtype=all_k_flat.dtype)
++            ops.rotary_embedding(
++                positions_repeated,
++                all_k_flat,
++                None,
++                self._rope_head_size,
++                cos_sin_cache,
++                self._rope_is_neox,
++            )
++        else:
++            # --- Per-layer RoPE (layers have different cos/sin tables) ---
++            # all_k_normed is contiguous [L, num_ctx, nkv, hd]; each layer
++            # slice is a contiguous [num_ctx, kv] view, rotated in place.
++            for i in range(L):
++                k_i = all_k_normed[i].view(num_ctx, kv)
++                cos_sin_cache = self._rope_cos_sin_caches[i]
++                if cos_sin_cache.dtype != k_i.dtype:
++                    cos_sin_cache = cos_sin_cache.to(dtype=k_i.dtype)
++                ops.rotary_embedding(
++                    context_positions,
++                    k_i,
++                    None,
++                    self._rope_head_size,
++                    cos_sin_cache,
++                    self._rope_is_neox,
++                )
+ 
+         if context_slot_mapping is None:
+             return
+ 
+         # --- Per-layer cache insert ---
+-        all_k_final = all_k_flat.view(L, num_ctx, nkv, hd)
++        all_k_final = all_k_normed.view(L, num_ctx, nkv, hd)
+         per_layer = isinstance(context_slot_mapping, (list, tuple))
+         for i in range(L):
+             slot_mapping = (

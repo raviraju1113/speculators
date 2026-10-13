@@ -5,6 +5,11 @@ description: Portable, machine-independent handoff for training a DSpark specula
 
 # DSpark for Gemma-4-31B-it — portable handoff
 
+> **2026-10-13 update:** this skill describes the ORIGINAL cluster-era setup. The
+> current state (B200 fleet, branches, checkpoint of record, data provenance, the
+> DFlash2-conv experiment, what to copy) is in `examples/train/HANDOFF.md`, with
+> working notes in `examples/train/notes/`. Read those first.
+
 Everything needed to continue this work on a machine that is NOT the SambaNova
 cluster. Cluster-specific items are quarantined in the last section.
 

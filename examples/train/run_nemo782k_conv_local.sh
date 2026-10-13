@@ -16,7 +16,11 @@
 # larger EPOCHS, recomputed SCHED_TOTAL.
 set -euo pipefail
 export SAMPLE_FROM_ANCHOR=1
-export WANDB_RUN_ID="${WANDB_RUN_ID:-nemoconv782k}"
+# nemoconv782k = job 319 on 097 (2026-10-13), cancelled at micro-step ~2970 with no
+# checkpoint when we moved machines. A fresh start logs from step 0, and wandb
+# resume=allow silently DROPS steps below the old run's last step -- so every
+# from-scratch relaunch needs a NEW id (never delete the old run: ids are burned).
+export WANDB_RUN_ID="${WANDB_RUN_ID:-nemoconv782k_v2}"
 
 export DSPARK_CONV_KERNEL=2
 export DSPARK_CONV_GROUP=16

@@ -1,0 +1,55 @@
+# fullattn1 ep25 (final WSD-decayed checkpoint == checkpoint_best) on the
+# standard benchmarks: 1 full-attn layer {0} + 4 sliding. Same recipe as
+# fullattn2 ep25 and scratch ep25 (nemo782k, flag=True, 26 epochs) except
+# the layer mix and the WSD schedule (fullattn2/scratch were linear).
+# References:
+#   scratch ep25   k8: aime 5.99 / gpqa 4.22 / lcb 5.07;  k5 4.79/3.70/4.25;  k3 3.56/3.02/3.31
+#   fullattn2 ep25 k8: aime 6.06 / gpqa 4.25 / lcb 5.13
+# Training val accept_len (ep25): fullattn1 4.50 vs fullattn2 4.75 -- expect a
+# small in-window gap; the long-context story is in the AA-LCR bins.
+# !! True-trained checkpoints: REQUIRES the patched vllm (dspark-host venv).
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0   # 0 = FULL datasets: aime 30 / gpqa 198 / lcb 1055 (~1.5h per experiment)
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-fullattn1-ep25
+
+experiments:
+  - name: fullattn1_ep25_k8
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_nemo782k_fullattn1/checkpoints/25
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: fullattn1_ep25_k5
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_nemo782k_fullattn1/checkpoints/25
+    num_speculative_tokens: 5
+    speculative_config:
+      method: dspark
+
+  - name: fullattn1_ep25_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_nemo782k_fullattn1/checkpoints/25
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

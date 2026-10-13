@@ -1,0 +1,28 @@
+--- vllm/transformers_utils/configs/speculators/base.py.orig	2026-09-17 11:09:51.786143465 -0700
++++ vllm/transformers_utils/configs/speculators/base.py	2026-09-17 11:10:01.926206521 -0700
+@@ -27,7 +27,25 @@
+                 super_kwargs[key] = value
+             else:
+                 setattr(self, key, value)
++        # Transformers-v5 per-layer-type rope_parameters, e.g.
++        # {"full_attention": {...yarn...}, "sliding_attention": {...default...}}.
++        rope_parameters = kwargs.get("rope_parameters")
++        nested_rope = (
++            isinstance(rope_parameters, dict)
++            and len(rope_parameters) > 0
++            and all(isinstance(v, dict) for v in rope_parameters.values())
++        )
+         super().__init__(**super_kwargs)
++        if nested_rope:
++            # PretrainedConfig.__post_init__ -> convert_rope_params_to_dict does an
++            # unconditional top-level setdefault("rope_theta"), after which
++            # standardize_rope_params no longer sees a per-layer-type dict and
++            # adds a top-level "rope_type" too. Drop those strays so the nested
++            # form survives, then standardize on the per-layer-type branch.
++            self.rope_parameters = {
++                k: v for k, v in self.rope_parameters.items() if isinstance(v, dict)
++            }
++            self.standardize_rope_params()
+ 
+     @classmethod
+     def from_pretrained(
