@@ -2011,6 +2011,65 @@ balanced without going ~67% Nemotron — the proportional skew §12 warned about
 
 ---
 
+## 22. Per-domain breakdown isolates OFF-POLICY as the cause (2026-10-13)
+
+§21 showed the breadth-trained draft worse overall but could not say why, because
+the run changed four things at once. This runs the full 28-benchmark suite on
+**both** checkpoints, sequentially on one GPU, same flags — and the per-domain
+pattern settles it.
+
+### The prediction, and its refutation
+
+The 4096 window destroyed 84% of nemotron-code and 64% of nemotron-math rows
+(§21) while leaving the chat sources untouched. **Predicted:** the gutted
+domains regress, the intact ones hold up — which would mean the data pipeline
+failed, not breadth. **Observed:** the damage is uniform.
+
+| domain | sources | survived filtering? | mean ΔAL |
+|---|---|---|---|
+| multilingual | aya | ~intact (0.4% cut) | **-0.557** |
+| code | opencodeinstruct, nemotron-code | **84% cut** | **-0.674** |
+| math | nemotron-math | **64% cut** | **-0.768** |
+| **chat** | magpie, ultrachat, sharegpt | **0% cut** | **-0.667** |
+| other | bfcl, tool_call, rag, sc1_delta | — | -0.119 |
+| | | | **overall -0.581** (27 benchmarks) |
+
+**Chat degraded as much as code and math while losing none of its data.** The
+filtering skew cannot explain a loss that is equally large where nothing was
+filtered.
+
+### Therefore: off-policy, not breadth, not filtering
+
+The only factor common to every domain is that **every assistant turn in this
+corpus was written by another model**. §20 predicted this from the trajectory
+argument — on-policy data is a fixed point of the target's own generation, so
+off-policy data puts the draft off-trajectory at every graded position, and
+serving is on-policy by construction. This is the direct evidence.
+
+**The cost of off-policy on this backbone: about -0.58 accept_len, uniformly.**
+That is a strong argument that the ~45-60 h regeneration pass is not optional.
+
+### Notable rows
+
+- **`aya` did not fix multilingual.** It was added precisely for §11's 1.06x
+  weakness: `speed-multilingual` moved -0.038, `translation` -1.076. In-domain
+  data added *off-policy* bought nothing.
+- Three benchmarks improved — `speed-rag` +0.610, `bfcl` +0.601,
+  `humaneval` +0.161 — with no obvious pattern; plausibly noise at the ±0.3
+  floor (§15).
+- The chat group is inflated by the suite's duplicate prompt sets
+  (`mt-bench`/`writing`/`question` are identical data, all 3.079 -> 2.389), so
+  read it as ~4 distinct benchmarks rather than 8.
+
+### What is still unanswered
+
+**Breadth was never tested.** This experiment tested off-policy. The breadth
+question needs the same corpus regenerated through gemma-4-26B — holding the
+mix fixed and flipping only the policy. That is now a well-motivated experiment
+with a measured expected effect, rather than a guess.
+
+---
+
 ## Appendix A — first top-k context A/B (superseded by §18)
 
 > Merged here from `dspark_topk_context_ab.md` (2026-10-08): one doc per
