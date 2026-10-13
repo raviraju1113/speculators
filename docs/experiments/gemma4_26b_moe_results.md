@@ -1896,6 +1896,121 @@ requires regenerating.
 
 ---
 
+## 21. Breadth data, off-policy: the draft gets WORSE (2026-10-13)
+
+First test of §12's breadth conclusion by supplying breadth directly rather than
+inheriting it from a DFlash warm start. **Result: the breadth-trained draft
+loses to kimi-regen on every measure.**
+
+### Setup
+
+Data: `/nvmedata/data/registry_mix_v2_400k.jsonl` — 400,000 rows, 9 sources
+balanced ~45k each, shuffled, multi-turn preserved, system prompts kept,
+content-hash ids, globally deduped. **Off-policy**: the corpora's own responses,
+no gemma regeneration pass (§20 for why supervision is unaffected but the
+trajectory is not).
+
+Three arms, one shared hidden-states server, online pass 2, 2 epochs:
+`dspark_warm` (stock-DFlash init), `dspark_scratch` (random init, all 5 layers
+sliding-window), `dflash` (random init). Architecture pinned explicitly — the
+schema defaults for `dspark` would have built a **1-layer, block-8** draft
+(§20, incidental findings).
+
+### Results — `dspark_warm`, the only arm finished at time of writing
+
+| epoch | val loss | val accept_len |
+|---|---|---|
+| 1 | 0.367 | 3.034 |
+| 2 | 0.360 | **3.131** |
+
+against DSparkFlash's **4.480** on kimi-regen.
+
+Throughput on `sc1_delta`, all four configs measured **in one run on one GPU**:
+
+| config | c1 tok/s | speedup | c128 tok/s | speedup | AL |
+|---|---|---|---|---|---|
+| baseline | 110.7 | 1.000x | 745.9 | 1.000x | — |
+| **orig DSparkFlash** (kimi-regen) | **205.8** | **1.859x** | **1066.3** | **1.430x** | **4.949** |
+| breadth-trained | 182.8 | 1.651x | 1008.4 | 1.352x | 4.392 |
+| breadth + `dspark_draft_topk=64` | 184.1 | 1.663x | 1013.6 | 1.359x | 4.397 |
+
+**-11% at c1, -5.4% at c128, AL 4.39 vs 4.95.** Three independent measures
+agree (held-out AL, sc1_delta AL, throughput), so this is not noise.
+
+### What it does and does not show
+
+The run differs from the control in **four** ways — off-policy, 9 sources,
+multi-turn, and code/math gutted (below) — so it shows *"this corpus trained
+off-policy is worse than kimi-regen"*, **not** *"breadth does not help"*.
+**Off-policy is the prime suspect**: the only one of the four with a mechanism
+behind it (§20 — on-policy data is a fixed point of the target's own
+generation; off-policy diverges at the first token, and serving is on-policy by
+construction).
+
+Supporting that reading: the breadth model scores **AL 4.392 on sc1_delta but
+only 3.131 on its own validation split** — better on production traffic than on
+its own held-out data, because that data is full of DeepSeek-R1 reasoning
+traces, which are intrinsically hard to predict.
+
+### The 4096 window gutted code and math
+
+`prepare_data` at `--seq-length 4096` dropped 25.3% of rows (400,000 ->
+298,811): a row whose assistant span is truncated away carries no gradient. The
+loss is **not** uniform:
+
+| source | % over 4096 | effect |
+|---|---|---|
+| nemotron-code | **84.4%** | ~45.8k -> ~7.1k |
+| nemotron-math | **64.4%** | ~45.3k -> ~16.1k |
+| sharegpt | 24.0% | |
+| nemotron-science | 7.2% | |
+| aya / magpie / ultrachat / open-perfectblend / opencodeinstruct | 0-0.4% | ~intact |
+
+Root cause: Nemotron's responses are DeepSeek-R1 reasoning traces (median
+**11,432** tokens for code). Off-policy keeps them and they overflow the
+window. **Off-policy + seq 4096 is structurally incompatible with
+reasoning-trace corpora.** Under on-policy the responses would be gemma's own
+and far shorter. So what actually trained was a *chat-heavy* mix.
+
+### `dspark_scratch` does not catch up — contradicting §12
+
+At its first epoch `dspark_scratch` reaches val accept_len **2.064** against
+`dspark_warm`'s **3.131** (+52% for the warm start). **Breadth data did not make
+from-scratch competitive**, so what the DFlash warm start supplies is *not* only
+training breadth — which is what §12 concluded. Provisional: that arm had not
+finished at time of writing.
+
+### Logit top-k does nothing here
+
+`dspark_draft_topk=64` gives **+0.7% / +0.5%** on this checkpoint against
+**+11%** on the original (measured twice, §15 and §19, both matched runs).
+Plausibly the breadth-trained Markov head is less influential, so capping it
+neither costs nor saves much — conjecture; `orig+topk` was not measured in this
+run.
+
+### Caution on absolutes
+
+This run reads high throughout: baseline 745.9 vs §15's 707.2 (+5.5%), and
+`orig_k7` 1066.3 vs 987.8 / 980.7 in two earlier runs (+8%). Two training arms
+were running on other GPUs. **Compare within the table only.**
+
+### Scaling: data is not the constraint, time is
+
+40M prompts are available across the nine corpora against 450k used (90x
+headroom), but at the observed 85 steps/min:
+
+| rows | kept | 1 epoch | 2 epochs |
+|---|---|---|---|
+| 400k | 299k | 53 h | 105 h |
+| 800k | 598k | 105 h | 211 h |
+| 1.6M | 1.2M | 211 h | 422 h |
+
+Scaling also forces a mix decision: headroom is wildly uneven (`sharegpt` 2x,
+`ultrachat`/`aya` 4x, Nemotron 200-440x), so past ~600k the mix cannot stay
+balanced without going ~67% Nemotron — the proportional skew §12 warned about.
+
+---
+
 ## Appendix A — first top-k context A/B (superseded by §18)
 
 > Merged here from `dspark_topk_context_ab.md` (2026-10-08): one doc per
