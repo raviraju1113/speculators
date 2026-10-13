@@ -35,11 +35,468 @@ request. Full scripts: `.scratch_kimi_launch/k3-b200-exp/scripts/`
 for our own paths/job IDs — ruobingw's originals are hardcoded to their
 own home/scratch directories).
 
-**Not yet done**: re-attaching the DSpark speculative draft, and the
-Mooncake KV-cache tier (needed only for large prefix-cache-sharing
-workloads, per ruobingw's `RECIPE.md`). Both are described in ruobingw's
-`RECIPE.md`/`serve_k3_host.sh` and should layer on cleanly now that the
-base topology works.
+**Not yet done**: the Mooncake KV-cache tier (needed only for large
+prefix-cache-sharing workloads, per ruobingw's `RECIPE.md`) — not required
+for basic serving. DSpark speculative decoding **is** now working, see
+below.
+
+## Runbook: launching the deployment (current, as of 2026-10-13)
+
+Copy-pasteable steps for standing up the 2-node server from a cold start.
+Everything below targets `sc3-cp81`/`sc3-cp82` by name — the exact
+commands won't work on other node pairs without the IP-resolution change
+noted in step 3 (the launch script currently hardcodes these two nodes'
+fabric IPs).
+
+**1. Allocate the two nodes** (use a generous `--time` — a 10-hour
+default silently killed a server mid-benchmark once, see the AgentX
+section below):
+```bash
+salloc -p gpuonly -w sc3-cp81,sc3-cp82 -N2 --ntasks-per-node=1 \
+  --gres=gpu:8 --time=24:00:00 --no-shell
+# note the JOBID it reports — needed for every srun below
+```
+
+**2. Pick a venv.** Two options, same vLLM build
+(`0.30.1rc1.dev493+gac9126e58`), same patches applied to both:
+- `/scratch/chenw/vllm-venv` — node-local, only exists on `cp81`/`cp82`,
+  fastest Python-import time.
+- `/import/ml-sc-scratch1/chenw/vllm-venv-b200` — shared NFS copy (added
+  2026-10-13 specifically so other node pairs can use it without a
+  rebuild), works from any node, modest import-latency cost per boot.
+  `serve_k3_host.sh` always sources the node-local path
+  (`source /scratch/chenw/vllm-venv/bin/activate`) — point it at the
+  shared copy instead if launching on a node that doesn't have the
+  node-local build.
+
+**3. Launch the server** — `cp81` first (rank=1, headless), then `cp82`
+~3s later (rank=0, API server), both via
+`.scratch_kimi_launch/k3-b200-exp/scripts/serve_k3_host.sh`:
+```bash
+export HEAD_IP=10.17.16.54   # cp82's fabric (brcm0) IP — the API/rank0 node
+JOBID=<from step 1>
+
+# cp81 (rank 1, headless)
+srun --jobid=$JOBID -w sc3-cp81 -N1 -n1 --gres=gpu:8 --overlap \
+  env HEAD_IP=$HEAD_IP PP_PARTITION=48,45 DCP_SIZE=1 \
+      DRAFT_DIR=<draft checkpoint dir> NUM_SPEC_TOKENS=<block size> \
+  bash .scratch_kimi_launch/k3-b200-exp/scripts/serve_k3_host.sh \
+  control-noconn 72 <phase-dir-name> &
+
+sleep 3
+
+# cp82 (rank 0, API server)
+srun --jobid=$JOBID -w sc3-cp82 -N1 -n1 --gres=gpu:8 --overlap \
+  env HEAD_IP=$HEAD_IP PP_PARTITION=48,45 DCP_SIZE=1 \
+      DRAFT_DIR=<same draft checkpoint dir> NUM_SPEC_TOKENS=<same block size> \
+  bash .scratch_kimi_launch/k3-b200-exp/scripts/serve_k3_host.sh \
+  control-noconn 72 <phase-dir-name> &
+```
+`DRAFT_DIR`/`NUM_SPEC_TOKENS` are env-var overrides added 2026-10-13 —
+previously hardcoded to RadixArk's full-attention checkpoint at block=7.
+Omit both for that default. `DCP_SIZE=1` is required for any
+DSpark-speculative-decoding config (see the DCP-incompatibility finding
+below); omit `DRAFT_DIR`/`NUM_SPEC_TOKENS`/`DCP_SIZE` entirely (and drop
+the `control-noconn` spec logic) for a no-speculative-decoding smoke
+test.
+
+**4. Verify — don't trust `/health` alone.** It returns 200 the moment
+the HTTP server is up, often well before the model has actually finished
+loading/compiling. Always confirm with a real completion:
+```bash
+curl -s http://$HEAD_IP:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"moonshotai/Kimi-K3","messages":[{"role":"user","content":"What is 7*8?"}],"max_tokens":10,"temperature":0}'
+```
+
+**5. Run AgentX** (`scripts/evaluate/mtp_server_eval/run_agentx.sh`):
+```bash
+BACKEND=vllm BASE_URL=http://$HEAD_IP:8000 MODEL=moonshotai/Kimi-K3 \
+TOKENIZER_TRUST_REMOTE_CODE=1 USERS_LIST="1" DURATION=1800 MAX_CONTEXT=128000 \
+RESULT_DIR=<output dir> \
+AIPERF_BIN=/import/ml-sc-scratch1/chenw/speculators/.scratch_kimi_launch/.venv-aiperf/bin/aiperf \
+bash scripts/evaluate/mtp_server_eval/run_agentx.sh
+```
+`AIPERF_BIN` **must be an absolute path** — the script `cd`s into its own
+directory before resolving it, so a relative path silently fails to
+find the binary. `DURATION` below 900s stamps `submission_valid=false`
+(scenario minimum).
+
+**6. Tear down cleanly before relaunching a different config:**
+```bash
+kill <the two srun PIDs from step 3>
+sleep 5
+srun --jobid=$JOBID -w sc3-cp81 -N1 -n1 --gres=gpu:0 --overlap pkill -9 -f "vllm.entrypoints"
+srun --jobid=$JOBID -w sc3-cp82 -N1 -n1 --gres=gpu:0 --overlap pkill -9 -f "vllm.entrypoints"
+sleep 5
+curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://$HEAD_IP:8000/health   # expect connection refused / 000
+```
+Check `nvidia-smi --query-gpu=memory.used` on both nodes reads 0 before
+relaunching — a `kill` on the wrapping `srun` alone doesn't always
+reliably tear down the `vllm.entrypoints` worker processes underneath.
+
+**Known gotchas** (all covered in more depth elsewhere in this doc):
+`TP` must stay intra-node (never split across nodes for this model);
+`DCP` is required for the no-speculative-decoding and Inferact-draft
+cases but **breaks** RadixArk's DSpark draft unless `DCP_SIZE=1`; the
+sliding-window DSpark checkpoints are currently broken in live serving
+at *any* block size (see "Isolation test" above) — don't serve them;
+watch the `salloc --time` limit on any run that'll outlive a few hours.
+
+## DSpark speculative decoding: two checkpoints, one real bug found (2026-10-12)
+
+Two different DSpark draft checkpoints were tried on top of the working
+base deployment:
+
+- **Inferact/Kimi-K3-DSpark** (MLA-architecture, matches the target's own
+  attention family — `q_lora_rank`/`kv_lora_rank`/`qk_nope_head_dim` etc.
+  in its config). This is the checkpoint ruobingw's own recipe validates
+  (confirmed by reading his `get_dspark.sh` and `errors-and-changes.md` —
+  he downloads this exact 7.1GB HF file, never touches RadixArk's).
+- **RadixArk/Kimi-K3-DSpark** (Qwen3/GQA architecture — `class
+  DSparkConfig(Qwen3Config)`, plain multi-head GQA attention with a custom
+  "dual-source" KV mechanism that concatenates target-model context and
+  the draft's own embeddings into one attended-over sequence). This is the
+  checkpoint with real measured accept-length numbers from this project's
+  own September single-node (8×B300) evaluation work — never validated by
+  ruobingw, and never tested on this newer vLLM build before now.
+
+### Architecture misrouting (real bug, fixed, but not load-bearing for the final fix)
+
+RadixArk's checkpoint declares `architectures: ["DSparkDraftModel"]`.
+vLLM's model registry (`model_executor/models/registry.py`) maps that
+exact string to `vllm.models.deepseek_v4.DSparkDeepseekV4ForCausalLM` —
+a **DeepSeek-V4-specific** implementation, regardless of the checkpoint's
+actual (Qwen3/GQA) architecture. This is the same misrouting bug this
+project discovered in September on the older vLLM fork (see
+`kimi-k3-setup.md` memory: "generic `DSparkDraftModel` gets misrouted...
+inherits mxfp4 → crash") — it is still present in this newer
+`0.30.1rc1.dev493` build. Fix: edit the checkpoint's local `config.json`
+to declare `architectures: ["Qwen3DSparkModel"]` instead, which correctly
+routes to `vllm.model_executor.models.qwen3_dspark.Qwen3DSparkForCausalLM`
+(confirmed: `class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM)`, the
+genuine Qwen3/GQA-based native implementation). This fix is real and
+worth keeping/reporting upstream, but turned out **not** to be what fixed
+the actual launch failure below — the byte-level KV-cache error was
+identical before and after, since it's computed from raw numeric config
+fields (`num_key_value_heads`, `head_dim`, `block_size`) that don't differ
+between the two `architectures` values.
+
+### The real blocker and root cause: DCP is incompatible with this draft architecture
+
+With RadixArk's checkpoint attached to the working TP=8×PP=2×**DCP=8**
+base deployment, the engine crashed during KV-cache allocation:
+
+```
+ValueError: The resolved KV cache layout (BLNHC) does not store blocks as
+dense, unpadded pages (block stride 6193152 != page 516096), so a manager
+block cannot be split into 14 kernel blocks of 64 tokens. ...
+```
+
+This reproduced **identically** (same byte numbers) across every
+externally-controllable variable tried: default vs `TOKENSPEED_MLA` vs
+`FLASH_ATTN` attention backend for the draft, `--block-size 64`, both
+valid `VLLM_KV_CACHE_LAYOUT` values (`BLNHC`/`BLHNC`), and the
+architecture-routing fix above. Two source patches to
+`vllm/v1/core/kv_cache_utils.py`'s `_annotate_eagle_groups` (adding
+draft-group detection by layer-name prefix, then by `(num_kv_heads,
+head_size)` shape-matching) also made no difference — debug instrumentation
+confirmed this function's "no KV cache group could be identified as the
+draft model's" warning is a **red herring**: it's checking Mamba/KDA
+recurrent-state group annotation (irrelevant to RadixArk's plain-GQA,
+no-Mamba-component draft), not the actual KV-cache byte-layout computation
+that was crashing.
+
+**Root cause, found by isolating against the known-working single-B300
+config**: the working single-node deployment never used
+`--decode-context-parallel-size` at all. Testing the exact same multi-node
+topology (TP=8×PP=2) with `DCP_SIZE=1` (i.e. DCP disabled, decode-context-
+parallelism off) instead of `DCP_SIZE=8` **fixed the crash immediately** —
+first attempt, no other changes. DCP specifically (not PP, not multi-node
+generally, not the draft's architecture family) is incompatible with
+RadixArk's dual-source-KV draft's KV-cache sizing in this vLLM build.
+
+**Working config**: TP=8 (intra-node) × PP=2 (cross-node), **no DCP**,
+RadixArk's checkpoint with the `Qwen3DSparkModel` architecture fix,
+`num_speculative_tokens=7` (matching the checkpoint's own trained
+`block_size: 7`), no forced attention-backend override (let it
+auto-select). Confirmed via a real `/v1/chat/completions` request (correct
+arithmetic answer) and genuine `SpecDecoding metrics` log output:
+
+```
+Mean acceptance length: 5.53, Accepted throughput: 1.90 tokens/s,
+Drafted throughput: 2.94 tokens/s, Accepted: 77 tokens, Drafted: 119 tokens,
+Per-position acceptance rate: 0.882, 0.765, 0.765, 0.647, 0.529, 0.529, 0.412,
+Avg Draft acceptance rate: 64.7%
+```
+
+The per-position curve is a smooth monotonic decay (expected, matches the
+pattern documented throughout `kimi_k3_draft_eval.md`), and AL=5.53 lines
+up closely with this project's own September single-node finding for
+GSM8K-style structured reasoning (AL=5.58 at block=7) — this test prompt
+(arithmetic) is in the same category. Real evidence of correct behavior,
+not just absence of a crash.
+
+**Tradeoff**: without DCP, this config loses DCP's long-context KV-sharding
+benefit (lower effective concurrency/context headroom than the DCP=8 base
+deployment). **Inferact's checkpoint was never tested against this DCP
+incompatibility** — since it's MLA-shaped (matching the target's own
+attention family and ruobingw's validated recipe, which does use DCP=8
+successfully), it's plausible Inferact's draft is DCP-compatible and could
+be run with the full DCP=8 config; this hasn't been verified, only
+inferred from ruobingw's own successful usage.
+
+**Artifacts**: `models/Kimi-K3-DSpark-radixark-raw/` (patched config.json),
+`models/Kimi-K3-DSpark-raw/` (Inferact's copy, downloaded but not used for
+the final working config), the two non-load-bearing source patches are
+still present in `/scratch/chenw/vllm-venv` on both nodes (harmless,
+commented `# chenw patch` / `# chenw patch v2`), launch logs in
+`run1` through `run13` under `.scratch_kimi_launch/k3-b200-exp/`.
+
+## AgentX live-serving evaluation on the 2-node deployment (2026-10-12/13)
+
+Real agentic-trace replay (`aiperf --scenario inferencex-agentx-mvp`,
+corpus `semianalysis_cc_traces_weka_062126`) against the live 2-node
+server, `users=1`, `--max-context-length 128000` unless noted. All runs
+below target `http://<rank0-node>:8000`, same TP8×PP2×DCP1 base.
+
+| run | draft / block | duration | decode_tok_s | out_tok_s | accept_len | accept_rate | valid |
+|---|---|---:|---:|---:|---:|---:|---|
+| Concurrency sweep | RadixArk, block=7, full attn | up to users=8 | — | — | — | — | (Bug 5, the old concurrent-load crash, did **not** reproduce — see below) |
+| 256K-500K long-context | RadixArk, block=7, full attn | 900s | 134.6 | 84.1 | 2.052 | 0.1502 | false (`--unsafe-override`, 1/63 errored) |
+| Full 79-trace corpus | RadixArk, block=7, full attn | 10800s | 139.1 | 98.7 | NA* | NA* | **true** (1257/1319 completed) |
+| Block=3 + sliding-window=2048 | `Kimi-K3-DSpark-sliding2048`, block=3 | 1800s | 103.5 | 70.2 | 1.357 | 0.1189 | **true** |
+
+\* The full-corpus run's server was killed mid-flush by a SLURM wall-clock
+timeout (see below) right as it finished, so the harness never captured
+final cumulative SpecDecoding counters from `/metrics` — throughput
+numbers (client-side timing) are unaffected and valid, only
+accept_len/accept_rate are missing for that one run.
+
+**Notable finding: Bug 5 (the single-node vLLM 0.29.0 concurrent-load
+crash documented in `kimi_k3_draft_eval.md`) did not reproduce** on this
+2-node vLLM 0.30.1rc1 stack at `users=8` — a clean 195-request/900s run
+completed with the server still alive afterward. Not yet root-caused
+(could be the newer vLLM version, the different TP/PP topology, or
+something else) — flagged as a positive result, not a confirmed fix.
+
+**Block=3 + sliding-window=2048 vs. block=7 full-attention**: decode
+throughput and accept_len are both lower (103.5 vs 139.1 tok_s;
+accept_len 1.357). Part of this is structural and expected — block=3
+proposes fewer draft tokens/step than block=7, which caps the achievable
+speedup regardless of acceptance quality — but 1.357 is also lower than
+the offline block=3 baseline's accept_len range (2.5-3.6 across the 24
+eval sets, see `dspark_sliding_window_ablation.md`), larger than the
+offline sliding=2048 ablation's ~0% measured degradation would predict.
+Live AgentX's real agentic traffic is a different distribution than the
+offline eval's held-out prompt sets, so some gap is expected, but this
+hasn't been confirmed as a stable number vs. a warm-up artifact of the
+30-minute window — treat as preliminary.
+
+**Infra incident during the full-corpus run**: the `salloc` behind both
+server nodes (job `10368011`/`10368001`) had a default 10-hour
+`--time` limit and was killed by SLURM at the 10-hour mark, which landed
+almost exactly at the end of the 3-hour full-corpus AgentX run,
+producing a burst of `ConnectionRefused` errors in its last ~5 minutes
+and the missing accept_len/accept_rate above. Restarted on a fresh
+`salloc --time=24:00:00` (job `10478386`) — see
+[[kimi-k3-multinode-gloo-hang]] memory for the durable note on this.
+
+**Artifacts**: per-run logs and aiperf exports under
+`.scratch_kimi_launch/k3-b200-exp/agentx_2node_{alltraces,longctx,sliding2048_block3}/`;
+`serve_k3_host.sh` gained `DRAFT_DIR`/`NUM_SPEC_TOKENS` env overrides
+(previously hardcoded to RadixArk's full-attention checkpoint at block=7)
+to support switching draft checkpoint and block size per run.
+
+### Isolation test (2026-10-13): sliding-window is the cause, not block=3
+
+The preliminary "block=3+sliding2048 is slower and lower-AL" result above
+turned out to understate a real problem. Pulling the full per-second
+`SpecDecoding metrics` time series from the server log (not just the
+final cumulative number) showed a **bimodal** pattern — bursts of
+genuinely good acceptance (up to 85-88% per-position) interleaved
+repeatedly with total collapses to exactly `0.000, 0.000, 0.000`
+(zero tokens accepted out of 200+ drafted) for multiple consecutive
+seconds, recurring throughout the entire run. That shape (snapping
+between "works great" and "accepts nothing") looks like a correctness
+bug, not a quality tradeoff — and `num_speculative_tokens=3` had never
+been tested in **live** vLLM serving before this session (all prior
+block=3 testing was offline-harness-only).
+
+Ran a clean isolation test to separate the two variables — RadixArk's
+**original full-attention** checkpoint at block=3 (same block size,
+sliding window removed):
+
+| config | decode_tok_s | accept_len | accept_rate | zero-collapse rate |
+|---|---:|---:|---:|---:|
+| block=3, full-attention (isolation) | **163.0** | **2.137** | **0.3789** | **36/1293 = 2.8%** |
+| block=3, sliding-window=2048 | 103.5 | 1.357 | 0.1189 | **291/1351 = 21.5%** |
+
+**Conclusion: the sliding window causes the collapse, not block=3.**
+Collapse rate jumps ~8x (2.8%→21.5%) purely from adding the
+sliding-window config on top of identical block=3. Block=3 alone is
+healthy — accept_len=2.137 is a reasonable live-traffic number, and
+decode_tok_s=163.0 is even *higher* than the block=7 full-attention
+baseline (139.1), a separate interesting finding (fewer draft
+tokens/round-trip costs less overhead than it loses in acceptance, net
+positive on real AgentX traffic).
+
+**Suspected root cause, now with source-level corroboration:** vLLM's
+live serving implements DSpark sliding-window via the **generic
+`SlidingWindowSpec` KV-cache-eviction mechanism** (confirmed via a debug
+log line tagging the draft's layers `spec_type='SlidingWindowSpec',
+num_kv_heads=2, head_size=64` in `kv_cache_utils.py` — plain GQA shape,
+**not MLA**, despite `--attention-backend TOKENSPEED_MLA` being set
+globally; that flag only governs the target's MLA layers, the draft's
+own attention group gets vLLM's separately auto-selected backend for
+non-MLA layers, most likely FlashAttention on this hardware). This
+differs architecturally from this project's own training/offline-eval
+implementation: a custom non-causal block-mask
+(`create_anchor_block_mask_mod`, `dflash/attention.py`) restricting
+attention from synthetic draft *query* positions specifically to the
+target's *context-KV buffer* (5-tap-concatenated hidden states), not a
+KV-cache eviction over the draft's own tiny generated-token sequence.
+
+Traced further into `vllm/v1/worker/gpu/spec_decode/dflash/speculator.py`
+(`DFlashSpeculator.set_attn`, the base class `DSparkSpeculator` extends)
+and found vLLM's own maintainers have already hit and partially patched
+a **named bug in exactly this class of configuration**, documented
+inline (lines 197-209):
+
+```python
+# FlashAttention's AOT split schedule is wrong for a windowed drafter,
+# and `_get_sliding_window_configs` leaves it on or off depending on
+# whether the target also runs FlashAttention. Decide it here instead.
+for groups in self.attn_groups:
+    for group in groups:
+        builder = group.get_metadata_builder()
+        if getattr(
+            builder, "aot_schedule", False
+        ) and get_kv_cache_spec_sliding_window(builder.kv_cache_spec):
+            builder.aot_schedule = False
+```
+
+**This specific hypothesis was tested and ruled out (2026-10-13).** Added
+a one-line debug print right before the fix's `if` check
+(`vllm/v1/worker/gpu/spec_decode/dflash/speculator.py`, both nodes) and
+restarted with `sliding2048`+block=3:
+
+```
+CHENW_DEBUG_BACKEND builder_class=FlashAttentionMetadataBuilder
+has_aot_schedule=True aot_schedule_val=False is_sliding_window=2048
+```
+
+The draft's attention group **is** confirmed FlashAttention (that part
+of the hypothesis was right), but `aot_schedule` was **already `False`
+before the fix's own `if` condition even runs** — so
+`if aot_schedule and is_sliding_window` short-circuits on the first
+operand, and the fix never executes. It's a no-op for this config.
+Most likely explanation: `_get_sliding_window_configs` (referenced in
+the fix's own comment) sets `aot_schedule` based on whether the
+**target** model also runs FlashAttention — ours doesn't (target uses
+`TOKENSPEED_MLA`) — so AOT scheduling was probably never turned on for
+the draft's builder in the first place, regardless of the sliding-window
+spec. This named vLLM bug class does not explain the collapse in our
+setup.
+
+**Root cause investigation, continued — block-size ruled out
+entirely (2026-10-13).** The B300 live-serving verification (above,
+"Live-serving verification" section) validated this exact draft
+checkpoint at **block=7** (the trained default) on **vLLM 0.29.0,
+single-node TP=8** — cleanly, mean AL ratio 0.9994, no collapse issues
+reported at all. That's a different config from every B200 test so far
+(which used block=3). Re-ran the isolation test at block=7 (trained
+default, matching B300's config exactly) on the B200 stack:
+
+| config | decode_tok_s | accept_len | accept_rate | collapse rate |
+|---|---:|---:|---:|---:|
+| B300, vLLM 0.29.0, single-node TP=8, block=7, sliding2048 | — | — | — | ~0% (AL ratio 0.9994) |
+| B200, vLLM 0.30.1rc1, cross-node, block=3, full-attn | 163.0 | 2.137 | 0.3789 | 2.8% |
+| B200, vLLM 0.30.1rc1, cross-node, block=3, sliding2048 | 103.5 | 1.357 | 0.1189 | 21.5% |
+| **B200, vLLM 0.30.1rc1, cross-node, block=7, sliding2048** | **84.6** | **1.266** | **0.0380** | **68.6%** |
+
+**Block=7 is worse than block=3, not better — this rules out block-size
+as the driver entirely.** The collapse is present (and roughly 3x worse)
+at the exact trained block size B300 validated cleanly. Two variables
+remain between B300's working config and B200's broken one: vLLM
+version (0.29.0 → 0.30.1rc1) and topology (single-node TP=8 →
+cross-node TP=8×PP=2×DCP=1). Supporting evidence for each:
+
+- **Version**: confirmed earlier that the `set_attn` override containing
+  the `aot_schedule`/sliding-window-specific code in
+  `vllm/v1/worker/gpu/spec_decode/dflash/speculator.py` **does not exist
+  at all** in the 0.29.0 install used for the B300 test
+  (`/import/ml-sc-scratch6/chenw/conda_env/kimi_k3`, confirmed via
+  direct grep, no node allocation needed since it's shared NFS) — this
+  code path is new between versions, consistent with a possible
+  regression in newer sliding-window-drafter support.
+- **Topology**: cross-node PP=2 is itself a fragile, novel part of this
+  project's Kimi K3 setup (see the NCCL/DCP issues earlier in this doc)
+  — sliding-window KV-cache eviction depends on exact position/slot
+  bookkeeping, which is exactly the kind of state that could break under
+  pipeline-parallel synchronization. This is the more plausible
+  candidate of the two, but **cannot be cleanly isolated**: Kimi K3 does
+  not fit on a single B200 node at TP=8 (183 GiB/GPU available vs. ~194
+  GiB/GPU needed, see "Why 2 nodes at all" above), so there's no way to
+  test single-node TP=8 on B200 without further changes (e.g. a smaller
+  quantization, or accepting OOM risk).
+
+**Not yet done**: testing on a single B300 node at TP=8 with vLLM
+0.30.1rc1 (same version as B200, same topology as the original working
+test) would cleanly separate these two variables — if that combination
+is also broken, it's the vLLM version; if clean, it's the cross-node
+topology. Requires access to an idle B300 node and building/updating a
+vLLM 0.30.1rc1 install there, not attempted given time already invested
+this session. **Practical conclusion is unaffected either way: don't
+serve the sliding-window checkpoints live until this is actually
+root-caused and fixed.**
+
+**Practical takeaway**: don't use the sliding-window checkpoints in live
+serving yet — they're validated offline only. Block-size overrides
+(block=3) are safe in live serving and may even help throughput on
+real agentic traffic.
+
+### Shared vLLM venv for future node pairs (2026-10-13)
+
+The working `/scratch/chenw/vllm-venv` (all patches applied: the
+architecture-misrouting config fix, `CHENW_DEBUG_BACKEND` diagnostic
+print, etc.) only existed on `cp81`/`cp82`'s node-local disk — every new
+node pair would otherwise need a from-scratch rebuild (the original
+build hit real bugs: `flashinfer-cubin` version mismatches, CUDA
+forward-compat issues). Copied it to shared NFS instead:
+**`/import/ml-sc-scratch1/chenw/vllm-venv-b200/`** (18 GiB, `rsync -a`
+from `cp81`, ~instant node-to-node over the 100GbE fabric). Any future
+node pair can `source /import/ml-sc-scratch1/chenw/vllm-venv-b200/bin/activate`
+directly — no rebuild, no rsync needed.
+
+**Caveat — don't move the runtime caches here too.** This only covers
+the *static* venv (Python packages, compiled extensions, read-only
+during serving). The actual runtime cache directories (FlashInfer,
+Triton, TorchInductor — `$CACHE` in `serve_k3_host.sh`, currently
+`/scratch/chenw/cache`) must **stay node-local**: NFS caused a
+documented deadlock there under concurrent multi-worker file locking
+(see `kimi_k3_dspark_fp8_kv_cache.md`,
+`FLASHINFER_WORKSPACE_BASE` comment). Expect a modest one-time
+Python-import latency cost per server boot from reading the venv over
+NFS instead of local disk (many small file reads) — not a correctness
+risk, just slower startup.
+
+### Full-attention block=3/5/7 sweep at 256K context (2026-10-13, in progress)
+
+Re-grounding on the vanilla full-attention RadixArk draft (no sliding
+window) before further sliding-window root-causing — sweeping
+`NUM_SPEC_TOKENS` (3, 5, 7) via live AgentX at `MAX_CONTEXT=256000`
+(vs. the 128K ceiling used in all earlier §AgentX runs), same
+TP=8×PP=2×DCP=1 topology. Running sequentially on `cp81`/`cp82` (the
+only node pair with a working venv at the time this was started — see
+above). Collapse-rate sanity check (the same `SpecDecoding metrics`
+zero-acceptance pattern tracked throughout the sliding-window
+investigation) applied here too, as a control: full-attention should
+show ~0% collapse at any block size, confirming the collapse pattern
+really is sliding-window-specific and not a general artifact of this
+vLLM build/topology.
+
+*(Results to be filled in once all three block sizes complete.)*
 
 ---
 

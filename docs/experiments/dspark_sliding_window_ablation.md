@@ -490,12 +490,108 @@ different domains hit their own sensitivity point at different window
 sizes, consistent with the "content position" interpretation above rather
 than a single universal cliff.
 
+### Sixth run — block_size=3 crossed with all four window sizes (+ new window=4096)
+
+All runs above used the trained `block_size=7`. This run crosses the
+sliding-window retrofit with the serving-time `block_size=3` override
+(`--block-size-override`, see `kimi_k3_draft_eval.md`'s own block=3 vs
+block=7 ablation — same mechanism, no retraining, reuses cached hidden
+states) to see whether a smaller drafting block changes window
+sensitivity. Added a fourth window size, **4096**, to close out the
+"4096 remains untested" note from follow-up #3 above. New checkpoint dir:
+`Kimi-K3-DSpark-sliding4096/` (same pattern as the other three — config
+copied from `sliding2048`, only `sliding_window` changed).
+
+**Infra note — real bug found and fixed along the way.** Running all 4
+window sizes in parallel (one GPU each, same node) hit a genuine crash on
+the very first dataset all 4 processes reached in lockstep (`writing`):
+`torch.AcceleratorError: CUDA error: unspecified launch failure` during
+`torch.compile`'s Triton autotuning. Root cause: all 4 processes shared
+the same node-local `TORCHINDUCTOR_CACHE_DIR`/`TRITON_CACHE_DIR`
+(`/tmp/torchinductor_chenw`, the default) and raced to compile the same
+new graph shape simultaneously — a classic shared-compile-cache
+corruption. Fix: give each parallel process its own
+`TORCHINDUCTOR_CACHE_DIR`/`TRITON_CACHE_DIR`. One secondary issue found
+during cleanup: this crash left GPU index 2 on the node in a bad state —
+a fresh, fully isolated process still crashed identically when pinned to
+that specific GPU (twice, on two different datasets), while the exact
+same process succeeded immediately on a different GPU. No ECC errors or
+dmesg Xid entries were logged for it, so this reads as a stuck/poisoned
+CUDA context rather than a hardware fault, but the practical takeaway is
+the same: **don't trust a GPU that just threw "unspecified launch
+failure" for the rest of the job** — route around it rather than retry
+in place.
+
+**Comparison baseline caveat — also found and fixed.** The repo's cached
+`dspark_eval_clean_block3.json` baseline (used throughout
+`kimi_k3_draft_eval.md`) turned out to be stale at `n=15` samples/set
+(predating this corpus's later expansion to 50/set), while the new
+sliding-window runs used the full current 50. Comparing against it
+directly produced nonsensical-looking results (several sets showing
+sliding-window *improving* accept_len by 10-16%). Regenerated a fresh
+block=3, full-attention baseline at the current sample count before
+drawing any conclusions — all ratios below are same-`n` comparisons,
+verified via an assertion on `num_samples` matching.
+
+All 25 sets (the 24 from prior runs plus `speed-qa`, which had been
+missing a block=3 baseline), `accept_len` ratio vs. the freshly-generated
+block=3 full-attention baseline, sorted by the window=512 column:
+
+| set | n | window=512 | window=1024 | window=2048 | window=4096 |
+|---|---:|---:|---:|---:|---:|
+| summarization | 50 | **0.9483** | 0.9896 | 1.0000 | 1.0000 |
+| rag | 50 | 0.9583 | 0.9973 | 1.0000 | 1.0000 |
+| speed-rag | 50 | 0.9603 | 0.9922 | 0.9977 | 1.0000 |
+| swe-bench-pro | 50 | 0.9619 | 0.9914 | 0.9998 | 1.0000 |
+| aa-lcr-1k | 50 | 0.9710 | 0.9832 | 1.0000 | 1.0000 |
+| speed-multilingual | 50 | 0.9785 | 0.9996 | 1.0000 | 1.0000 |
+| speed-writing | 50 | 0.9788 | 0.9883 | 0.9973 | 1.0000 |
+| gpqa | 50 | 0.9815 | 0.9979 | 1.0000 | 1.0000 |
+| aa-lcr-4k | 50 | 0.9838 | 0.9851 | 0.9886 | **0.9941** |
+| tool_call | 50 | 0.9876 | 0.9950 | 0.9992 | 1.0000 |
+| livecodebench | 50 | 0.9882 | 0.9976 | 1.0000 | 1.0000 |
+| aime | 30 | 0.9902 | 0.9990 | 1.0000 | 1.0000 |
+| mtbench | 50 | 0.9918 | 0.9997 | 1.0000 | 1.0000 |
+| speed-coding | 50 | 0.9947 | 0.9998 | 1.0000 | 1.0000 |
+| aime26 | 30 | 0.9973 | 1.0000 | 1.0000 | 1.0000 |
+| swe-rebench | 50 | 0.9974 | 0.9999 | 1.0000 | 1.0000 |
+| bfcl | 50 | 0.9987 | 1.0000 | 1.0000 | 1.0000 |
+| translation | 50 | 0.9991 | 1.0000 | 1.0000 | 1.0000 |
+| writing | 50 | 0.9992 | 1.0000 | 1.0000 | 1.0000 |
+| math500 | 50 | 0.9994 | 1.0000 | 1.0000 | 1.0000 |
+| speed-qa-BUGGY-backup | 15 | 0.9995 | 1.0000 | 1.0000 | 1.0000 |
+| qa | 50 | 0.9995 | 1.0000 | 1.0000 | 1.0000 |
+| speed-qa | 50 | 0.9996 | 1.0000 | 1.0000 | 1.0000 |
+| mbpp | 50 | 0.9997 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k | 50 | 0.9999 | 1.0000 | 1.0000 | 1.0000 |
+
+Mean AL ratio: 0.9866 (512), 0.9966 (1024), 0.9993 (2048), 0.9998 (4096).
+Mean AR ratio tracks almost identically (0.9846/0.9962/0.9992/0.9998).
+
+**The pattern at block=3 is qualitatively the same shape as at block=7**,
+not a different sensitivity curve: the same cluster
+(`summarization`/`rag`/`speed-rag`/`swe-bench-pro`/`aa-lcr-1k`) is worst
+at window=512, mostly recovers by 1024, and `aa-lcr-4k` is the one set
+that's still measurably off even at 4096 (0.9941) — consistent with the
+block=7 finding that its critical content sits far enough from the
+anchor that only the very widest windows fully cover it. The close
+numeric agreement between the block=3 means here (0.9866/0.9966/0.9993)
+and the block=7 means from the Fourth/Fifth runs (0.9778/0.9955/0.9993 at
+n=15, later confirmed ~same at n=50) suggests the sliding-window
+degradation and the block-size reduction are close to **independent,
+multiplicative effects** rather than interacting — shrinking the block
+doesn't make the draft more or less sensitive to a tight window, or vice
+versa. Window=4096 (new) confirms the asymptote: `aa-lcr-4k` is the only
+set still outside 0.995 at the widest window tested, and even there the
+gap (0.6%) is small in absolute terms.
+
 ## Artifacts
 
 - Modified checkpoint configs (weights symlinked, not copied):
   `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding2048/`,
   `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding1024/`,
-  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding512/`
+  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding512/`,
+  `/import/ml-sc-scratch5/chenw/models/Kimi-K3-DSpark-sliding4096/`
 - Fix: `scripts/evaluate/kimi_k3_offline_eval/run_dspark_eval.py`
   (`sliding_window`/`use_sliding_window`/`sliding_window_non_causal`
   pass-through)
@@ -507,7 +603,16 @@ than a single universal cliff.
   for all 24 sets listed above
 - Fifth (clean, full 24-set, window=1024) run: `/tmp/dspark_eval_sliding1024_full_<set>.json`
   for all 24 sets listed above
+- Sixth (block_size=3 x all 4 window sizes, 25 sets) run:
+  `.scratch_kimi_launch/sliding_block3_sweep/sliding{512,1024,2048,4096}_block3/dspark_eval_sliding<w>_block3_<set>.json`,
+  fresh n-matched block=3 full-attention baseline at
+  `.scratch_kimi_launch/sliding_block3_sweep/fullattn_block3_n50/`,
+  aggregated comparison at
+  `.scratch_kimi_launch/sliding_block3_sweep/aggregated_results_final.json`
+  (all paths relative to this repo root)
 - Baseline (unmodified, already existed): `/import/ml-sc-scratch5/chenw/models/kimi-k3-data-clean/<set>/dspark_eval_clean.json`
+  (block=7); the stale `dspark_eval_clean_block3.json` (n=15) should
+  **not** be used for new comparisons — see "Sixth run" above
 
 ## Open follow-ups
 
@@ -536,9 +641,20 @@ than a single universal cliff.
    recovers (within ~1.5-3% of baseline), but not uniformly, and the
    identity of the worst-hit set changes (`speed-writing` at 1024,
    `rag` at 512) — three different domains hitting their own sensitivity
-   point at different window sizes, not one shared threshold. 4096
-   remains untested (lower priority now — 2048 already showed near-zero
-   effect, so 4096 would likely show the same or less).
+   point at different window sizes, not one shared threshold. ~~4096
+   remains untested~~ **Done** — see "Sixth run" below. Result: 4096
+   confirms the asymptote, mean AL ratio 0.9998, `aa-lcr-4k` the only set
+   still outside 0.995 (0.9941).
+5. ~~Cross the window-size sweep with `block_size=3`
+   (`--block-size-override`) to see whether a smaller drafting block
+   changes window sensitivity.~~ **Done** — see "Sixth run" below.
+   Result: the pattern is the same shape as block=7, just offset —
+   same affected cluster, same recovery curve, `aa-lcr-4k` the long-tail
+   straggler at wide windows. The block=3 and block=7 degradation means
+   are numerically close enough (0.9866/0.9966/0.9993 vs
+   0.9778/0.9955/0.9993 at 512/1024/2048) to suggest block-size reduction
+   and window-size reduction are close to independent, multiplicative
+   effects rather than interacting.
 4. ~~Investigate the `update_dspark`/`sliding_window_non_causal` gap in
    vLLM's live-serving conversion path before ever attempting to actually
    *serve* a sliding-window-retrofitted DSpark checkpoint live.~~ **Done,
