@@ -42,16 +42,22 @@ The MoE sibling's dense counterpart. Far less written up than the 26B, despite
 carrying the majority of the eval configs in
 `scripts/evaluate/experiments/*.yaml` (27 of 41 reference this backbone).
 
-**[gemma4_31b_results.md](gemma4_31b_results.md)** — MTP assistant k-sweep
-(4×A100, tp=4) and pointers to 31B material elsewhere. **Thin**: 2 sections,
-and most 31B runs are not written up. The MTP hidden-state bug that affects
-this backbone lives in the 26B doc's Appendix B.
+**[gemma4_31b_results.md](gemma4_31b_results.md)** — §1 MTP assistant k-sweep
+(4×A100, tp=4, 2.8–3.6×) and §2 the AgentX/InferenceX concurrency sweep
+comparing our from-scratch DSpark against the published RedHat one. Still
+thinner than the 26B doc; most other 31B runs are not written up. The MTP
+hidden-state bug that affects this backbone lives in the 26B doc's Appendix B.
 
-**Gap worth knowing:** a published DSpark exists for this target
-(`RedHatAI/gemma-4-31B-it-speculator.dspark`, downloaded to
-`/nvmedata/hf_checkpoints/`) and has never been benchmarked here. Its config is
-the reference recipe the 26B work kept comparing itself against
-(5 layers, SWA 2048, block 8, `draft_vocab_size=32000`).
+**Published DSpark — now benchmarked** (§2). `RedHatAI/gemma-4-31B-it-speculator.dspark`
+was the reference recipe the 26B work kept comparing itself against (5 layers,
+SWA 2048, `draft_vocab_size=32000`). Our from-scratch 31B DSpark beats it on
+`accept_len` at 5 of 6 concurrency levels (3.464 vs 3.145 at one user).
+
+**Read §2's caveats before quoting it.** The throughput win is single-user only
+(1.375× vs 1.251× per-user decode at 1 user, gone by 8); at **16 users both
+drafts lose to the baseline** (0.54× per-user, 0.58× aggregate) via the same Ω
+mechanism as the 26B doc §15/§19; and at 32+ users the sweep is queue-bound
+(baseline TTFT 79–413 s) and is not usable speedup evidence.
 
 ---
 
