@@ -2162,9 +2162,61 @@ surviving ids, so the pair stays matched; and ids retain `source`
 (`{source}_{digest}`), so **results will be reported per-domain** rather than
 leaning on an aggregate drawn from a re-weighted mix.
 
+### Corpus as built (2026-10-15)
+
+Regeneration produced 80,098 rows at 108-142 rows/min across two endpoints.
+The matched pair is **78,563 rows each**, same ids, same order.
+
+1,437 on-policy ids (1.8%) were dropped rather than kept: they came from the
+first 8.5k rows, regenerated *before* the 15,000-char filter existed, so they
+have no row in the filtered source. Keeping them (by looking the control up in
+the unfiltered file) would have matched row-for-row but quietly readmitted
+long rows from a different generation regime. The build asserts the two id
+lists are identical and aligned, and fails loudly instead.
+
+| source | rows | share |
+|---|--:|--:|
+| open-perfectblend | 11,232 | 14.3% |
+| magpie | 11,180 | 14.2% |
+| aya | 11,151 | 14.2% |
+| ultrachat | 11,148 | 14.2% |
+| opencodeinstruct | 10,965 | 14.0% |
+| nemotron-science | 7,612 | 9.7% |
+| sharegpt | 7,443 | 9.5% |
+| nemotron-math | 5,425 | 6.9% |
+| **nemotron-code** | **2,407** | **3.1%** |
+
+Code lands at 3.1% against ~11% in the parent mix, math at 6.9%. Since §22
+found code and math carry the largest off-policy deficits, **the aggregate will
+understate the on-policy effect** — which is why this section reports
+per-domain. 2,407 code rows is thin but enough for a directional read.
+
+Final regeneration error rate: **0.8%** (381/47,885 post-fix), essentially all
+long multi-turn sharegpt.
+
+### Gotcha 3: data prep reads `conversations`, not `messages`
+
+The first prep attempt returned "No samples remain after preprocessing" on all
+78,563 rows. `build_eagle3_dataset` reads
+`examples.get("conversations", [])` (`preprocessing.py:553`; see also
+`_JSON_KEEP_COLUMNS = ("conversations","tools")`), so a file carrying only
+`messages` preprocesses to nothing — even though `messages` is a perfectly
+valid chat schema and the normalizer handles `role`/`content` fine once it gets
+there. The registry mix happens to carry *both* keys, which is why the breadth
+arms never hit this.
+
+The log said precisely what was wrong —
+`⚠ No conversations key found. Keys: ['messages','id','source']` — and
+`set -e` correctly aborted before training. The real cost was that nothing was
+watching that log: the failure sat unnoticed for ~9 h with two GPUs idle.
+**When a pipeline step writes its own log, the monitor has to tail that log,
+not just the process table** — a dead step and a slow step look identical from
+outside.
+
 ### Result
 
-*Pending.*
+*Pending — on-policy arm training; matched off-policy control queued behind
+the 1.2M run.*
 
 ---
 
