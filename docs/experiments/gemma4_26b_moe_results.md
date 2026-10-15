@@ -2213,10 +2213,35 @@ watching that log: the failure sat unnoticed for ~9 h with two GPUs idle.
 not just the process table** — a dead step and a slow step look identical from
 outside.
 
+### Both arms prepped identically (2026-10-15 17:37 UTC)
+
+| corpus | rows in | rows after prep | survival |
+|---|--:|--:|--:|
+| on-policy (Gemma4-regenerated) | 78,563 | **78,563** | 100% |
+| off-policy control (same ids) | 78,563 | **78,563** | 100% |
+
+100% survival on both, and *identical counts* — so the pair is still matched
+id-for-id after prep, not merely at build time. That is a consequence of the
+15,000-char filter: it already removed everything prep would have dropped, so
+prep had nothing left to discard. A useful side effect of a filter chosen to
+match the prep cutoff rather than guessed.
+
+The on-policy arm started on GPU2 at 17:40, two epochs over 78,563 rows
+(~48k steps at ~77 steps/min, ~9 h), warm-started from
+`output/dspark_from_dflash_init` with the §21 recipe unchanged
+(`lr 1e-4`, `{"ce":0.1,"tv":0.9}`, `confidence-head-alpha 1.0`, 5 layers,
+block 16 inherited from the checkpoint). `fetch_frac` 0.021 against the shared
+hidden-states server on GPU0.
+
+The control trains next, on GPU3, when the 1.2M run releases it.
+
 ### Result
 
-*Pending — on-policy arm training; matched off-policy control queued behind
-the 1.2M run.*
+*Pending.* Both arms must finish before anything is claimed: the on-policy
+arm's own training and validation metrics are **not** comparable to the
+off-policy arm's, because on-policy data is trivially easier for the draft —
+it is the target's own text. The comparison is the shared held-out benchmark
+(sc1_delta, one matched run, per-domain), and it needs both checkpoints.
 
 ---
 
