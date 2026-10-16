@@ -2309,6 +2309,115 @@ acceptance does not need re-tuning for sampled serving.
 
 ---
 
+## 24. Two-stage curricula and DFlash2 conv (2026-10-16)
+
+Two follow-ups to §23, plus a void experiment worth recording because the
+failure mode is reusable.
+
+### 24.1 Off-policy pretrain then on-policy finetune does NOT beat on-policy alone
+
+The idea: off-policy data is abundant, on-policy data costs target GPU time, so
+let stage 1 do the cheap work and stage 2 fix the trajectory distribution. The
+shape is already proven here — DSparkFlash itself is DFlash pretrain → DSpark
+finetune, and §21 showed the warm start is worth +0.35 val over from-scratch.
+
+Stage 1 = the 1.2M off-policy checkpoint. Stage 2 = the on-policy 78,563 rows.
+
+| arm | sc1_delta AL (T=0, c=1) | speedup |
+|---|--:|--:|
+| orig DSparkFlash (anchor) | 4.994 | 1.882x |
+| **on-policy only** (from DFlash init) | **4.622** | 1.764x |
+| off-policy control | 4.397 | 1.694x |
+| **two-stage, lr 3e-5** | **4.384** | 1.679x |
+| 1.2M off-policy = its own stage 1 | 4.266 | — |
+
+Two-stage lands **0.238 BELOW** training on-policy directly, and essentially
+level with the off-policy control. The on-policy finetune moved it only +0.118
+from where stage 1 left it.
+
+**Caveat, stated before the number was known:** stage 2 ran at lr 3e-5 against
+the on-policy arm's 1e-4, chosen so the finetune would not wash out stage 1.
+That also means it adapts less per step, so this result is consistent with both
+"the pretrain is useless" and "the finetune was throttled." A matched-LR arm
+(lr 1e-4, everything else identical) is running to separate them.
+
+**What is already solid:** the *starting point* matters more than the finetune.
+From the DFlash init → 4.622; from the 1.2M off-policy init → 4.384, on the
+same on-policy data. The DFlash warm start is not merely a convergence
+shortcut — it reaches a materially better endpoint than a DSpark checkpoint
+trained on 982k off-policy rows.
+
+### 24.2 VOID: the first conv arm trained no convolution
+
+`--dspark-conv-kernel-size 2` parsed, appeared in the config banner, and had
+**no effect**. The run was a plain DSpark model.
+
+Mechanism — the same shape as the `--num-layers` conflict, but silent:
+
+- `train.py:504` — with `--from-pretrained`, the architecture comes ENTIRELY
+  from the checkpoint config.
+- `dspark/core.py:280` — `conv_kernel_size` is read from `kwargs` only on the
+  *synthesize-from-args* path, which `--from-pretrained` bypasses.
+- `dspark/core.py:66` — `if config.conv_kernel_size <= 0: return plain layer`.
+  The init checkpoint had no conv field, so every layer was
+  `Qwen3DFlashDecoderLayer`.
+
+`--num-layers` is in `DECODER_SHAPING_FLAGS` and errors out loudly. The conv
+flags are not, so they are silently ignored. **A flag that no-ops is worse than
+one that errors.**
+
+Proof it was void: the saved checkpoint held **64 tensors, identical to the
+non-conv arm**, with `conv_kernel_size: 0` and zero conv tensors — against the
+20 conv tensors the design specifies.
+
+**The tell was in the result and I missed it.** The arm reported val 4.026 then
+4.176 against the no-conv 4.028 / 4.177 — agreement to 0.002 at *both* epochs.
+That is not what a real architectural change looks like; it is what the same
+architecture twice looks like. Suspiciously exact agreement is evidence of a
+plumbing bug, not of a clean null.
+
+**Fix:** put conv in the INIT CHECKPOINT's config, which the design supports —
+convs reset to identity after `post_init`, so a conv model loads plain DSpark
+weights with only the conv keys missing.
+
+**Gate, corrected:** the first launch verified the flags reached the CLI, which
+proves nothing. The rerun asserts the *instantiated model* has exactly 20 conv
+params, and the runtime load report now shows
+`layers.{0,1,2,3,4}.{attention,mlp}_conv.*  MISSING` — lines entirely absent
+from the void run's log. **Verify what gets built, never what parses.**
+
+### 24.3 DFlash2 conv cannot be served yet
+
+`vllm/model_executor/models/gemma4_dspark.py` contains **no conv references at
+all** (vLLM 0.28). A correct conv checkpoint would load and serve as a plain
+DSpark model with the conv weights unused — a silent train/serve mismatch of
+exactly the kind that halves acceptance elsewhere in this repo.
+
+So DFlash2 is **train-only** here until the `gemma4_dspark` serving patch the
+original commit anticipated actually lands. Any conv result is a training-side
+result until then.
+
+### 24.4 Accidental calibration: training-run variance is ~0.10 AL
+
+The void arm turned out useful. It is architecturally identical to the
+on-policy arm, same corpus and recipe, differing only in RNG — an unintended
+replicate.
+
+| | AL (T=0, c=1) |
+|---|--:|
+| on-policy arm, measured in 3 independent eval runs | 4.622 / 4.622 / 4.622 |
+| void "conv" arm (same architecture, different seed) | 4.520 |
+
+So **eval variance on a fixed checkpoint is ~0.00** — the protocol is highly
+reproducible — while **training-run variance at fixed config is ~0.10 AL**.
+
+That is the number that matters for reading §24.1 and future architecture A/Bs:
+a difference under ~0.10 between two separately-trained checkpoints is not
+evidence of anything. Two-stage's −0.238 clears it; a conv effect would need to
+as well.
+
+---
+
 ## Appendix A — first top-k context A/B (superseded by §18)
 
 > Merged here from `dspark_topk_context_ab.md` (2026-10-08): one doc per
