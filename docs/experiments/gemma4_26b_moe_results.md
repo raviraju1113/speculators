@@ -2011,7 +2011,14 @@ balanced without going ~67% Nemotron — the proportional skew §12 warned about
 
 ---
 
-## 22. Per-domain breakdown isolates OFF-POLICY as the cause (2026-10-13)
+## 22. Per-domain breakdown points at OFF-POLICY (2026-10-13)
+
+> **⚠ SOFTENED BY §23 (2026-10-16).** This section originally concluded that the
+> per-domain uniformity "isolates OFF-POLICY as the cause." The matched-pair
+> experiment measured it directly: policy accounts for **~43%** of the deficit
+> (+0.225 AL of 0.527), not all of it. The elimination argument below is sound
+> and was directionally right, but elimination narrows a cause — it does not
+> isolate one. Read §23's result before quoting this section.
 
 §21 showed the breadth-trained draft worse overall but could not say why, because
 the run changed four things at once. This runs the full 28-benchmark suite on
@@ -2235,13 +2242,70 @@ hidden-states server on GPU0.
 
 The control trains next, on GPU3, when the 1.2M run releases it.
 
-### Result
+### Result — on-policy wins by +0.225 AL, NOT the +1.08 that validation showed
 
-*Pending.* Both arms must finish before anything is claimed: the on-policy
-arm's own training and validation metrics are **not** comparable to the
-off-policy arm's, because on-policy data is trivially easier for the draft —
-it is the target's own text. The comparison is the shared held-out benchmark
-(sc1_delta, one matched run, per-domain), and it needs both checkpoints.
+Both arms finished clean. The two numbers that matter disagree by 5x, and the
+smaller one is the real one.
+
+| metric | on-policy | off-policy | delta |
+|---|--:|--:|--:|
+| **own val accept_len** (epoch 2) | 4.177 | 3.097 | +1.08 |
+| **sc1_delta AL** (shared benchmark, T=0, c=1) | **4.622** | **4.397** | **+0.225** |
+
+The val gap is an artifact, exactly as this section predicted before the run:
+each arm validates on *its own* responses, and on-policy text is the target's
+own output, so the draft predicts it easily. **Quoting 4.177 vs 3.097 as "the
+on-policy effect" overstates it by about 5x.** Only the shared benchmark —
+neither arm's training distribution — compares them.
+
+Full matched run (one GPU, prefix caching off, warmup discarded):
+
+| arm | AL T=0 c=1 | speedup | AL T=1 c=1 | speedup |
+|---|--:|--:|--:|--:|
+| orig DSparkFlash (anchor) | 4.924 | 1.858x | 4.929 | 1.897x |
+| on-policy 78k | 4.622 | 1.768x | 4.629 | 1.780x |
+| off-policy 78k (same ids) | 4.397 | 1.694x | 4.316 | 1.688x |
+| baseline | — | 1.000x | — | 1.000x |
+
+### This SOFTENS §22 — off-policy is about half the cause, not the cause
+
+§22 concluded the per-domain uniformity "isolates OFF-POLICY as the cause."
+The matched pair shows that was too strong. Against the original corpus the
+breadth corpus loses **0.527 AL** (4.924 - 4.397). Switching only the policy
+recovers **0.225**, i.e. **~43%**. The remaining ~57% is corpus quality,
+composition and volume — not policy.
+
+The §22 inference was directionally right and the elimination argument was
+sound, but "isolates the cause" claimed more than elimination can deliver.
+A matched pair measures; a per-domain pattern only narrows.
+
+### Data volume is not a substitute (and may hurt)
+
+| corpus | rows | sc1_delta AL |
+|---|--:|--:|
+| on-policy | 78,563 | **4.599 / 4.622** |
+| off-policy | 78,563 | 4.397 |
+| off-policy 1.2M | 982,230 | 4.266 |
+
+On-policy at 78k beats off-policy at 982k by **+0.33 with 12.5x less data**,
+and the 1.2M corpus scores *below* the 78k off-policy one. On its own val the
+1.2M reached 3.211 against the 400k arm's 3.131 — **+0.08 for 2.2x the unique
+data**. Volume is not the lever.
+
+(The 4.599 and 4.622 figures are the same checkpoint in two independent eval
+runs; the anchor moved 4.874 -> 4.924 across those runs. ~0.05 drift, well
+inside the ±0.3 noise floor, so the eval protocol reproduces.)
+
+### Sampling (temperature 1.0) costs essentially nothing
+
+Every prior number in this doc is greedy. The expectation was that acceptance
+would fall under sampling, since vLLM verifies by rejection sampling rather
+than exact argmax match. **It does not.** Measured at T=0 and T=1 inside the
+same server session, across two independent runs and six drafts, every arm
+lands within 0.09 AL of its greedy value and throughput is flat.
+
+So T=1 numbers are a usable series, not a caveat — and a draft tuned on greedy
+acceptance does not need re-tuning for sampled serving.
 
 ---
 
