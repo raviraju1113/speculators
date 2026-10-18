@@ -5,6 +5,8 @@ nav:
           - Getting Started: user_guide/getting_started.md
           - Features: user_guide/features.md
           - Loss Functions: user_guide/loss_functions.md
+          - Speculator Evaluation Runbook (SambaNova): user_guide/speculator_eval_runbook_sn.md
+          - Kimi K3 + CSplash Serving Runbook: user_guide/kimi_k3_csplash_runbook.md
           - Algorithms:
                 - user_guide/algorithms/index.md
                 - Eagle3: user_guide/algorithms/eagle3.md

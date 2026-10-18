@@ -143,6 +143,95 @@ sliding-window DSpark checkpoints are currently broken in live serving
 at *any* block size (see "Isolation test" above) — don't serve them;
 watch the `salloc --time` limit on any run that'll outlive a few hours.
 
+## Runbook: single-node B300 launch with CSplash (2026-10-14, untested on real hardware)
+
+A single 8xB300 node doesn't need any of the above's cross-node machinery:
+B300's 275 GiB/GPU comfortably covers K3's ~194 GiB/GPU weight shard at
+TP=8 alone (vs. B200's ~183-194 GiB margin, which is why 2 nodes ×
+PP=2 was needed there — see "Why 2 nodes at all" below). No PP, no DCP,
+no cross-node NCCL/Gloo fabric config, no headless/API-server node split.
+
+**Caveat up front**: this recipe is adapted from
+`serve_k3_singlenode_test.sh` (a single-node TP=8 RadixArk test written
+during the DCP-incompatibility debugging, same vLLM build) with the
+draft swapped for CSplash — it has **not** been run end-to-end on real
+B300 hardware in this repo yet (no B300 node was available this
+session). Treat it as a well-reasoned starting point, not a confirmed
+recipe; expect to debug on first real launch, same as every other config
+in this doc.
+
+The launch script lives in the tracked repo (not `.scratch_kimi_launch/`,
+which is gitignored):
+`scripts/evaluate/mtp_server_eval/kimi_k3/run_k3_csplash_vllm.sh`,
+following the same per-model `run_<model>_vllm.sh` convention as
+`scripts/evaluate/mtp_server_eval/glm52/run_glm52_vllm.sh`.
+
+**1. Allocate a B300 node** (adjust partition/node name/`--gres` for
+your cluster's actual B300 queue):
+```bash
+salloc -p <b300-partition> -w <b300-node> -N1 --ntasks-per-node=1 \
+  --gres=gpu:8 --time=48:00:00 --no-shell
+# generous --time -- a 24h default has already silently killed a live
+# server mid-eval twice in this project, see the "Infra incident" notes
+# elsewhere in this doc
+```
+
+**2. Venv**: no node-local venv exists on a fresh B300 node. Point at
+the shared NFS copy, which already has the full CSplash port (model
+file, speculator package, registry/dispatch edits, HF config
+registration):
+```bash
+export VENV_DIR=/import/ml-sc-scratch1/chenw/vllm-venv-b200
+```
+Build a node-local copy later (see "Pick a venv" in the 2-node runbook
+above) if this node becomes a repeat target — shared-NFS import latency
+is a one-time cost per server boot, not per request.
+
+**3. Launch**:
+```bash
+JOBID=<from step 1>
+srun --jobid=$JOBID -w <b300-node> -N1 -n1 --gres=gpu:8 --overlap \
+  env VENV_DIR=$VENV_DIR \
+  bash scripts/evaluate/mtp_server_eval/kimi_k3/run_k3_csplash_vllm.sh
+```
+Defaults: `CTX=262144` (256K; untuned for B300's actual extra headroom
+over B200 — raise it and watch for KV-cache OOM at startup, there's
+likely room to go higher given the larger per-GPU memory), `PORT=8000`,
+`TP=8`, `NUM_SP=7` (the "7+1" block layout CSplash's checkpoint is
+calibrated for). `DRAFT_DIR` defaults to the CSplash checkpoint
+(`/import/ml-sc-scratch1/chenw/CSplashKimi-Kimi-K3-2026-10-13-v2/checkpoint`) —
+override to point at a different draft. `DRY_RUN=1` prints the resolved
+`vllm serve` command without launching (see the script's own usage
+comments for more overrides).
+
+**4. Verify** — same caveat as the 2-node runbook: `/health` returns 200
+long before the model's actually ready; confirm with a real completion:
+```bash
+curl -s http://<b300-node>:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"moonshotai/Kimi-K3","messages":[{"role":"user","content":"What is 7*8?"}],"max_tokens":10,"temperature":0}'
+```
+Then check `SpecDecoding metrics` in the server log for a sane
+(non-zero, non-collapsing) acceptance length — see the CSplash live
+validation section above for what "healthy" looks like (7-8 range on
+simple prompts, decaying smoothly rather than collapsing to 0 on harder
+ones).
+
+**5. Known unknowns, specific to this being untested**:
+- Whether `NCCL_P2P_LEVEL=NVL` (kept as a conservative default, fixing a
+  cp81/cp82-specific local-GPU-pair stall) is needed, harmless, or
+  actively wrong on different hardware — not verified either way.
+- Whether `--language-model-only` is still required (it was added for a
+  vision-tower crash unrelated to node count, so probably yes, but
+  unconfirmed on this exact build+node combination).
+- The real safe ceiling for `--max-model-len`/`--gpu-memory-utilization`
+  given B300's larger per-GPU memory — the 262144 default is carried
+  over from the B200 2-node AgentX/eval work's context ceiling, not
+  derived from B300's actual headroom.
+- Whether CSplash's `DCP_SIZE` sensitivity (RadixArk's draft needs
+  `DCP_SIZE=1`, untested for CSplash — see the CSplash section above)
+  even matters here, since single-node doesn't use DCP at all.
+
 ## DSpark speculative decoding: two checkpoints, one real bug found (2026-10-12)
 
 Two different DSpark draft checkpoints were tried on top of the working
@@ -451,6 +540,197 @@ this session. **Practical conclusion is unaffected either way: don't
 serve the sliding-window checkpoints live until this is actually
 root-caused and fixed.**
 
+### Root cause CONFIRMED via instrumentation: newest context tokens are evicted (2026-10-13)
+
+Added debug instrumentation directly to `_prepare_dflash_inputs_kernel`'s
+Python wrapper (`prepare_dflash_inputs`,
+`vllm/v1/worker/gpu/spec_decode/dflash/speculator.py`, patched on both
+`cp81`/`cp82` node-local venvs) to measure, per drafting step, how many
+of the context-KV write positions get redirected to `PAD_SLOT_ID`
+("evicted" by the sliding-window KV-cache manager) versus actually
+written.
+
+**First pass (false alarm, corrected)**: initial instrumentation counted
+*all* positions in the fixed-size CUDA-graph buffer, which includes a
+large amount of padding — `evicted_q=8185/8192` looked alarming but was
+just padding slots correctly marked discard-only (expected, by design:
+see the kernel's own padding comment). Fixed by slicing to only the real
+(non-padding) positions using `input_batch.query_start_loc[num_reqs]`
+for context and `num_reqs * num_query_per_req` for query.
+
+**Second pass — real signal, query slots clean, context slots are not.**
+Across 872 samples on the real block=7+sliding2048 config:
+- **`evicted_q` (draft's own query/mask-token slots) was 0 in every
+  single sample** — the earlier hypothesis that the draft's own fresh
+  query slots get incorrectly evicted does **not** hold up under direct
+  measurement. Ruled out.
+- **`evicted_ctx` (context-KV write positions) was wrong on ~82% of
+  steady-state decode steps.** `real_ctx_n` is small and constant (≈8,
+  matching the incremental per-step context update — only
+  newly-accepted tokens get fresh context-KV written each step, since
+  older positions' KV persists from earlier iterations) — meaning these
+  8 positions are, by construction, **the most recent tokens in the
+  entire sequence** (right at the tail, immediately before the position
+  the draft is about to predict from). Distribution across 3168 sampled
+  decode-phase calls:
+
+  | evicted_ctx / real_ctx_n | count | share |
+  |---|---:|---:|
+  | 7/8 | 2592 | 81.8% |
+  | 6/8 | 304 | 9.6% |
+  | 5/8 | 96 | 3.0% |
+  | 4/8 | 96 | 3.0% |
+  | 3/8 | 32 | 1.0% |
+  | 1/8 | 8 | 0.3% |
+  | 0/8 (correct) | 0 | 0% |
+
+  (The handful of `0/<large N>` lines in the raw log are early prefill
+  calls with a much larger `real_ctx_n` — the full prompt — not the
+  steady-state decode case tabulated above.)
+
+**This is architecturally impossible to be correct.** A sliding window
+keeps the *most recent* N tokens of context — nothing can be more
+recent than the tokens the draft just verified/accepted this step, so
+they can never legitimately fall outside any window, however tight.
+Yet 7 of the 8 freshest context positions get their KV write discarded
+on 82% of decode steps. This directly explains the acceptance collapse:
+the draft is losing access to its own most recent context almost
+constantly, which should produce exactly the kind of degenerate,
+near-random output that manifests as total (0%) acceptance.
+
+**Not yet pinpointed**: the exact line responsible within `ctx_block_id`
+resolution (`block_table_ptr + req_idx * block_table_stride +
+ctx_block_num` lookup) — whether the KV-cache manager's eviction
+bookkeeping for this draft's dedicated sliding-window group is stale,
+racing with block allocation, or whether `ctx_block_num`'s own
+computation (`ctx_pos // (block_size * CP_SIZE)`) is wrong for recently
+-written positions specifically. This confirms *where* the bug lives
+(context-position residency resolution, not query-slot handling, not
+`aot_schedule`) and that it's real and severe (82% of steps), but the
+exact faulty line within that resolution path is still open.
+
+### Deeper trace: eviction-formula inputs check out, two confirmed sub-findings (2026-10-13)
+
+Traced two layers deeper, instrumenting `allocate_slots`
+(`vllm/v1/core/kv_cache_manager.py`) and `SlidingWindowManager.__init__`
+(`vllm/v1/core/single_type_kv_cache_manager.py`), both on `cp81`/`cp82`.
+
+**Sub-finding 1 — confirmed real misconfiguration, too small to be the
+main cause.** `SlidingWindowManager.__init__` for the draft's KV-cache
+group (`kv_cache_group_id=19`, matching the group tagged
+`SlidingWindowSpec` in earlier debug output) logs:
+```
+CHENW_SWMGR_INIT kv_cache_group_id=19 sliding_window=2048 extra_retained_tokens=0 block_size=896
+```
+`extra_retained_tokens=0`, not the value the code's own documented
+intent implies for DSpark: `num_prefill_lookahead_tokens` resolves to
+`num_speculative_tokens=7` for `use_eagle()`/`uses_draft_model()`
+configs (confirmed via the property's own inline comment naming DSpark
+explicitly), giving `extra_retained_tokens = max(0, 7-1) = 6`. The
+draft's group is getting 0 instead. **Real bug, but doing the math it's
+too small to explain the observed magnitude**: with
+`extra_retained_tokens=6` vs. `0`, the eviction boundary only shifts by
+6 tokens either way — the retained range still covers roughly the last
+~2042-2048 tokens, vastly more than the ~8-token tail we're observing
+evicted.
+
+**Sub-finding 2 — the freeing formula's own inputs check out
+numerically.** Live `CHENW_SKIP_DEBUG` sample: `total_computed_tokens=
+72297, num_in_flight_tokens=8, processed_computed_tokens=72289`.
+Working through `get_num_skipped_tokens(72289)` by hand with
+`sliding_window=2048` (even using the buggy `extra_retained_tokens=0`):
+`skipped = 72289 - 2048 + 1 - 0 = 70242`, leaving roughly the last
+~2047-2055 tokens (after block-granularity rounding, `block_size=896`)
+retained — our observed newest ~8-token tail sits comfortably inside
+that range. **The eviction-freeing formula, given its own actual
+runtime inputs, should not be evicting what we're observing it evict.**
+This rules out `remove_skipped_blocks`'s subtraction logic itself as
+the primary cause.
+
+**Chronic, not transient**: cross-referencing consecutive
+`CHENW_EVICT_DEBUG` samples for the same long-running request (context
+positions advancing 71045→71050→71056→71062→71071 across consecutive
+decode steps) shows `evicted_ctx` oscillating between 6/8 and 7/8 —
+never once reaching 0/8 (correct) throughout the sampled window. This
+is a persistent condition throughout decode, not an occasional
+boundary-condition glitch.
+
+**Reproduced independently**: a second, independent AgentX run against
+the same instrumented server (confirming the instrumentation itself
+doesn't materially change behavior) showed `decode_tok_s=82.0,
+accept_len=1.219, accept_rate=0.0313, 888/1446 (61.4%) collapses` — in
+the same range as the original 68.6% measurement.
+
+**Where this leaves the investigation**: the eviction-formula's own
+inputs are correct (sub-finding 2), ruling out the subtraction logic
+itself; the one confirmed misconfiguration found (sub-finding 1) is
+real but too small to explain the magnitude. The most likely remaining
+explanation is a **block-allocation-timing** issue rather than a
+block-freeing-formula issue — i.e., whether the physical blocks needed
+for these positions are actually being allocated (not just "correctly
+calculated as should-be-retained") in time for
+`_prepare_dflash_inputs_kernel` to see them as resident. This is a
+different subsystem (`get_num_blocks_to_allocate`/`allocate_new_blocks`
+in `single_type_kv_cache_manager.py`) than what's been traced so far —
+not yet instrumented, given the depth already reached this session (4
+separate vendored-file instrumentation passes: `speculator.py` ×2
+patches, `kv_cache_manager.py`, `single_type_kv_cache_manager.py`).
+
+### Found and fixed the `extra_retained_tokens=0` root cause — tested, does NOT resolve the collapse (2026-10-13)
+
+Traced *why* `extra_retained_tokens` resolves to 0 instead of 6 for
+DSpark. `vllm/config/vllm.py`'s `num_prefill_lookahead_tokens` property
+(which `extra_retained_tokens = max(0, num_prefill_lookahead_tokens -
+1)` is computed from) has a dedicated branch for
+`speculative_config.use_multi_module_mtp()` (returns the full
+`num_speculative_tokens`), but everything else — including DSpark —
+falls through to a generic fallback: *"Eagle-family drafters read only
+the immediate next token,"* returning just `1`. `use_multi_module_mtp()`
+only checks `self.method == "mtp"`; DSpark's method is `"dspark"`, so it
+never matches, despite `use_eagle()` (the earlier gate) correctly
+returning `True` for it (`use_eagle()` covers
+`"eagle", "eagle3", "mtp", "dflash", "dspark"`). This is wrong for
+DSpark specifically: it drafts a whole *block* of `num_speculative_tokens`
+tokens in one parallel (semi-autoregressive) pass, not one token at a
+time like a sequential Eagle drafter — structurally identical to
+multi-module MTP's need for full runway, just not classified that way.
+
+**Fix applied** (`vllm/config/vllm.py`, both nodes): added
+`speculative_config.use_dspark()` (an existing, already-defined vLLM
+helper) alongside `use_multi_module_mtp()` in that branch. Verified via
+the `SlidingWindowManager.__init__` instrumentation that
+`extra_retained_tokens` now correctly resolves to `6` (was `0`) for the
+draft's KV-cache group (`kv_cache_group_id=19`).
+
+**Tested — this does NOT resolve the collapse.** Restarted with the fix
+and re-measured `evicted_ctx` via the same instrumentation: **3592/4456
+samples (80.6%) still show 7/8 of the newest context positions
+evicted** — statistically unchanged from the pre-fix 81.8%. This
+empirically confirms the earlier hand-calculation: a 6-token shift in
+the eviction boundary was never going to be large enough to explain
+evicting most of an 8-token tail inside a 2048-token window. **The real
+root cause is still open** and most likely lies in the block-allocation
+subsystem flagged above (`get_num_blocks_to_allocate`/
+`allocate_new_blocks`), not the retention/freeing-formula parameters
+traced so far. The fix itself is still correct and worth keeping (it
+now matches the code's own documented intent for DSpark and may help
+other scenarios, e.g. actual prefill-boundary chunking), just not
+sufficient on its own.
+
+Confirmed at the full-benchmark level, not just the instrumentation
+sample: a complete AgentX run against the fixed server gave
+`decode_tok_s=81.0, accept_len=1.205, accept_rate=0.0293, 1067/1474
+(72.4%) collapses` — statistically indistinguishable from the pre-fix
+runs (82.0/1.219/0.0313, 61-69% collapse across two pre-fix
+measurements). The `extra_retained_tokens` fix is confirmed not to be
+the (or at least not the sole) root cause.
+
+| run | decode_tok_s | accept_len | accept_rate | collapse rate |
+|---|---:|---:|---:|---:|
+| pre-fix (original) | 84.6 | 1.266 | 0.0380 | 989/1441 (68.6%) |
+| pre-fix (reproduction) | 82.0 | 1.219 | 0.0313 | 888/1446 (61.4%) |
+| **post-fix** (`extra_retained_tokens`: 0→6) | 81.0 | 1.205 | 0.0293 | 1067/1474 (72.4%) |
+
 **Practical takeaway**: don't use the sliding-window checkpoints in live
 serving yet — they're validated offline only. Block-size overrides
 (block=3) are safe in live serving and may even help throughput on
@@ -496,7 +776,257 @@ show ~0% collapse at any block size, confirming the collapse pattern
 really is sliding-window-specific and not a general artifact of this
 vLLM build/topology.
 
-*(Results to be filled in once all three block sizes complete.)*
+**Results — low baseline collapse rate, far below sliding-window's.**
+
+| block | decode_tok_s | accept_len | accept_rate | collapses |
+|---|---:|---:|---:|---:|
+| 3 | 179.2 | 2.349 | 0.4497 | 15/1220 (1.2%) |
+| 5 | 169.3 | 2.496 | 0.2992 | 18/1232 (1.5%) |
+| 7 | 150.3 | 2.369 | 0.1956 | 47/1305 (3.6%) |
+
+**Correction (2026-10-13)**: the collapse counts above were first
+reported as 0/0/0 ("perfectly clean") due to a regex bug in the live
+monitoring script — a `$` end-of-line anchor that could never match,
+since every `SpecDecoding metrics` log line has trailing
+`, Avg Draft acceptance rate: X%` text after the per-position list.
+Re-checked directly against the raw logs with the anchor removed; true
+counts are above. The core conclusion is unaffected — full-attention's
+baseline collapse rate (1.2-3.6%) is still far below sliding-window's
+(21.5-68.6% across the configs tested below) — but it was never
+literally zero, and was incorrectly narrated as "clean"/"zero
+collapses" live during the run. A small baseline collapse rate exists
+even with full attention; sliding-window dramatically amplifies it
+rather than introducing it from nothing.
+
+**Secondary finding: throughput decreases monotonically with block
+size** on real AgentX traffic (179.2→169.3→150.3 tok/s for block 3→5→7),
+while `accept_len` stays roughly flat (2.35-2.50) and `accept_rate`
+drops monotonically (0.4497→0.2992→0.1956) — consistent with the
+earlier 128K-context isolation test (block=3 full-attention: 163.0
+decode_tok_s vs. block=7's 139.1 baseline). **Smaller blocks are faster
+here, not slower**, on this checkpoint's real agentic traffic —
+opposite of the naive assumption that more draft tokens per step always
+wins. Likely explanation: fewer draft tokens per round-trip means less
+wasted compute on positions that would've been rejected anyway, and
+that savings outweighs the lost acceptance length for this draft/target
+pair under real traffic.
+
+### sliding2048 + block=7 at 256K context (2026-10-13)
+
+Extended the sliding-window investigation to the wider 256K context
+ceiling, same config as the 68.6%-collapse 128K run above
+(`run17_sliding2048_block7`), on `cp81`/`cp82` (a brand-new,
+previously-untested second pair — `cp101`/`cp102`, using the shared
+NFS venv — hit its own NCCL cross-node setup failure unrelated to this
+investigation; see "Other B200 node pairs" in
+[[kimi-k3-multinode-gloo-hang]] memory, not chased further).
+
+| context | decode_tok_s | accept_len | accept_rate | collapse rate |
+|---|---:|---:|---:|---:|
+| 128K (`run17`) | 84.6 | 1.266 | 0.0380 | 989/1441 (68.6%) |
+| 256K (`run22`) | 82.2 | 1.295 | 0.0422 | 607/1522 (39.9%) |
+
+**Counterintuitive: collapse rate is lower at wider context, not
+higher**, despite `accept_len`/`accept_rate`/`decode_tok_s` all staying
+roughly flat between the two. (This result was also initially
+mis-reported as 0 collapses due to the same regex bug described above —
+corrected after direct re-verification against the raw log.) Not yet
+understood why collapse rate would improve with more context when the
+window stays fixed at 2048 tokens — a naive model would predict the
+opposite (more of the conversation falls outside a fixed window as
+total context grows). Possible explanations, untested: different trace
+mix at the 256K ceiling (a different subset of the AgentX corpus
+becomes eligible), or genuine noise from a single 30-minute run — would
+need a repeat run to confirm this is a stable effect rather than
+run-to-run variance.
+
+### CSplash: a new vLLM port, natively-trained sliding-window drafter (2026-10-14)
+
+A different draft checkpoint, **CSplash**
+(`/import/ml-sc-scratch1/chenw/CSplashKimi-Kimi-K3-2026-10-13-v2/`), was
+supplied as a vendor package: a *natively-trained* (not RadixArk-style
+retrofit) block-parallel Kimi K3 drafter, served at the same "7+1" layout
+(block_size=8), with its own offline reference acceptance numbers (22-set
+mean AL=4.181, all-25 mean AL=4.068) beating RadixArk's offline AL=3.635.
+No vLLM port existed for it — package verification (sha256, golden-vector
+parity against the vendor's plain-PyTorch reference, both passing) and the
+full port were done in this session.
+
+**Architecture**: 5-layer GQA (64 heads / 16 kv heads / head_dim 64), YaRN
+RoPE, per-head q/k norm, 4 sliding-attention layers (4096-token window,
+always bidirectional within the block — unlike some DFlash checkpoints,
+CSplash never applies a causal mask inside the block regardless of
+sliding/full attention type) + 1 full-attention layer, 5-tap target
+hidden-state capture (layers 7/23/51/67/83) projected via `fc`+`hidden_norm`.
+Does not own embed/lm_head — borrows K3's (untied). Two genuinely new
+pieces beyond DFlash's existing architecture: an input-dependent **grouped
+causal convolution** (2 taps, 448 groups) wrapping every layer's attention
+and MLP, and a **CandidateSelector** — a low-rank (rank=256)
+predecessor/successor-codebook sequential token-selection head (replacing
+DSpark's Markov head), walked left-to-right across the block's draft slots.
+
+**Port approach**: subclassed vLLM's existing DFlash machinery
+(`vllm/model_executor/models/qwen3_dflash.py`) rather than reimplementing
+it — CSplash's block layout (anchor + N mask tokens, bidirectional
+in-block attention, context K/V pre-inserted into the paged KV cache) is
+architecturally identical to DFlash's non-causal "1+N fill-in" layout, so
+`DFlashQwen3Attention`/`DFlashQwen3Model`/`DFlashQwen3ForCausalLM` (GQA,
+RoPE, the fused context-KV precompute, weight loading, target
+embed/lm_head sharing) are reused unchanged via subclassing. New code is
+limited to the grouped conv, the CandidateSelector module, and a new
+`CSplashSpeculator` (`vllm/v1/worker/gpu/spec_decode/csplash/speculator.py`)
+implementing the sequential candidate-selector walk — adapted from
+`DSparkSpeculator`'s sequential-topk Markov-sampling pattern, swapping in
+`CandidateSelector.apply_step_logits` for the Markov embed/bias mechanism.
+New files: `vllm/model_executor/models/csplash_kimi.py`,
+`vllm/v1/worker/gpu/spec_decode/csplash/speculator.py`,
+`vllm/transformers_utils/configs/csplash_kimi.py` (HF config
+registration), plus registry/dispatch edits in
+`model_executor/models/registry.py` and
+`v1/worker/gpu/spec_decode/__init__.py`. A dedicated launch script,
+`.scratch_kimi_launch/k3-b200-exp/scripts/serve_k3_host_csplash.sh`
+(copy of `serve_k3_host.sh` with `"method":"dflash"` instead of
+`"dspark"` in the speculative-config, since CSplash's token-selection
+algorithm is architecturally closer to DFlash's 1+N/sample_from_anchor=False
+layout than DSpark's anchor-as-first-prediction layout), `DCP_SIZE`
+defaulted to 1 (untested whether CSplash hits the same DCP incompatibility
+RadixArk does — not yet checked either way, defaulted to the known-safe
+value).
+
+**Three integration bugs found and fixed via live launch iteration** (none
+were architecture/numerics bugs — all were "this custom checkpoint doesn't
+match an existing convention vLLM's shared infra assumes"):
+1. `csplash_kimi` wasn't a registered HF `model_type`, so config parsing
+   failed before vLLM ever got to resolving an architecture. Fixed by
+   registering `CSplashKimiConfig(Qwen3Config)` into vLLM's
+   `_CONFIG_REGISTRY` (`transformers_utils/config.py`), the same mechanism
+   DSpark's `K3DSparkConfig` uses.
+2. `EAGLEConfig` rewrites a `method=dflash` draft's `architectures` to
+   `DFlash{arch}` unless the name already starts/ends with `"DFlash"`
+   (`transformers_utils/configs/eagle.py`) — `CSplashKimiDraftModel`
+   doesn't, so the registry had to be keyed on the rewritten name,
+   `DFlashCSplashKimiDraftModel` (same pattern as the existing
+   `DFlashMuseGlimmerAssistantModel` alias).
+3. `get_parallel_drafting_token_id`/`get_eagle3_aux_layers_from_config`
+   (shared DFlash-family infra) look for `mask_token_id`/`target_layer_ids`
+   under a top-level `dflash_config` dict, not CSplash's own
+   `csplash_config` nesting — fixed by mirroring the needed keys into a
+   `dflash_config` dict in `CSplashKimiConfig.__post_init__`.
+
+**Live validation**: server up on `cp81`/`cp82` (TP8×PP2×DCP1), real
+completions verified correct (arithmetic, code generation). Manual-request
+SpecDecoding metrics: 7.29/8 mean acceptance length (89.8% avg draft
+acceptance) on a simple prompt, 4.73/8 (53.3%) on a harder code-gen
+prompt, with per-position acceptance decaying smoothly rather than
+collapsing — healthy, non-degenerate speculative decoding.
+
+**AgentX comparison (2026-10-14), identical methodology to the sweeps
+above** (1800s, `MAX_CONTEXT=256000`, `users=1`, same trace corpus) —
+directly comparable to the full-attention/sliding2048 rows earlier in
+this section:
+
+| draft | attention | decode_tok_s | accept_len | accept_rate |
+|---|---|---:|---:|---:|
+| **CSplash** (block=7) | sliding 4096 (4L) + full (1L) | **222.6** | **2.977** | 0.2824 |
+| RadixArk DSpark (block=3) | full | 179.2 | 2.349 | 0.4497 |
+| RadixArk DSpark (block=5) | full | 169.3 | 2.496 | 0.2992 |
+| RadixArk DSpark (block=7) | full | 150.3 | 2.369 | 0.1956 |
+| RadixArk DSpark sliding2048 (block=7) | sliding 2048 (collapsing) | 82.2 | 1.295 | 0.0422 |
+| RadixArk DSpark sliding2048 (block=3) | sliding 2048 (collapsing) | 103.5 | 1.357 | 0.1189 |
+
+CSplash beats every RadixArk configuration tested on both throughput and
+acceptance length (+24% decode_tok_s, +19% accept_len over RadixArk's
+best full-attention row), consistent with the offline reference numbers'
+AL=4.181 vs. AL=3.635 ranking. (These AgentX numbers aren't directly
+comparable in absolute terms to the offline reference figures — AgentX
+replays only token-count/prefix-hash *metadata* from real traces, with
+aiperf synthesizing meaningless filler text that matches those
+statistics, not real conversation content — but the ranking *across
+configs under this one methodology* is a fair apples-to-apples
+comparison.)
+
+**Relevant to the paused sliding-window-collapse investigation
+above/in [[kimi-k3-multinode-gloo-hang]]**: CSplash's own sliding-window
+attention (4 of 5 layers, 4096-token window) does **not** exhibit
+RadixArk's collapse pattern — 2.977 accept_len live, in the same range as
+RadixArk's *full-attention* configs, nowhere near RadixArk
+sliding-window's 1.3-1.4. This is evidence the collapse is specific to
+RadixArk's retrofit (or something in its particular KV-cache/eviction
+interaction, per the unresolved block-allocation-timing lead) rather than
+a general property of vLLM serving any sliding-window drafter — a
+natively-trained sliding-window drafter serves cleanly on the same vLLM
+build/topology. Does not pinpoint RadixArk's root cause, but narrows
+where to keep looking if that investigation resumes.
+
+### CSplash 25-benchmark live-serving validation vs. offline reference (2026-10-14)
+
+Ran this project's own real-text acceptance harness
+(`scripts/evaluate/mtp_server_eval/run_eval.sh`, `run_vllm_eval.py` —
+sequential, one request at a time, matching CSplash's own offline
+methodology) against the live server for all 25 datasets in
+`CSplashKimi-Kimi-K3-2026-10-13-v2/ACCEPTANCE.md`: `num_samples=50`
+(30 for aime/aime26, naturally capped by those datasets' real size),
+`max_tokens=4096`, `temperature=0`. One methodology difference from the
+vendor's offline numbers: our server runs with `--enable-prefix-caching`
+on; their reference measurement had it disabled.
+
+**Infra incident mid-run**: the underlying SLURM allocation
+(`salloc --time=24:00:00`, the same wall-clock gotcha documented earlier
+in this doc under "Infra incident during the full-corpus run") hit its
+time limit and killed the server mid-eval, right around the `writing`
+benchmark — confirmed via `scontrol show job`
+(`JobState=TIMEOUT Reason=TimeLimit`, `EndTime` matching the server log's
+last timestamp to the second). 15 of 25 benchmarks had already completed
+cleanly; the remaining 9 plus one partial (`speed-writing`, 10/50) were
+re-run after a fresh allocation and relaunch. No errors on the second
+pass (500/500 clean).
+
+**Result — live acceptance lengths closely track the offline reference**,
+across all 25 datasets, with small, non-systematic (bidirectional)
+deltas:
+
+| dataset | reference AL | live AL | Δ |
+|---|---:|---:|---:|
+| aime | 2.812 | 2.875 | +0.063 |
+| gpqa | 2.864 | 2.872 | +0.008 |
+| livecodebench | 3.637 | 3.614 | -0.023 |
+| gsm8k | 5.846 | 5.770 | -0.076 |
+| humaneval | 5.387 | 5.299 | -0.088 |
+| mbpp | 4.696 | 4.779 | +0.083 |
+| math500 | 3.518 | 3.530 | +0.012 |
+| mt-bench | 3.155 | 3.168 | +0.013 |
+| aime26 | 2.726 | 2.906 | +0.180 |
+| bfcl | 5.372 | 5.293 | -0.079 |
+| swe-bench-pro | 4.535 | 4.413 | -0.122 |
+| speed-coding | 3.960 | 4.089 | +0.129 |
+| speed-multilingual | 4.385 | 4.460 | +0.075 |
+| speed-rag | 4.069 | 4.164 | +0.095 |
+| speed-qa | 3.392 | 3.391 | -0.001 |
+| speed-writing | 2.869 | 2.840 | -0.029 |
+| HumanEval | 5.499 | 5.543 | +0.044 |
+| math_reasoning | 6.175 | 6.167 | -0.008 |
+| qa | 3.392 | 3.391 | -0.001 |
+| question | 3.168 | 3.170 | +0.002 |
+| rag | 4.017 | 4.143 | +0.126 |
+| summarization | 4.159 | 4.172 | +0.013 |
+| tool_call | 3.938 | 3.995 | +0.057 |
+| translation | 4.969 | 4.958 | -0.011 |
+| writing | 3.168 | 3.170 | +0.002 |
+
+**Means**: all-25 live 4.087 vs. reference 4.068 (Δ +0.019); 22-distinct-set
+live 4.202 vs. reference 4.181 (Δ +0.021). Largest single-dataset gap is
+aime26 (+0.180); everything else is within ~±0.13. This is strong
+evidence the vLLM port reproduces CSplash's reference acceptance behavior
+correctly (not just "runs without crashing") — live-serving/real-sampling
+vs. offline/cached-hidden-state-replay and the prefix-caching
+on/off difference are both plausible, sufficient explanations for
+deltas this small.
+
+**Lesson reinforced**: this is the second time in this project a default
+24h `salloc --time` has silently killed a long-running server mid-eval
+(see the "Infra incident" note earlier in this doc). Use a generous
+`--time` (≥48h) on any `salloc` backing a server that might run for
+many hours across multiple eval sessions.
 
 ---
 
