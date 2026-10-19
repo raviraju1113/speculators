@@ -2244,6 +2244,13 @@ The control trains next, on GPU3, when the 1.2M run releases it.
 
 ### Result — on-policy wins by +0.225 AL, NOT the +1.08 that validation showed
 
+> **⚠ UPDATED BY §25.2.** The +0.225 here is sc1_delta alone. Across the full
+> 28-benchmark suite the on-policy advantage is **+0.598** mean AL, and the
+> per-domain prediction made below is **backwards**: code and math gain LEAST
+> from on-policy, multilingual and chat most. Also note every figure in this
+> section was measured at k=7 on a native-k=15 checkpoint and is therefore
+> ~0.44 AL low (§25.1).
+
 Both arms finished clean. The two numbers that matter disagree by 5x, and the
 smaller one is the real one.
 
@@ -2349,6 +2356,10 @@ trained on 982k off-policy rows.
 
 ### 24.2 VOID: the first conv arm trained no convolution
 
+> **⚠ RESOLVED IN §25.4.** v2 (conv built) was NaN from step 1 — an
+> uninitialized-memory bug, see §25.5. v3 is the first valid conv run and shows
+> a genuine null: 4.168 vs 4.177.
+
 `--dspark-conv-kernel-size 2` parsed, appeared in the config banner, and had
 **no effect**. The run was a plain DSpark model.
 
@@ -2415,6 +2426,134 @@ That is the number that matters for reading §24.1 and future architecture A/Bs:
 a difference under ~0.10 between two separately-trained checkpoints is not
 evidence of anything. Two-stage's −0.238 clears it; a conv effect would need to
 as well.
+
+---
+
+## 25. k sweep, the per-domain matched pair, conv resolved (2026-10-17/19)
+
+Four results, two of which correct earlier sections.
+
+### 25.1 Every number in this doc was measured at the WRONG k
+
+Every benchmark here served `num_speculative_tokens=7`. But these checkpoints
+are `block_size=16` with `sample_from_anchor=False` — **native k=15**. Serving a
+k=15 block at k=7 discards over half of it.
+
+Sweep on the on-policy draft (sc1_delta, c=1, one run, own server per cell):
+
+| k | AL | tok/s |
+|--:|--:|--:|
+| 7 *(what we always served)* | 4.589 | 197.7 |
+| **9** | 4.870 | **200.3** |
+| 11 | 4.978 | 197.1 |
+| 13 | 4.981 | 190.0 |
+| 15 *(native)* | **5.031** | 186.4 |
+| 15, `--enforce-eager` | 5.093 | 87.9 |
+
+**Acceptance was understated by 0.44 AL (9.6%)** throughout. Relative
+comparisons are unaffected — every arm was measured the same way — but the
+absolute AL figures in §19–§24 are low.
+
+**Throughput peaks at k=9, not k=15.** This is Ω: past k=9 the extra acceptance
+costs more drafting than it saves verification, so AL keeps rising while tok/s
+falls. **k=9 is the serving optimum** (+1.3% over k=7, +7.5% over k=15).
+
+**The crash that forced k=7 is stale.** The CUDA `index out of bounds` at
+graph-capture time (≈line 982) did not reproduce — k=15 ran in *graph* mode,
+not merely eager. The eager cell is included only to show it is not hiding the
+fault: it accepts the same (5.093) at half the throughput, as eager should.
+
+### 25.2 Per-domain matched pair: on-policy is worth +0.598, not +0.225
+
+§23 measured the matched pair on sc1_delta alone and reported +0.225 AL. The
+full 28-benchmark suite, same checkpoints:
+
+| domain | mean ΔAL (on − off) | n |
+|---|--:|--:|
+| multilingual | **+1.024** | 2 |
+| chat | +0.733 | 6 |
+| qa | +0.680 | 6 |
+| tool | +0.470 | 2 |
+| math | +0.440 | 5 |
+| code | +0.412 | 6 |
+| **overall** | **+0.598** | **27** |
+
+**I had the direction of the bias backwards.** §23 argued the aggregate would
+*understate* on-policy because the length filter left code at 3.1% of the mix
+and §22 put the largest deficits on code. In fact **code and math gain the
+LEAST** from on-policy (+0.412, +0.440) and multilingual/chat gain the most
+(+1.024, +0.733). The filter's code-light skew therefore *flattered* nothing —
+the single-benchmark number was simply low.
+
+A plausible reading: code and math have rigid, predictable surface form, so a
+draft learns them adequately from anyone's text. Free-form chat and
+multilingual output are where the target's individual style matters, and style
+is exactly what on-policy regeneration supplies.
+
+**The on-policy draft beats the original on several benchmarks** despite far
+less data — speed-multilingual 3.930 vs 2.841, speed-rag 4.569 vs 3.875,
+gpqa 5.423 vs 5.017, math500 6.571 vs 6.481, mbpp 5.026 vs 4.776.
+
+So §23's "policy explains ~43% of the deficit" was derived from one benchmark
+and understates the effect; across the suite on-policy recovers more, and on
+some domains overshoots the original outright.
+
+### 25.3 Two-stage is neutral — confirmed on the benchmark
+
+| arm | val (e1/e2) | sc1_delta AL | speedup |
+|---|--:|--:|--:|
+| on-policy only | 4.028 / 4.177 | 4.589 | 1.759x |
+| two-stage, lr 1e-4 (matched) | 3.972 / 4.082 | 4.549 | 1.732x |
+| two-stage, lr 3e-5 | 3.766 / 3.768 | 4.384 | 1.679x |
+
+At matched LR the gap is **0.040 AL on the benchmark** and 0.095 on val — both
+inside the ~0.10 training-run variance (§24.4). **Off-policy pretraining
+followed by on-policy finetuning is neutral.** §24.1's apparent 0.238 penalty
+was substantially the lr 3e-5 choice, not the method.
+
+Useful either way: there is no cheap shortcut (abundant off-policy data cannot
+be parlayed into a better draft via a pretraining stage), but neither is there
+a penalty for warm-starting from an off-policy checkpoint you already have.
+
+### 25.4 DFlash2 conv: a real null, on the third attempt
+
+v1 built no conv (§24.2). v2 was NaN from step 1. **v3 is the first valid run.**
+
+| arm | val epoch 1 | val epoch 2 |
+|---|--:|--:|
+| on-policy, no conv | 4.028 | 4.177 |
+| conv v3, `conv_kernel_size=2` | 4.007 | **4.168** |
+
+A 0.009 gap — well inside the 0.10 variance. **The local convolution adds
+nothing here**, now on a run where conv layers are verifiably present (20 conv
+params, load report showing `layers.{0..4}.{attention,mlp}_conv.* MISSING`,
+finite losses throughout).
+
+Scope: one configuration (kernel 2, group 16) on a 5-layer block-16 DSpark
+*warm-started from DFlash*. The original preset used kernel 2 on a
+*from-scratch* block-8 run at lr 6e-4; conv may matter more without a strong
+warm start. And it remains **unservable** — vLLM 0.28's `gemma4_dspark.py` has
+no conv references at all, so a conv checkpoint silently serves as plain DSpark.
+
+### 25.5 The v2 NaN was a real initialization bug
+
+Conv v2 reported val accept_len **15.844** — near the k+1 ceiling of 16. That
+was a NaN artifact: `accept_rate=1.000` at every position while
+`position_*_acc=0.000`, and `tv_loss=-1.07e-08` (negative, when TV distance
+cannot be). Early stopping then fired on `best=nan`.
+
+Cause: the identity reset runs in `__init__`, but `from_pretrained`
+re-initializes MISSING keys *after* construction and `_init_weights` does not
+cover `base_kernel`, so those tensors were **raw uninitialized memory** —
+`layers.3.attention_conv.base_kernel` held 2 NaN, others denormals like
+`1.4e-44`. Non-deterministic: a different allocation would have produced
+all-zeros and trained silently as a no-op conv.
+
+Fix: bake identity conv weights into the init checkpoint so nothing is MISSING.
+
+**Rule, stated plainly:** an implausibly good metric is a bug report. AL near
+its ceiling, accept_rate exactly 1.000, or a negative loss term should be
+treated as broken plumbing before it is treated as a result.
 
 ---
 
