@@ -200,13 +200,28 @@ across two. Key flags beyond the single-node case:
 are incompatible with DCP>1 in this vLLM build; untested either way for
 CSplash, kept at the safe default), plus `--headless` on the non-API-server
 rank. `--language-model-only` skips a vision-tower code path unrelated to
-topology. Cross-node NCCL/Gloo fabric env vars
-(`NCCL_SOCKET_IFNAME`/`GLOO_SOCKET_IFNAME` pinned to the inter-node
-interface, `NCCL_P2P_LEVEL=NVL` for a known local-GPU-pair stall on one
-specific node pair) are topology-specific to the cluster this was
-developed on — see `docs/experiments/kimi_k3_2node_b200_launch.md`'s
-runbook section for the full launch script and SLURM allocation details
-if you need this shape.
+topology. Cross-node NCCL/Gloo uses `NCCL_SOCKET_IFNAME`/`GLOO_SOCKET_IFNAME` on the
+inter-node fabric and `NCCL_P2P_LEVEL=NVL`. The original sc3-cp81/sc3-cp82
+server ran with `NCCL_CUMEM_ENABLE=1` and NVLS left on; that allocation
+ended on 2026-10-16. That NVLS setup stalls on other B200 pairs
+(`ncclNvlsSetup` → `initNvlsChannel` on local GPU 1). Later pairs serve
+with the same script after adding the exports below.
+
+```bash
+export NCCL_NVLS_ENABLE=0
+export NCCL_CUMEM_ENABLE=0
+export NCCL_MAX_NCHANNELS=4
+```
+
+Pairs that finished a real serve, the `brcm0` address rule, and the full
+`salloc`/`srun` sequence are in
+`docs/experiments/kimi_k3_2node_b200_launch.md` ("Pairs that served Kimi
+K3"). Proven pairs: sc3-cp81+sc3-cp82 (script-default NCCL),
+sc3-cp107+sc3-cp108, sc3-cp87+sc3-cp97, sc3-cp103+sc3-cp105, and
+sc3-cp100+sc3-cp102. Skip sc3-cp78,
+sc3-cp79, sc3-cp80, sc3-cp83 (GPU 2 unavailable), sc3-cp84 (NCCL hang),
+sc3-cp88, sc3-cp98+sc3-cp104 (graph capture timed out), and sc3-cp106
+(slurmd).
 
 ## 4. Verifying a deployment
 

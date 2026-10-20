@@ -1,5 +1,139 @@
 # Launching Kimi K3 + DSpark across 2x B200 nodes (SLURM `gpuonly`)
 
+## Live CSplash servers (2026-10-16 evening)
+
+Four Kimi K3 + CSplash servers are serving. All of them use the same
+launcher and the three NCCL variables in the pairs section below. The
+original sc3-cp81 / sc3-cp82 job `10926088` hit its 2-day limit and is
+gone.
+
+| Rank 0 | Rank 1 | Job |
+|---|---|---|
+| sc3-cp97 | sc3-cp87 | `11336617` |
+| sc3-cp108 | sc3-cp107 | `11261698` |
+| sc3-cp105 | sc3-cp103 | `11398815` |
+| sc3-cp102 | sc3-cp100 | `11398825` |
+
+sc3-cp87/sc3-cp97, sc3-cp103/sc3-cp105, and sc3-cp100/sc3-cp102 were
+each confirmed with a chat completion (`17*24` → `408`). Mean acceptance
+length on sc3-cp97 and sc3-cp105 was **6.38**. The sc3-cp87/sc3-cp97
+launch uses the `salloc`/`srun` sequence below, with rank 0 on sc3-cp97,
+rank 1 on sc3-cp87, `PHASE=csplash_cp87_cp97`, and
+`--job-name=k3-csplash-cp87`.
+
+## Pairs that served Kimi K3 (2026-10-16)
+
+These five pairs finished a real Kimi K3 + CSplash launch. Adjacency is
+not required. Each of the last four returned `408` for `17*24`.
+
+| Pair | NCCL |
+|---|---|
+| sc3-cp81 + sc3-cp82 | Script defaults (`NCCL_CUMEM_ENABLE=1`, NVLS left on). |
+| sc3-cp107 + sc3-cp108 | `NCCL_NVLS_ENABLE=0`, `NCCL_CUMEM_ENABLE=0`, `NCCL_MAX_NCHANNELS=4`. |
+| sc3-cp87 + sc3-cp97 | Same three NCCL variables. |
+| sc3-cp103 + sc3-cp105 | Same three NCCL variables. |
+| sc3-cp100 + sc3-cp102 | Same three NCCL variables. |
+
+sc3-cp81/sc3-cp82 is the only pair that served with NVLS left on. Every
+other pair that reached a completion used the three variables above.
+Launcher for all five:
+`.scratch_kimi_launch/k3-b200-exp/scripts/serve_k3_host_csplash.sh
+control-noconn 72`, venv
+`VENV_DIR=/import/ml-sc-scratch1/chenw/vllm-venv-b200`.
+
+**Passed the NVLS probe, not yet launched.** On 2026-10-16 an 8-GPU NVLS
+two-communicator probe passed on sc3-cp86, sc3-cp93, and sc3-cp101, and
+those nodes have not been used in a serve. sc3-cp100, sc3-cp102, and
+sc3-cp103 were in that same probe-pass set and did serve once paired as
+above.
+
+**Do not pick.** sc3-cp78, sc3-cp79, sc3-cp80, and sc3-cp83: GPU 2 returns
+`cudaErrorDevicesUnavailable` and `nvidia-smi` asks for a reset of
+`00000000:63:00.0`. sc3-cp84's 8-GPU NCCL test hangs. sc3-cp106 did not
+accept a job step. sc3-cp88 hung in multicast when paired with sc3-cp87
+under default NCCL; sc3-cp87 later served with sc3-cp97. sc3-cp98 +
+sc3-cp104 loaded all six weight shards with the three NCCL variables, then
+CUDA-graph capture of custom allreduce timed out (gloo `broadcast_object_list`,
+1800000 ms). That pair did not serve.
+
+## Second CSplash pair (2026-10-16): sc3-cp107 + sc3-cp108
+
+This pair was started while the sc3-cp81/sc3-cp82 server was still up.
+It is serving on **sc3-cp108** (rank 0, API `http://10.17.16.80:8000`)
+and **sc3-cp107** (rank 1, headless), job `11261698`. Confirmed with a real
+`/v1/chat/completions` request, not `/health` alone.
+
+Same launcher as the reference pair,
+`.scratch_kimi_launch/k3-b200-exp/scripts/serve_k3_host_csplash.sh
+control-noconn 72`, venv
+`VENV_DIR=/import/ml-sc-scratch1/chenw/vllm-venv-b200` (same vLLM
+`0.30.1rc1.dev493+gac9126e58` / NCCL 2.29.7 build as
+`/scratch/chenw/vllm-venv` on cp81/cp82). TP=8 inside the node, PP=2
+across nodes, DCP=1, CSplash draft, 7 speculative tokens.
+
+The only change from the live cp81/cp82 process is three NCCL variables.
+On every other pair tried, NCCL's NVLS channel setup
+(`ncclNvlsSetup` → `initNvlsChannel` → `ncclStrongStreamSynchronize` at
+`strongstream.cc:406`) hangs in `accept()` or dies with
+`unspecified launch failure` on local GPU 1. A plain 8-GPU NVLS allreduce
+can still pass on those nodes; vLLM's later communicators do not. Turning
+NVLS off by itself falls back to a 32-channel P2P ring that deadlocks
+around channel 26. The combination that gets communicator init through,
+loads all six fastsafetensors shards, and serves:
+
+```bash
+export NCCL_NVLS_ENABLE=0
+export NCCL_CUMEM_ENABLE=0
+export NCCL_MAX_NCHANNELS=4
+```
+
+`NCCL_P2P_LEVEL=NVL`, `NCCL_IB_DISABLE=1`, `NCCL_NET=Socket`, and
+`NCCL_SOCKET_IFNAME=brcm0` stay at the script defaults. Do not pass
+`--disable-custom-all-reduce`: that deadlocked the weight-load barrier
+on an earlier pair. `CUDAGRAPH_MODE=NONE` got into warmup and then died
+with `cudaErrorLaunchFailure` on a pipeline-parallel rank; leave CUDA
+graphs at the script default.
+
+**Pick the nodes first.** ruobingw's `qualify_node.sh` (per-GPU matmul,
+8-GPU NCCL with `NCCL_P2P_LEVEL=NVL` and `NCCL_CUMEM_ENABLE=1`, then DCGM)
+failed sc3-cp78, sc3-cp79, sc3-cp80, and sc3-cp83 on 2026-10-15: PCI
+`00000000:63:00.0` needs a GPU reset, and GPU 2 returns
+`cudaErrorDevicesUnavailable`. sc3-cp84's 8-GPU NCCL test hangs.
+sc3-cp106 did not accept a job step on 2026-10-16. Nodes that passed both
+that qualify recheck and an 8-GPU NVLS two-communicator probe the same
+day: sc3-cp87, sc3-cp97, sc3-cp105, sc3-cp107, sc3-cp108. This launch used
+cp107 + cp108.
+
+`brcm0` last octet is `node_number - 28` (cp107 → `10.17.16.79`, cp108 →
+`10.17.16.80`). The script only hardcodes cp81/cp82, so other nodes need
+`NODE_RANK` and `MY_IP`. Start rank 1, then rank 0 a few seconds later.
+`HEAD_IP` is rank 0's `brcm0` address.
+
+```bash
+salloc -p gpuonly --account=ml --qos=normal \
+  -w sc3-cp107,sc3-cp108 -N2 --ntasks-per-node=1 \
+  --gres=gpu:b200m180:8 --cpus-per-task=8 --mem=2200G \
+  --time=24:00:00 --no-shell --job-name=k3-csplash-cp107
+# JOBID=<from above>
+ROOT=/import/ml-sc-scratch1/chenw/speculators/.scratch_kimi_launch/k3-b200-exp
+SCRIPT=$ROOT/scripts/serve_k3_host_csplash.sh
+PHASE=csplash_cp107_cp108
+HEAD_IP=10.17.16.80
+COMMON="PYTHONUNBUFFERED=1 VENV_DIR=/import/ml-sc-scratch1/chenw/vllm-venv-b200 \
+  NCCL_NVLS_ENABLE=0 NCCL_CUMEM_ENABLE=0 NCCL_MAX_NCHANNELS=4 HEAD_IP=$HEAD_IP"
+
+srun --jobid=$JOBID -w sc3-cp107 -N1 -n1 --gres=gpu:8 --overlap \
+  env $COMMON NODE_RANK=1 MY_IP=10.17.16.79 \
+  stdbuf -oL -eL bash "$SCRIPT" control-noconn 72 "$PHASE"
+# then, a few seconds later:
+srun --jobid=$JOBID -w sc3-cp108 -N1 -n1 --gres=gpu:8 --overlap \
+  env $COMMON NODE_RANK=0 MY_IP=10.17.16.80 \
+  stdbuf -oL -eL bash "$SCRIPT" control-noconn 72 "$PHASE"
+```
+
+Weight load is about six minutes. `/health` returns 200 before the model
+is ready; confirm with a chat completion against `http://$HEAD_IP:8000`.
+
 ## RESOLVED (2026-10-12): working 2-node launch found
 
 After 13 independent attempts (documented below) progressively diagnosed and
@@ -1118,6 +1252,97 @@ This must be set for **every** process that imports vLLM — including Ray's own
 spawned worker processes (separate interpreters that don't inherit a parent's
 in-memory `sys.modules`), not just the one you launch directly. Set it in the
 env of both the head and worker launch scripts.
+
+### 4b. FIPS bypass via conda env with bundled OpenSSL — FAILED (2026-10-14)
+
+**Goal**: launch Kimi K3 on a second B200 node pair beyond the working
+`cp81`/`cp82`. Most other B200 pairs (`cp77`-`cp80`, `cp83`-`cp102`) hit the
+same FIPS selftest failure as the `cv2` issue above, but the `cv2` shim
+doesn't help there because the failure is in the *system* OpenSSL itself
+(`/usr/lib64/libcrypto.so.3`, RHEL's OpenSSL 3.5.5 with FIPS support compiled
+in), not in a bundled library.
+
+**Approach tried**: use the existing conda env
+`/import/ml-sc-scratch6/chenw/conda_env/kimi_k3/` which bundles its own
+OpenSSL 3.5.7 (no FIPS support) instead of the system FIPS-enabled OpenSSL.
+The conda env already has vLLM 0.29.0 + Python 3.11 + all required CUDA
+libraries. Created new launch scripts:
+- `scripts/serve_k3_cp77_cp84_conda.sh` (cp77/cp84 pair)
+- `scripts/serve_k3_cp78_cp79_conda.sh` (cp78/cp79 pair, after cp84 turned
+  out to be in PLANNED state)
+- `scripts/launch_radixark_cp77_cp84_conda.sbatch`
+- `scripts/launch_radixark_cp78_cp79_conda.sbatch`
+
+**Result: FAILED — the conda env's OpenSSL also has FIPS support compiled
+in.** Despite being a separate OpenSSL 3.5.7 build (not the system 3.5.5),
+`strings libcrypto.so.3 | grep -i fips` shows `FIPS routines`, `fips_mode`,
+`EVP_default_properties_enable_fips`, etc. — the FIPS module is compiled
+into the conda env's `libcrypto.so.3` itself, not as a separate
+`ossl-modules/fips.so` (the conda env has no `ossl-modules/` directory at
+all).
+
+**Debugging trail** (all on `cp78`/`cp79`, both confirmed
+`/proc/sys/crypto/fips_enabled=1`):
+
+1. **Plain `conda activate`**: FIPS error still happens. `conda activate`
+   only sets `CONDA_PREFIX` and updates `PATH` — it does NOT prepend the
+   env's `lib/` to `LD_LIBRARY_PATH`, so the system OpenSSL is still found
+   first.
+2. **`LD_LIBRARY_PATH=/conda_env/lib:$LD_LIBRARY_PATH`**: FIPS error still
+   happens. The system `/usr/lib64` is in the default linker search path
+   and takes precedence for some libraries.
+3. **`LD_PRELOAD=/conda_env/lib/libssl.so.3:/conda_env/lib/libcrypto.so.3`**:
+   FIPS error still happens. Verified via `/proc/self/maps` that ONLY the
+   conda env's OpenSSL is loaded (no system OpenSSL in memory). The FIPS
+   error is coming from the conda env's own OpenSSL, not the system one.
+4. **`OPENSSL_CONF=/dev/null`**: doesn't help — the FIPS selftest runs at
+   library load time, before any config is read.
+
+**Root cause**: on FIPS-enabled nodes (`/proc/sys/crypto/fips_enabled=1`),
+the kernel sets a flag that tells OpenSSL to enable FIPS mode automatically.
+When ANY OpenSSL library (system or conda-bundled) is loaded on such a node,
+it runs the FIPS integrity check. The conda env's OpenSSL 3.5.7 has FIPS
+support compiled in, so it also fails the selftest.
+
+**Confirmed via `/proc/self/maps`**: after `import ssl` and `import vllm`,
+the process memory maps show ONLY the conda env's OpenSSL loaded
+(`/import/ml-sc-scratch6/chenw/conda_env/kimi_k3/lib/libcrypto.so.3` and
+`libssl.so.3`). No system OpenSSL is loaded. Yet the FIPS error still
+appears when `vllm serve` runs — proving the error is from the conda env's
+own OpenSSL, not the system one.
+
+**What would actually work** (not yet tried):
+1. **Install the FIPS module HMAC file** (`fipsmodule.cnf`) for the conda
+   env's OpenSSL via `openssl fipsinstall`. This generates the HMAC that
+   the FIPS selftest checks against. Requires the FIPS provider module
+   (`.so` file), which the conda env doesn't have — would need to rebuild
+   the conda env's OpenSSL with the FIPS provider.
+2. **Rebuild the conda env's OpenSSL without FIPS support**. The conda
+   package `openssl-3.5.7-h1b28b03_0` was built with FIPS support; would
+   need to install a non-FIPS OpenSSL package or build from source with
+   `no-fips` configure flag.
+3. **Use a completely different Python distribution** that bundles a
+   non-FIPS OpenSSL (e.g., a custom-built Python from source with
+   `--with-openssl` pointing at a non-FIPS build).
+4. **Disable FIPS at the kernel level** (requires root, not feasible for
+   regular users).
+5. **Use only non-FIPS nodes** — `cp81`/`cp82` are the only confirmed
+   non-FIPS B200 pair in this cluster (all others have
+   `/proc/sys/crypto/fips_enabled=1`).
+
+**Conclusion**: the conda env approach does NOT bypass FIPS on this
+cluster. The `cv2` shim (item 4 above) is the only known working FIPS
+bypass, and it only works because `cv2`'s bundled OpenSSL 1.1.1k is the
+one triggering the selftest — poisoning `sys.modules['cv2']` prevents that
+library from being loaded at all. For the system OpenSSL or any
+FIPS-capable OpenSSL, there's no equivalent shim possible from userspace.
+
+**Job history**: job 11011774 (cp77/cp84) was pending for 4+ hours because
+cp84 is in PLANNED state (reserved for maintenance). Cancelled and
+resubmitted as job 11038429 (cp78/cp79), which ran but failed with FIPS
+error. Subsequent jobs 11038521, 11038649, 11038991, 11039333, 11039544
+all failed with the same FIPS error despite various LD_PRELOAD/LD_LIBRARY_PATH
+attempts. All cancelled.
 
 ### 5. DSpark does not support pipeline parallelism
 
