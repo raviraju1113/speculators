@@ -3,7 +3,9 @@ prepared training dataset in the same arrow format as scripts/prepare_data.py,
 plus two per-token columns the OPD loss consumes:
 
   opd_anchor_mask [seq_len] bool  - 1 at every logged anchor position
-                                    (anchor_pos = len(prompt_ids) + anchor)
+                                    (anchor_pos = len(prompt_ids) + anchor - 1:
+                                    the last verified token, whose embedding
+                                    fills slot 0 of the draft block)
   opd_accepted    [seq_len] int32 - at anchor positions: the accepted count r
                                     (0..K); -1 elsewhere
 
@@ -66,9 +68,16 @@ def main():
                 continue
             if rec.get("finish") == "length" and i == last:
                 continue  # tail clipped by max_tokens
-            pos = plen + s["anchor"]
+            # Training anchor = position of the LAST VERIFIED token (slot 0
+            # carries that token's embedding and sees base tokens strictly before
+            # it; it predicts the next token = draft token 1). The rollout's
+            # `anchor` counts verified output tokens, so the last one sits at
+            # plen + anchor - 1 (for anchor == 0 that is the last prompt token,
+            # which loss_mask excludes; such blocks do not occur in our logs
+            # because the first decode step after prefill carries no draft).
+            pos = plen + s["anchor"] - 1
             r = s["accepted"]
-            if pos + k > seq_len:
+            if pos < plen or pos + k >= seq_len:
                 n_drop_fit += 1
                 continue
             if r >= k and not args.keep_full_accept:
