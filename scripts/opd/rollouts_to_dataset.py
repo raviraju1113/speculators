@@ -37,7 +37,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rollouts", required=True)
     ap.add_argument("--model", required=True, help="backbone path (tokenizer)")
-    ap.add_argument("--token-freq", required=True, help="token_freq.pt of the SFT dataset (draft vocab is fixed)")
+    ap.add_argument("--token-freq", required=True,
+                    help="token_freq.pt of the SFT dataset the checkpoint was trained on; its "
+                    "d2t.npy / t2d.npy (same dir) are copied too -- the draft vocab mapping MUST "
+                    "be the checkpoint's. Rebuilding it from token_freq gives a different "
+                    "mapping (measured: 27755/32000 overlap) and a garbage draft.")
     ap.add_argument("--output", required=True)
     ap.add_argument("--seq-length", type=int, default=8192)
     ap.add_argument("--keep-full-accept", action="store_true")
@@ -123,6 +127,12 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     ds.save_to_disk(str(out))
     shutil.copy(args.token_freq, out / "token_freq.pt")
+    vocab_dir = Path(args.token_freq).parent
+    for f in ("d2t.npy", "t2d.npy"):
+        if not (vocab_dir / f).exists():
+            raise SystemExit(f"!! {vocab_dir / f} missing: the draft-vocab mapping must come from the "
+                             "checkpoint's training dataset, not be rebuilt here")
+        shutil.copy(vocab_dir / f, out / f)
     print(f"rollouts in: {n_in}  rows out: {n_rows}  anchors: {n_anchors} "
           f"({n_anchors / max(n_rows, 1):.1f}/row)  dropped steps: fit={n_drop_fit} "
           f"full_accept={n_drop_full}; bad rollouts skipped: {n_drop_bad}")

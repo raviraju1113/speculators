@@ -72,6 +72,21 @@ trained but not served, all-sliding 5 layers, optional conv (kernel 2, group 16)
   copy is ready, no extra sync) and hands it to `RolloutLogger.on_draft`; the
   next `on_step` substitutes the stored block for the placeholders
   (`vllm_patches/engine_core_rollout_log.patch`).
+- **The draft-vocab mapping comes from the data dir, and it must be the
+  checkpoint's.** `train.py` loads `d2t.npy`/`t2d.npy` from `--data-path`, or
+  rebuilds them from `token_freq.pt` if absent. A rebuilt mapping differed from
+  nemo782k's files (27,755/32,000 kept tokens overlap, different order), so the
+  checkpoint's 32k lm_head rows were read through the wrong mapping: slot-0
+  accuracy 0.00, accept_len 1.000, loss 42 from step 1 (pilot 12477930; the
+  "control" on `gemma4_dspark_32` failed identically with its 349k-corpus
+  mapping). `rollouts_to_dataset.py` now copies `d2t/t2d` from the
+  `--token-freq` dataset and refuses to run without them. Any dataset used with
+  a checkpoint must carry that checkpoint's mapping -- that includes "control"
+  runs on other SFT subsets.
+- **Anchor position**: the training anchor is the LAST VERIFIED token
+  (`plen + anchor - 1`); slot 0 carries its embedding and sees base tokens
+  strictly before it. `plen + anchor` is one late and mislabels the
+  accepted/rejected slots.
 - **`finish=length` clips the last step**: a request hitting `max_tokens` keeps
   only the first `max_tokens` output ids, so the final step's `gen` is longer
   than what remains; the assembler compares on the kept prefix.
