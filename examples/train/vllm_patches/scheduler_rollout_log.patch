@@ -1,0 +1,46 @@
+--- vllm/v1/core/sched/scheduler.py.orig
++++ vllm/v1/core/sched/scheduler.py
+@@ -52,6 +52,7 @@
+     SchedulingPolicy,
+     create_request_queue,
+ )
++from vllm.v1.core.sched.rollout_log import RolloutLogger  # LOCAL PATCH (Draft-OPD)
+ from vllm.v1.core.sched.utils import check_stop, remove_all
+ from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+ from vllm.v1.kv_cache_interface import KVCacheConfig
+@@ -122,6 +123,9 @@
+         self.num_sampled_tokens_per_step = (
+             1 if not vllm_config.model_config.is_diffusion else 0
+         )
++        # LOCAL PATCH (Draft-OPD, 2026-10-21): per-step draft/accept logging,
++        # enabled by DSPARK_ROLLOUT_LOG=<dir>. No-op otherwise.
++        self.rollout_logger = RolloutLogger()
+ 
+         # Create KVConnector for the Scheduler. Note that each Worker
+         # will have a corresponding KVConnector with Role=WORKER.
+@@ -1704,6 +1708,15 @@
+                     num_invalid_spec_tokens=scheduler_output.num_invalid_spec_tokens,
+                     request_id=req_id,
+                 )
++            # LOCAL PATCH (Draft-OPD): log this step's draft block and outcome,
++            # before the new tokens are appended (anchor = current output len).
++            if self.rollout_logger.enabled and request.async_tokens_to_discard == 0:
++                self.rollout_logger.on_step(
++                    request,
++                    scheduled_spec_token_ids,
++                    generated_token_ids,
++                    self.num_sampled_tokens_per_step,
++                )
+ 
+             # Free encoder inputs only after the step has actually executed.
+             if request.has_encoder_inputs:
+@@ -1813,6 +1826,9 @@
+                 finished = self._handle_stopped_request(request)
+                 if finished:
+                     kv_transfer_params, ec_transfer_params = self._free_request(request)
++                    # LOCAL PATCH (Draft-OPD): the request still holds its token
++                    # ids after _free_request; emit the rollout record.
++                    self.rollout_logger.on_finish(request, finish_reason)
+ 
+                 if status_before_stop == RequestStatus.RUNNING:
+                     stopped_running_reqs.add(request)
