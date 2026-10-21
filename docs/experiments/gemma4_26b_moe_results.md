@@ -2594,17 +2594,25 @@ model winning a different term. The assistant earns better guesses through five
 **Any claim that our draft is simply "better" is wrong.** It is faster. It
 drafts worse than the model the vendor ships.
 
-### Block size dominates acceptance
+### Block size "dominates acceptance" — WRONG, it inflates AL arithmetically
 
-| draft | block_size | mean AL |
-|---|--:|--:|
-| ours | 16 | 4.336 |
-| z-lab DFlash | 16 | 4.187 |
-| makora-ai dspark | **7** | **3.436** |
+> **⚠ CORRECTED.** The claim below is an artifact of comparing AL across
+> different depths. See §28.1.
 
-The two block-16 drafts sit ~0.75 AL above the block-7 one. This settles a
-question §25 left open — block 16, inherited from the DFlash warm start rather
-than chosen, is earning its keep, and it is not subtle.
+| draft | block_size | k | mean AL | **mean AR** |
+|---|--:|--:|--:|--:|
+| ours | 16 | 7 | 4.336 | **0.477** |
+| z-lab DFlash | 16 | 15 | 4.187 | **0.212** |
+| makora-ai dspark | 7 | 7 | 3.436 | **0.348** |
+
+`AL = 1 + k·AR` holds exactly. DFlash's AL looks competitive only because it
+drafts 15 tokens; **per drafted token it is the weakest model in the
+comparison** (AR 0.212 against makora's 0.348). Block 16 raises AL because more
+tokens are drafted, not because each guess is better — and it does not pay:
+DFlash converts its +0.75 AL over makora into +0.02x speedup.
+
+What survives: ours is second on AR (0.477, behind the assistant's 0.537) and
+first on throughput.
 
 ### Acceptance alone does not pay
 
@@ -2725,6 +2733,92 @@ numbers together, the story holds. If it does not, Omega has another source and
 this account is too tidy. That arm is training now; §26 already shows we beat
 makora on throughput by 17% *while* carrying the handicap, so the full vocab is
 clearly not the dominant term.
+
+---
+
+## 28. Reading the AgentX result correctly (2026-10-21)
+
+Three corrections to how §16 and §26's agentic numbers were presented, all
+found by auditing rather than by new measurement.
+
+### 28.1 AL is not comparable across drafts at different depths
+
+`AL = 1 + k·AR`, verified exactly against all five drafts. A draft at k=15 has
+a ceiling of 16; one at k=7 has a ceiling of 8. Ranking by AL therefore ranks
+by depth as much as by quality.
+
+| draft | k | AL | AR |
+|---|--:|--:|--:|
+| MTP assistant | 7 | 4.760 | **0.537** |
+| ours | 7 | 4.336 | 0.477 |
+| z-lab DFlash | **15** | 4.187 | **0.212** |
+| makora | 7 | 3.436 | 0.348 |
+| EAGLE3 | 5 | 2.675 | 0.335 |
+
+**Report AR alongside AL whenever depths differ.** §26's block-size conclusion
+did not survive this and is now banner-corrected.
+
+### 28.2 The AgentX loss is Ω, not acceptance
+
+| | AL | AR | speedup | Ω |
+|---|--:|--:|--:|--:|
+| short context (suite) | 4.336 | 0.477 | 2.030x | 1.137 |
+| 64k context (AgentX, c1) | 4.015 | 0.431 | 1.236x | 2.250 |
+| change | −7% | −10% | −39% | **+98%** |
+
+Holding Ω at its short-context value and applying AgentX's lower AL gives
+**1.880x**, not 1.236x. Acceptance accounts for 0.150x of the 0.794x lost —
+**19%**; Ω accounts for 81%. For acceptance alone to produce 1.236x, AL would
+have to fall to 2.64.
+
+Ω is a **residual** (`AL/speedup − 1`), so it holds the long-context
+verification cost *and* the TP=4 communication overhead the single-GPU suite
+did not have. The +98% is measured; attributing it specifically to attention
+scaling with verified positions is an inference. Per-phase timing at matched
+batch under 24k vs 64k on equal GPU counts would separate them.
+
+**Ω is only meaningful at c1–c32 here.** At 64 and 128 users the baseline
+collapses (decode 14.3 then 3.7 tok/s) and the derived Ω falls to 1.831 and
+0.048 — the latter is not physically sensible and reflects the corrupted
+denominator, not cheap drafting.
+
+### 28.3 The c=1 cell is a small-sample artifact, and I led with it
+
+Each AgentX cell runs 1024 s and samples whatever completes. At one user that
+is **80–92 requests**, and the two arms drew different traces — mean output
+617 tokens (baseline) vs 557 (draft). The 48.2 vs 48.6 tok/s comparison is
+between two different workloads.
+
+I reported "1.01x, effectively no gain" from that cell repeatedly. The cells
+with enough samples give:
+
+| users | requests (base/ours) | aggregate gain |
+|--:|:--|--:|
+| 8 | 151 / 155 | +5.1% |
+| 16 | 227 / 236 | **+10.1%** |
+| 32 | 432 / 439 | +2.8% |
+
+So the defensible statement is **3–10% on agentic traffic**, not "nil". Quoting
+the noisiest cell as the headline is the same error as quoting the best cell,
+pointed the other way.
+
+### 28.4 Why the workload is hostile to speculation
+
+Measured request shape, not inferred: input median **44,064** tokens, output
+median **170** (min 9, p90 1,066, max 4,169). A ~109:1 prompt-to-output ratio.
+
+This is the shape of an agent loop — accumulated conversation, file contents
+and tool outputs in the prompt; a single tool call or short patch as the
+output. Speculation accelerates only decode, which is the small side of that
+ratio.
+
+The MTP assistant shows the same pattern on the same corpus (aggregate
+1.03x/1.10x/1.04x at 8/16/32 users against our 1.05x/1.10x/1.03x), so this is a
+property of the regime rather than of either draft.
+
+**Caveat on AgentX acceptance figures.** The traces carry token counts and KV
+block hashes, not prompt text; aiperf synthesises prompts to match. The serving
+shape is faithful, the absolute AL values are indicative only.
 
 ---
 
