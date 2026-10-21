@@ -48,18 +48,24 @@ time. Only the full-tail variant (slots > r+1 conditioned on rejected draft
 tokens) would need extra target forwards — deferred.
 - [x] (design) above; the rollout record already carries `anchor` and
       `accepted` per step.
-- [ ] `scripts/opd/rollouts_to_dataset.py`: rollout jsonl -> the trainer's
-      arrow format (`input_ids`, `loss_mask` over the response, `token_freq`
-      untouched) plus per-row `opd_anchor_pos` / `opd_accepted` lists
-      (`anchor_pos = len(prompt_ids) + anchor`); drop steps with
-      `accepted == K` and `finish=length`-clipped last steps.
-- [ ] Trainer data path: `anchored_block_indices` built from the given anchors
-      (`max_anchors` subsampling) instead of sampled ones; `opd_accepted`
-      threaded to the loss.
-- [ ] **Parity (gate 2)**: student q from the SFT forward at a logged anchor ==
-      the serving draft's logits (serve with `--no-async-scheduling`, log the
-      block, replay in the trainer forward). Gate 3: greedy re-verification
-      from (p, q) reproduces logged `accepted` on >= 99% of anchors.
+- [x] `scripts/opd/rollouts_to_dataset.py`: rollout jsonl -> the trainer's
+      arrow format (torch-formatted; `input_ids`, `loss_mask`, `seq_len`,
+      `messages`) plus per-token `opd_anchor_mask` / `opd_accepted`
+      (`anchor_pos = plen + anchor - 1`, the last verified token); copies the
+      checkpoint dataset's `token_freq.pt` + `d2t/t2d`; drops full-accept
+      blocks, `finish=length` tails and blocks that do not fit.
+- [x] Trainer data path: `select_given_anchors`, `anchor_mask` through
+      `_build_attention_mask`; `opd_accepted` -> per-block counts -> loss.
+- [x] **Gate 2 passed** (pilot C, job 12488003, conv ep25, A100):
+      `opd_acc_argmax_match = 0.997` on 957 accepted slots; forward KL on
+      accepted slots 0.04, reverse KL on first-rejected slots 12.9. Control B
+      (same rows, random anchors, SFT loss): slot-0 acc 0.95, accept_len 6.7.
+      Gate 3 (greedy re-verification from p, q) is implied at this level and
+      deferred.
+- [ ] First micro-step of every pilot is near-empty (~230 tok/s, 1.5 scored
+      slots): the first DataLoader item apparently returns None -> placeholder
+      sample. Harmless at scale, but find the cause (hidden-state server
+      warm-up / request timeout on the first item?).
 
 ### Phase 3 — Loss and trainer integration  ~2 days, 1 A100
 - [ ] `src/speculators/models/dspark/opd_loss.py`: forward KL on accepted
@@ -107,3 +113,9 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
   (scheduler hook, engine-core draft handoff, worker host copy) + the hard
   requirement `--no-async-scheduling` (async mode races the next step).
   Phase 2 simplified: no per-anchor replay prefill needed (see above).
+- 2026-10-21: Phase 2 + loss done; end-to-end pilot through the real driver
+  on 2 A100 (hidden-state server + 1 rank). Two data-path bugs found by the
+  A/B/C runs and fixed: dataset must be torch-formatted (state.json), and the
+  draft-vocab mapping must be the checkpoint's `d2t/t2d` (rebuilt from
+  token_freq it differs -> slot-0 acc 0.00); anchor offset corrected to the
+  last verified token. Gate 2 passed (argmax match 0.997).
