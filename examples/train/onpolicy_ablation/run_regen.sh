@@ -25,6 +25,11 @@ export CONCURRENCY="${CONCURRENCY:-512}"
 # the off-policy file has no `source` field; keep every row
 export SKIP_SOURCES="${SKIP_SOURCES:-}"
 
+# conda is not on PATH in batch jobs, so run_regen_multigpu.sh's own activation
+# is skipped silently; activate here.
+source "$(dirname "$CONDA_ENV")/../etc/profile.d/conda.sh"
+conda activate "$CONDA_ENV"
+
 if [ -n "${LIMIT:-}" ]; then
     head -n "$LIMIT" "$INPUT_JSONL" > "$OUTFILE.input_head"
     export INPUT_JSONL="$OUTFILE.input_head"
