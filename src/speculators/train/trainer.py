@@ -346,8 +346,18 @@ class Trainer:
         self.optimizers = build_optimizers(self.model, self.config)
         last_epoch = -1
         if self.resume_from_checkpoint and self.checkpointer.previous_epoch != -1:
-            self.checkpointer.load_optimizer_state_dict(self.model, self.optimizers)
-            last_epoch = self.checkpointer.previous_epoch
+            opt_path = self.checkpointer.optimizer_path(self.checkpointer.previous_epoch)
+            if opt_path.exists():
+                self.checkpointer.load_optimizer_state_dict(self.model, self.optimizers)
+                last_epoch = self.checkpointer.previous_epoch
+            else:
+                # Weights-only seed (e.g. Draft-OPD post-training from an SFT
+                # checkpoint): keep the loaded model, start a fresh optimizer and
+                # schedule (warmup from step 0).
+                root_logger.info(
+                    f"No optimizer state at {opt_path}; starting a fresh optimizer "
+                    "and schedule from the loaded weights."
+                )
 
         # Setup scheduler(s) — one per optimizer so each optimizer's base LR (e.g.
         # Muon's higher LR vs AdamW's) is warmed up / decayed independently.

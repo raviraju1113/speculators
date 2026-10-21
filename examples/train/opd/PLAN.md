@@ -62,10 +62,8 @@ tokens) would need extra target forwards — deferred.
       (same rows, random anchors, SFT loss): slot-0 acc 0.95, accept_len 6.7.
       Gate 3 (greedy re-verification from p, q) is implied at this level and
       deferred.
-- [ ] First micro-step of every pilot is near-empty (~230 tok/s, 1.5 scored
-      slots): the first DataLoader item apparently returns None -> placeholder
-      sample. Harmless at scale, but find the cause (hidden-state server
-      warm-up / request timeout on the first item?).
+- [x] (non-issue) the first micro-step's low tokens/s is its 25 s fetch wait
+      on the hidden-state server for the first items; the batch is full.
 
 ### Phase 3 — Loss and trainer integration  ~2 days, 1 A100
 - [ ] `src/speculators/models/dspark/opd_loss.py`: forward KL on accepted
