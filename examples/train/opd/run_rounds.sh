@@ -78,7 +78,11 @@ for (( r=0; r<ROUNDS; r++ )); do
   conda activate "$EVAL_ENV"
   PORT=$(( 21000 + (${SLURM_JOB_ID:-0} + r) % 9000 ))
   export DSPARK_ROLLOUT_LOG="$RDIR/engine_log"
-  CUDA_VISIBLE_DEVICES=0 vllm serve "$MODEL" \
+  # First GPU of OUR allocation. nvidia-smi on these nodes lists every physical
+  # card and SLURM only sets CUDA_VISIBLE_DEVICES, so a literal index would
+  # land on another job's GPU (round-0 failure: 1.25 GiB free on cuda:0).
+  ROLL_GPU="${CUDA_VISIBLE_DEVICES%%,*}"; ROLL_GPU="${ROLL_GPU:-0}"
+  CUDA_VISIBLE_DEVICES="$ROLL_GPU" vllm serve "$MODEL" \
     --host 127.0.0.1 --port "$PORT" --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.95 --max-model-len $(( MAX_TOKENS + 2048 )) --max-num-seqs "$CONC" \
     --speculative-config "{\"model\": \"$CK/$LAST\", \"num_speculative_tokens\": $K, \"method\": \"dspark\"}" \
