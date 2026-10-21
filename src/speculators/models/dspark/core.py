@@ -16,7 +16,7 @@ from speculators.models.dflash.config import DFlashSpeculatorConfig
 from speculators.models.dflash.core import DFlashDraftModel
 from speculators.models.dflash2.model_definitions import Qwen3DFlash2DecoderLayer
 from speculators.models.dspark.config import DSparkSpeculatorConfig
-from speculators.models.dspark.metrics import compute_metrics
+from speculators.models.dspark.metrics import compute_metrics, opd_slot_masks
 from speculators.models.dspark.model_definitions import ConfidenceHead, MarkovHead
 from speculators.models.utils import conditional_torch_compile
 
@@ -236,6 +236,30 @@ class DSparkDraftModel(DFlashDraftModel):
                 1, mask_tokens_size
             )
 
+        # Draft-OPD gate 2: on accepted slots the serving draft proposed exactly
+        # the token now at position p+1, so the training-side argmax (same
+        # weights, teacher-forced on the same previous tokens) must match it.
+        opd_extra: dict[str, torch.Tensor] = {}
+        if opd_accepted_per_block is not None:
+            with torch.no_grad():
+                seq_len_full = input_ids.shape[1]
+                next_pos = (anchored_block_indices + 1).clamp(max=seq_len_full - 1)
+                next_tok = input_ids[0, next_pos]  # token each slot predicts
+                if self.t2d is not None and self.use_draft_vocab:
+                    t2d = self.t2d.to(torch.bool)
+                    t2d_idx = torch.cumsum(t2d.to(torch.long), 0) - 1
+                    draft_tgt = torch.where(t2d[next_tok], t2d_idx[next_tok], torch.full_like(next_tok, -1))
+                else:
+                    draft_tgt = next_tok
+                pred = logits.view(num_blocks, block, -1).argmax(dim=-1)
+                acc_mask, _ = opd_slot_masks(opd_accepted_per_block, block)
+                acc_mask = acc_mask & aligned_loss_mask.view(num_blocks, block).to(torch.bool)
+                match = (pred == draft_tgt.view(num_blocks, block)) & acc_mask
+                opd_extra = {
+                    "opd_acc_argmax_match_sum": match.sum().to(torch.float32),
+                    "opd_acc_argmax_match_total": acc_mask.sum().to(torch.float32).clamp_min(1.0),
+                }
+
         loss, metrics = compute_metrics(
             logits,
             targets,
@@ -252,4 +276,5 @@ class DSparkDraftModel(DFlashDraftModel):
             opd_accepted=opd_accepted_per_block,
             opd_lambda_rej=opd_lambda_rej,
         )
+        metrics.update(opd_extra)
         return None, loss, metrics
