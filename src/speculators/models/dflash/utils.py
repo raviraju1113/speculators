@@ -66,3 +66,33 @@ def select_anchors(
 
     return anchors, anchor_valid
     # shape: [num_anchors], [num_anchors]
+
+
+def select_given_anchors(
+    anchor_mask: torch.Tensor,  # shape: [1, total_seq_len], bool
+    loss_mask: torch.Tensor,  # shape: [1, total_seq_len]
+    num_anchors: int,
+    block_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Draft-OPD: use the anchors recorded at rollout time instead of random
+    ones. Candidates are the set positions of ``anchor_mask`` that are also
+    valid under ``loss_mask`` and leave room for a block; if there are more than
+    ``num_anchors`` a random subset is taken, fewer are padded (``anchor_valid``
+    False). Same output contract as :func:`select_anchors`.
+    """
+    if anchor_mask.shape != loss_mask.shape:
+        raise ValueError(f"anchor_mask {tuple(anchor_mask.shape)} != loss_mask {tuple(loss_mask.shape)}")
+    valid_mask = anchor_mask.bool() & loss_mask.bool()
+    valid_mask[:, -block_size:] = False
+    valid_indices = torch.nonzero(valid_mask.squeeze(0), as_tuple=False).squeeze(-1)
+
+    device = loss_mask.device
+    anchors = torch.zeros(num_anchors, dtype=torch.long, device=device)
+    anchor_valid = torch.zeros(num_anchors, dtype=torch.bool, device=device)
+    k = min(num_anchors, valid_indices.numel())
+    torch._check(k <= valid_indices.numel())  # noqa: SLF001
+    torch._check(k >= 0)  # noqa: SLF001
+    perm = torch.randperm(valid_indices.numel(), device=device)
+    anchors[:k] = torch.sort(torch.gather(valid_indices, 0, perm[:k])).values
+    anchor_valid[:k] = True
+    return anchors, anchor_valid

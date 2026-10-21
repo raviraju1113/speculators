@@ -1101,6 +1101,14 @@ def parse_args():
         help="Decay gamma for DFlash loss weighting (default: 4.0)",
     )
     parser.add_argument(
+        "--opd-lambda-rej",
+        type=float,
+        default=1.0,
+        help="Draft-OPD: weight of the rejected-slot reverse-KL term relative to "
+        "the accepted-slot forward KL (default: 1.0). Only used for datasets "
+        "carrying opd_anchor_mask (scripts/opd/rollouts_to_dataset.py).",
+    )
+    parser.add_argument(
         "--draft-attn-impl",
         type=str,
         default="simple_flex_attention",

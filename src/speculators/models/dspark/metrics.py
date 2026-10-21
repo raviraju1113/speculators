@@ -24,9 +24,79 @@ from speculators.models.metrics import compute_accuracy_multi_step
 
 __all__ = [
     "compute_metrics",
+    "opd_loss",
 ]
 
 _EPS = 1e-8
+
+
+def _forward_kl(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """KL(p || q) per position, p = softmax(targets), q = softmax(logits). [1, T]"""
+    logq = torch.nn.functional.log_softmax(logits, dim=-1, dtype=torch.float32)
+    logp = torch.nn.functional.log_softmax(targets, dim=-1, dtype=torch.float32)
+    return (logp.exp() * (logp - logq)).sum(dim=-1)
+
+
+def _reverse_kl(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """KL(q || p) per position. [1, T]"""
+    logq = torch.nn.functional.log_softmax(logits, dim=-1, dtype=torch.float32)
+    logp = torch.nn.functional.log_softmax(targets, dim=-1, dtype=torch.float32)
+    return (logq.exp() * (logq - logp)).sum(dim=-1)
+
+
+def opd_slot_masks(
+    accepted: torch.Tensor,  # [num_blocks], accepted count r per block, -1 = not OPD
+    block_size: int,
+    first_rejected_only: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Draft-OPD slot masks for ``sample_from_anchor=True`` blocks: slot j
+    (0-based) predicts drafted token j+1, so slots ``j < r`` were accepted and
+    slot ``j == r`` is the first rejected one (when ``r < block_size``).
+    Returns ``(acc_mask, rej_mask)`` of shape ``[num_blocks, block_size]``."""
+    slots = torch.arange(block_size, device=accepted.device).unsqueeze(0)
+    r = accepted.unsqueeze(1)
+    valid = r >= 0
+    acc_mask = (slots < r) & valid
+    rej_mask = ((slots == r) if first_rejected_only else (slots >= r)) & valid
+    return acc_mask, rej_mask
+
+
+def opd_loss(
+    logits: torch.Tensor,  # [1, T, V]
+    targets: torch.Tensor,  # [1, T, V]
+    loss_mask: torch.Tensor,  # [1, T]
+    accepted: torch.Tensor,  # [num_blocks]
+    block_size: int,
+    lambda_rej: float = 1.0,
+    rej_gamma: float = 0.8,
+    first_rejected_only: bool = True,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Acceptance-aware distillation (arXiv 2605.29343 eqs. 10-13): forward KL
+    on accepted slots, ``gamma^(j-r)``-weighted reverse KL on rejected slots
+    (just the first one by default), ``(L_acc + lambda L_rej) / (1 + lambda)``.
+    """
+    num_blocks = accepted.shape[0]
+    acc_mask, rej_mask = opd_slot_masks(accepted, block_size, first_rejected_only)
+    valid = loss_mask.to(torch.bool).view(num_blocks, block_size)
+    acc_w = (acc_mask & valid).to(torch.float32)
+    slots = torch.arange(block_size, device=logits.device).unsqueeze(0)
+    rej_w = (rej_mask & valid).to(torch.float32) * (
+        rej_gamma ** (slots - accepted.clamp_min(0).unsqueeze(1)).clamp_min(0).to(torch.float32)
+    )
+    fwd = _forward_kl(logits, targets).view(num_blocks, block_size)
+    rev = _reverse_kl(logits, targets).view(num_blocks, block_size)
+    l_acc = (fwd * acc_w).sum() / (acc_w.sum() + _EPS)
+    l_rej = (rev * rej_w).sum() / (rej_w.sum() + _EPS)
+    loss = (l_acc + lambda_rej * l_rej) / (1.0 + lambda_rej)
+    scored = ((acc_w + rej_w) > 0).view(1, -1)
+    terms = {
+        "opd_acc_loss": l_acc.detach(),
+        "opd_rej_loss": l_rej.detach(),
+        "opd_acc_slots": acc_w.sum().detach(),
+        "opd_rej_slots": (rej_w > 0).sum().detach().to(torch.float32),
+        "opd_scored_mask": scored,
+    }
+    return loss, terms
 
 
 def _masked_decayed_mean(
@@ -59,6 +129,8 @@ def compute_metrics(
     per_position_loss_weight: str = "fixed-exp-decay",
     dpace_alpha: float = 0.5,
     sample_from_anchor: bool = True,
+    opd_accepted: torch.Tensor | None = None,  # [num_blocks] Draft-OPD accepted counts
+    opd_lambda_rej: float = 1.0,
 ) -> tuple[torch.Tensor, dict]:
     """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
 
@@ -78,9 +150,21 @@ def compute_metrics(
             dflash_loss_decay, gamma=gamma, sample_from_anchor=sample_from_anchor
         )
 
-    loss, term_losses = compound_loss(
-        logits, targets, loss_mask, pos_idx, loss_config=loss_config, decay_fn=decay_fn
-    )
+    opd_terms = None
+    if opd_accepted is not None:
+        # Draft-OPD batch: acceptance-aware KL on the rollout's own slots; no
+        # position decay (the paper decays rejected slots only, via rej_gamma).
+        loss, opd_terms = opd_loss(
+            logits, targets, loss_mask, opd_accepted, block_size, lambda_rej=opd_lambda_rej
+        )
+        term_losses = {}
+        # Confidence-head labels only where the draft was actually scored.
+        loss_mask = loss_mask * opd_terms["opd_scored_mask"].to(loss_mask.dtype)
+        decay_fn = None
+    else:
+        loss, term_losses = compound_loss(
+            logits, targets, loss_mask, pos_idx, loss_config=loss_config, decay_fn=decay_fn
+        )
 
     # Analytical per-position acceptance rate = distributional overlap
     # = 1 - TV; the fused kernel avoids the two full-vocab fp32 softmaxes.
@@ -159,5 +243,10 @@ def compute_metrics(
     for pos in range(start_pos, block_size):
         metrics[f"position_{pos}_acc_sum"] = correct_per_pos[pos]
         metrics[f"position_{pos}_acc_total"] = total_per_pos[pos]
+
+    if opd_terms is not None:
+        for name in ("opd_acc_loss", "opd_rej_loss", "opd_acc_slots", "opd_rej_slots"):
+            metrics[f"{name}_sum"] = opd_terms[name]
+            metrics[f"{name}_total"] = ones.clone()
 
     return loss, metrics

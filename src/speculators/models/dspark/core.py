@@ -142,6 +142,8 @@ class DSparkDraftModel(DFlashDraftModel):
             "confidence_head_alpha": confidence_head_alpha,
             "per_position_loss_weight": per_position_loss_weight,
             "dpace_alpha": dpace_alpha,
+            # Draft-OPD (used only for batches carrying opd_anchor_mask).
+            "opd_lambda_rej": kwargs.get("opd_lambda_rej", 1.0),
         }
         return dict(shared), dict(shared)
 
@@ -161,8 +163,14 @@ class DSparkDraftModel(DFlashDraftModel):
         confidence_head_alpha: float = 1.0,
         per_position_loss_weight: str = "fixed-exp-decay",
         dpace_alpha: float = 0.5,
+        opd_lambda_rej: float = 1.0,
         **kwargs,
     ):
+        # Draft-OPD batch: anchors fixed by the rollout and, per anchor, how
+        # many of the drafted tokens the target accepted (-1 = not an anchor).
+        # Both arrive as per-token tensors from the dataset (see data.py).
+        opd_anchor_mask = kwargs.pop("opd_anchor_mask", None)
+        opd_accepted = kwargs.pop("opd_accepted", None)
         hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (
             self._backbone_forward(
                 hidden_states,
@@ -172,9 +180,14 @@ class DSparkDraftModel(DFlashDraftModel):
                 document_ids,
                 position_ids,
                 max_anchors=max_anchors,
+                anchor_mask=opd_anchor_mask,
                 **kwargs,
             )
         )
+        opd_accepted_per_block = None
+        if opd_anchor_mask is not None and opd_accepted is not None:
+            anchor_positions = anchored_block_indices[:: self.block_size]
+            opd_accepted_per_block = opd_accepted[0, anchor_positions]  # [num_blocks]
 
         # DSpark: add the Markov logit bias and predict per-position confidence.
         num_blocks = max_anchors
@@ -236,5 +249,7 @@ class DSparkDraftModel(DFlashDraftModel):
             per_position_loss_weight=per_position_loss_weight,
             dpace_alpha=dpace_alpha,
             sample_from_anchor=self.config.sample_from_anchor,
+            opd_accepted=opd_accepted_per_block,
+            opd_lambda_rej=opd_lambda_rej,
         )
         return None, loss, metrics

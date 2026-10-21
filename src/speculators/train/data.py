@@ -347,7 +347,7 @@ class ArrowDataset(BaseDataset):
             )
             return None
 
-        return {
+        item = {
             "hidden_states": loaded_hs["hidden_states"][:, :-1].flatten(
                 1
             ),  # [seq_len, 3 * hidden_size]
@@ -357,6 +357,14 @@ class ArrowDataset(BaseDataset):
             ],  # [seq_len, hidden_size]
             "loss_mask": self.data[index]["loss_mask"],  # [seq_len]
         }
+        # Draft-OPD datasets (scripts/opd/rollouts_to_dataset.py) carry the
+        # rollout anchors and accepted counts as per-token columns; they pack
+        # and collate exactly like loss_mask and reach the model as kwargs.
+        row = self.data[index]
+        if "opd_anchor_mask" in row:
+            item["opd_anchor_mask"] = torch.as_tensor(row["opd_anchor_mask"], dtype=torch.bool)
+            item["opd_accepted"] = torch.as_tensor(row["opd_accepted"], dtype=torch.long)
+        return item
 
 
 class SampleFileDataset(BaseDataset):
