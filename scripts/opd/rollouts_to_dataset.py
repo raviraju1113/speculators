@@ -107,6 +107,9 @@ def main():
         "opd_accepted": HFList(Value("int32")),
     })
     ds = Dataset.from_dict(rows, features=features)
+    # The trainer expects tensor rows (prepare_data.py saves with the torch
+    # format, which save_to_disk persists in state.json); strings stay strings.
+    ds = ds.with_format("torch")
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     ds.save_to_disk(str(out))
