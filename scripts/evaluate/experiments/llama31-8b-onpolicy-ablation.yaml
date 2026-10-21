@@ -1,0 +1,58 @@
+# Phase 1c of examples/train/onpolicy_ablation: does training on the target's own
+# completions (ON) beat training on another model's (OFF)? Same 100k prompts,
+# identical DSpark recipe; only the response text differs.
+#
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config llama31-8b-onpolicy-ablation.yaml
+#
+# Env: /import/ml-sc-scratch1/ravir/miniconda3/envs/dspark_cu12 (vLLM 0.26, cu126 torch,
+# runs on the 565 driver of sc-c96 / sc-c120). Stock vLLM 0.26 serves DSpark with
+# sample_from_anchor=False; both arms train with --no-sample-from-anchor, so k=7 is
+# native (block 8). Baseline first = speedup denominator, measured in this same env.
+# Use a fresh output_dir per variation: rerunning overwrites per-experiment summaries.
+
+engine: vllm
+backbone: /import/ml-sc-scratch1/mengmengj/models/llama3.1-8b-instruct
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  # chat: mt-bench writing qa | math: gsm8k math500 | code: humaneval livecodebench
+  # in-distribution: kn782k_heldout (held-out prompts of the training corpus)
+  benchmarks: [mt-bench, writing, qa, gsm8k, math500, humaneval, livecodebench, kn782k_heldout]
+  num_samples: 200
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/llama31-8b-onpolicy-ablation-t0
+
+experiments:
+  - name: baseline
+
+  # harness control: published known-good Llama-3.1-8B draft (DFlash, block 10)
+  - name: zlab_dflash
+    draft: z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat
+    num_speculative_tokens: 9
+    speculative_config:
+      method: dflash
+
+  - name: off_policy
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/off_s0/epoch2_end   # last epoch (EPOCHS=3); not checkpoint_best: val is per-arm text
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: on_policy
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/on_s0/epoch2_end   # last epoch (EPOCHS=3); not checkpoint_best: val is per-arm text
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark

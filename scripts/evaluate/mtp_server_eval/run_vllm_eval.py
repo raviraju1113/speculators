@@ -51,6 +51,9 @@ DATA_FILES = {
     "bfcl": "bfcl.jsonl",
     # Held-out slice of the regen training distribution (in-domain sanity check).
     "heldout_chat": "heldout_chat.jsonl",
+    # Held-out kimi_nemotron_782k prompts for the on/off-policy ablation
+    # (examples/train/onpolicy_ablation/export_prompts.py; symlink to scratch).
+    "kn782k_heldout": "kn782k_heldout.jsonl",
     # MAI Profile V3 delta-extraction traffic (long structured prompts).
     "sc1_delta": "sc1_delta.jsonl",
     # AA-LCR context-length sweep: same 100 questions truncated to each length,
