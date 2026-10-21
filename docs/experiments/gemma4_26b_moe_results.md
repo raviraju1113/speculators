@@ -2657,6 +2657,77 @@ Omega, not acceptance, is the binding constraint on this target.
 
 ---
 
+## 27. On-policy volume, and the vocabulary we never chose (2026-10-21)
+
+### 27.1 On-policy data does not scale either
+
+§23 established that on-policy data is worth +0.598 mean AL over off-policy.
+The obvious follow-up — does *more* of it help — had never been tested. The
+volume evidence to date was entirely about off-policy data (982k rows scored
+BELOW 78k; §25), which licenses "off-policy volume does not help", not "volume
+does not help".
+
+Same recipe, same init, same corpus source, only the row count differs:
+
+| arm | rows | val accept_len (e1 / e2) |
+|---|--:|--:|
+| on-policy 78k | 78,563 | 4.028 / **4.177** |
+| on-policy 122k | 122,599 | 4.044 / **4.210** |
+
+**+0.033 AL for 1.56x the data** — inside the ~0.10 training-run variance
+(§24.4). On-policy volume scales no better than off-policy volume did.
+
+So the data story closes cleanly: **policy is the lever, quantity is not, on
+either axis.** Regenerating a corpus through the target is worth doing;
+regenerating a bigger one is not worth the target GPU time.
+
+### 27.2 Our 262k draft vocabulary is an outlier, and an accident
+
+Every published draft for this target that *supports* a reduced draft
+vocabulary uses one. We are the only one that does not:
+
+| draft | type | draft_vocab |
+|---|---|--:|
+| RedHatAI eagle3 | eagle3 | 32,000 |
+| RedHatAI dspark (31B) | dspark | 32,000 |
+| makora-ai dspark | dspark | 32,000 |
+| google assistant | MTP | 262,144 (full AR model, needs it) |
+| z-lab DFlash | dflash | 262,144 (ships no mapping) |
+| **ours** | **dspark** | **262,144** |
+
+32k is the consensus across two independent publishers, and it is not a tuning
+choice for this architecture — it is the standard configuration.
+
+**We did not choose 262k.** The training log reads:
+
+```
+No vocab mappings found, and can't generate new ones ...
+Using full verifier vocab
+```
+
+No `token_freq.pt` existed, so it silently fell back to the full vocabulary.
+
+This retroactively unifies several findings that looked independent:
+
+- §15: Omega is the binding constraint, traced to `markov_w2` at 134 MB;
+- §19: our draft scales *worse* under load than the MTP assistant
+  (Omega +51% vs +26%), which read as an architectural weakness;
+- §16: speculation barely helps on AgentX;
+- the repeated, suspiciously large free win from `dspark_draft_topk=64`.
+
+All four are the same fact: a draft vocabulary 8x larger than anyone ships.
+`dspark_draft_topk` is a *serving-time approximation* of what every other
+publisher does at *training time* — cap how many vocabulary entries the Markov
+head scores. They get it structurally; we bolt it on per request.
+
+**This is a prediction, not a conclusion.** If the vocab32k arm moves those
+numbers together, the story holds. If it does not, Omega has another source and
+this account is too tidy. That arm is training now; §26 already shows we beat
+makora on throughput by 17% *while* carrying the handicap, so the full vocab is
+clearly not the dominant term.
+
+---
+
 ## Appendix A — first top-k context A/B (superseded by §18)
 
 > Merged here from `dspark_topk_context_ab.md` (2026-10-08): one doc per
