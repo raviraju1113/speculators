@@ -4,6 +4,12 @@ Everything needed to continue the Gemma 4 DSpark draft work on another machine.
 Read this first; `README.md` (run table + script map) and `notes/` (the working
 notes that were in Claude's memory on the old box) carry the detail.
 
+> **Draft-OPD (2026-10-21):** on-policy post-training of the DSpark drafts is
+> being built on branch `mengmengj/draft-opd` — method, stack mapping and
+> gotchas in `.claude/skills/draft-opd/`, phased plan and status in
+> `examples/train/opd/PLAN.md`, code under `scripts/opd/`, `examples/train/opd/`
+> and `vllm_patches/*rollout_log*`.
+
 ## 0. 2026-10-15: moved to the SambaNova sc3 B200 cluster
 
 The conv run was relaunched from scratch on the SambaNova SLURM cluster

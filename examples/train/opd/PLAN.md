@@ -89,6 +89,13 @@ tokens) would need extra target forwards — deferred.
       0.05; first-rejection histogram shifts right).
 - [ ] Full run: 16K prompts × 8 passes (paper), ~5 days on 8 GPUs; then the
       standard eval (`sbatch_sc3_eval.sh`) + ctx sweep vs the SFT checkpoint.
+      Sizing on 8 B200 (4 HS engines + 4 ranks, `run_rounds.sh` env): one
+      micro-step is one 8192-token packed sequence ≈ 10–13 rollouts of ~600
+      tokens, so 4 ranks × ACCUM 1 ≈ 45 prompts per optimizer step (paper:
+      24 prompts; ACCUM 1 with 2 ranks would match it). 16K × 8 passes / 45 ≈
+      2,850 optimizer steps → `SCHED_TOTAL≈2850`, cosine, warmup 0.05,
+      lr 3e-4 (paper). Rounds: 8 (one pass of the pool per round, P=16000);
+      rollouts at concurrency 32 on one B200 ≈ 1–1.5 h per round.
 
 ### Deferred / open
 - Draft vocab size: 32k leaves 11.2% of GPQA tokens unreachable; OPD cannot fix
