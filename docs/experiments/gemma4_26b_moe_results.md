@@ -2557,6 +2557,106 @@ treated as broken plumbing before it is treated as a result.
 
 ---
 
+## 26. Head-to-head vs the published drafts (2026-10-21)
+
+Until now every suite run compared our own checkpoints to each other, so the
+model card reported our numbers with **no competitive context**. This is the
+first head-to-head against what is actually published for this target.
+
+26 benchmarks, greedy, single stream, one A100, arms sequential, prefix caching
+off, in-run baseline **128.0 tok/s**. Each draft served at **its own native
+depth** — serving a draft at the wrong k is a train/serve mismatch that can
+halve acceptance, so depths were read from each `config.json`.
+
+### Summary
+
+| draft | mean AL | mean decode tok/s | mean speedup |
+|---|--:|--:|--:|
+| ours (b16, k=7, topk64) | 4.336 | 259.6 | 2.030x |
+| google MTP assistant (k=7) | 4.760 | 233.3 | 1.823x |
+| z-lab DFlash (k=15) | 4.187 | 224.0 | 1.752x |
+| makora-ai dspark (k=7) | 3.436 | 221.5 | 1.732x |
+| RedHatAI eagle3 (k=5) | 2.675 | 174.0 | 1.360x |
+
+### We are the fastest, and we are NOT the best drafter
+
+**Google's MTP assistant has the highest acceptance** — +0.42 mean AL over us,
+winning **20 of 26** benchmarks (we win 2: gsm8k and heldout_chat).
+
+**We have the highest throughput** — 259.6 tok/s, 2.030x, +11% over the
+assistant's 1.823x.
+
+That split is the whole result, and it is `speedup = AL/(1+Omega)` with each
+model winning a different term. The assistant earns better guesses through five
+*sequential* forward passes and hands the advantage back in Omega. We draft a
+16-wide block in fewer passes and convert worse guesses into more tokens.
+
+**Any claim that our draft is simply "better" is wrong.** It is faster. It
+drafts worse than the model the vendor ships.
+
+### Block size dominates acceptance
+
+| draft | block_size | mean AL |
+|---|--:|--:|
+| ours | 16 | 4.336 |
+| z-lab DFlash | 16 | 4.187 |
+| makora-ai dspark | **7** | **3.436** |
+
+The two block-16 drafts sit ~0.75 AL above the block-7 one. This settles a
+question §25 left open — block 16, inherited from the DFlash warm start rather
+than chosen, is earning its keep, and it is not subtle.
+
+### Acceptance alone does not pay
+
+DFlash has **+0.75 AL** over makora and converts it into **+0.02x** speedup
+(1.752x vs 1.732x). Better guessing bought essentially nothing without the
+efficiency work. That is the clearest single demonstration in this doc that
+Omega, not acceptance, is the binding constraint on this target.
+
+### Per-benchmark accepted length
+
+| benchmark | ours | google MTP assistant | z-lab DFlash | makora-ai dspark | RedHatAI eagle3 |
+|---|--:|--:|--:|--:|--:|
+| HumanEval | 5.429 | 5.629 | 5.363 | 3.822 | 3.229 |
+| aime | 5.278 | 5.728 | 5.979 | 4.197 | 3.548 |
+| aime26 | 5.778 | 5.731 | 6.001 | 4.287 | 3.452 |
+| bfcl | 6.239 | 7.189 | 7.107 | 6.455 | 2.795 |
+| gpqa | 4.828 | 5.072 | 4.668 | 2.988 | 2.889 |
+| gsm8k | 6.970 | 6.091 | 6.038 | 4.171 | 3.365 |
+| heldout_chat | 3.742 | 3.624 | 2.744 | 2.479 | 1.953 |
+| humaneval | 5.147 | 5.696 | 5.981 | 5.185 | 3.217 |
+| livecodebench | 5.252 | 5.446 | 5.109 | 4.255 | 2.978 |
+| math500 | 6.515 | 6.311 | 6.754 | 4.688 | 3.844 |
+| math_reasoning | 5.867 | 6.260 | 5.741 | 4.390 | 3.566 |
+| mbpp | 4.636 | 5.303 | 4.872 | 4.850 | 3.258 |
+| mt-bench | 2.987 | 3.373 | 2.531 | 2.430 | 2.329 |
+| qa | 2.694 | 3.233 | 2.386 | 2.187 | 2.104 |
+| question | 2.987 | 3.373 | 2.531 | 2.430 | 2.329 |
+| rag | 3.761 | 4.577 | 3.560 | 2.903 | 2.323 |
+| speed-coding | 4.820 | 5.256 | 4.611 | 3.984 | 2.752 |
+| speed-multilingual | 2.935 | 4.467 | 3.110 | 2.168 | 1.698 |
+| speed-qa | 2.694 | 3.233 | 2.386 | 2.187 | 2.104 |
+| speed-rag | 3.967 | 4.584 | 3.525 | 2.905 | 2.338 |
+| speed-writing | 2.749 | 3.062 | 2.385 | 2.161 | 2.097 |
+| summarization | 3.023 | 3.498 | 2.546 | 2.177 | 1.997 |
+| swe-bench-pro | 4.158 | 4.783 | 3.892 | 3.778 | 2.413 |
+| tool_call | 3.540 | 4.517 | 3.232 | 3.157 | 2.340 |
+| translation | 3.764 | 4.344 | 3.275 | 2.676 | 2.294 |
+| writing | 2.987 | 3.373 | 2.531 | 2.430 | 2.329 |
+
+### Caveats
+
+- **Only our side was tuned.** Ours runs k=7 chosen by the §25.1 sweep; the
+  others run at defaults or native depths. The assistant gained +6.3% when
+  swept from k=5 to k=7 earlier, so its ceiling here is probably not its true
+  one. A fully fair comparison sweeps every arm.
+- **Ours carries a 262k draft vocabulary** and still wins on throughput, while
+  makora and eagle3 use 32k. The vocab32k arm tests what that handicap costs.
+- Single stream only. §25.1 and the saturation work show the ranking changes
+  under load, where the assistant's Omega scales better than ours.
+
+---
+
 ## Appendix A — first top-k context A/B (superseded by §18)
 
 > Merged here from `dspark_topk_context_ab.md` (2026-10-08): one doc per
