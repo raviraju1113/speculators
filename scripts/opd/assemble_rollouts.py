@@ -51,8 +51,10 @@ def main():
             n += 1
             steps, out_ids = rec["steps"], rec["output_ids"]
             problems = []
+            # A request that hits max_tokens keeps only the first max_tokens of
+            # the last step's tokens, so compare on the kept prefix.
             gen_cat = [t for s in steps for t in s["gen"]]
-            if gen_cat != out_ids:
+            if gen_cat[: len(out_ids)] != out_ids or len(gen_cat) < len(out_ids):
                 problems.append("reconstruction")
             for i, s in enumerate(steps):
                 if i + 1 < len(steps) and steps[i + 1]["anchor"] != s["anchor"] + len(s["gen"]):
@@ -67,7 +69,10 @@ def main():
                 tot_draft += len(d)
                 tot_acc += r
                 acc_hist[r] += 1
-                if out_ids[a : a + r] != d[:r]:
+                # max_tokens may clip the kept output inside the last block:
+                # compare only the part that was kept.
+                kept = min(r, max(len(out_ids) - a, 0))
+                if out_ids[a : a + kept] != d[:kept]:
                     problems.append("invariant")
                 if r < len(d):
                     first_rej[r + 1] += 1  # 1-based position of the first rejected token

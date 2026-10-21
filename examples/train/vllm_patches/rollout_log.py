@@ -34,17 +34,39 @@ ENV_VAR = "DSPARK_ROLLOUT_LOG"
 
 
 class RolloutLogger:
-    def __init__(self, out_dir: str | None = None) -> None:
+    def __init__(self, out_dir: str | None = None, async_scheduling: bool = False) -> None:
         self.out_dir = out_dir if out_dir is not None else os.environ.get(ENV_VAR)
         self.enabled = bool(self.out_dir)
+        if self.enabled and async_scheduling:
+            # Under async scheduling the scheduler only sees -1 placeholders and
+            # the handler's host copy races the pipelined next step (measured:
+            # the captured block belonged to step t+1 in >99% of cases). In the
+            # sync path vLLM feeds the real ids back via update_draft_token_ids,
+            # so the scheduler hook is exact. Refuse rather than log garbage.
+            raise RuntimeError(
+                f"{ENV_VAR} requires async scheduling to be disabled "
+                "(vllm serve ... --no-async-scheduling)"
+            )
         self._fh = None
         self._steps: dict[str, list[dict[str, Any]]] = {}
         self._started: dict[str, float] = {}
+        self._pending_draft: dict[str, list[int]] = {}
         if self.enabled:
             os.makedirs(self.out_dir, exist_ok=True)
             path = os.path.join(self.out_dir, f"rollout_{os.getpid()}.jsonl")
             self._fh = open(path, "a", buffering=1)  # line-buffered
             logger.info("Draft-OPD rollout logging to %s", path)
+
+    def on_draft(self, draft_token_ids: Any) -> None:
+        """Real draft ids for the blocks proposed in the step just processed
+        (``DraftTokenIds``: parallel ``req_ids`` / ``draft_token_ids``). Under
+        async scheduling the scheduler only ever sees ``-1`` placeholders, so the
+        engine core calls this right after ``update_from_output`` and the next
+        ``on_step`` substitutes the stored block."""
+        if not self.enabled or draft_token_ids is None:
+            return
+        for rid, ids in zip(draft_token_ids.req_ids, draft_token_ids.draft_token_ids):
+            self._pending_draft[rid] = list(ids)
 
     def on_step(
         self,
@@ -65,10 +87,18 @@ class RolloutLogger:
             steps = self._steps[rid] = []
             self._started[rid] = time.time()
         has_draft = bool(draft_ids)
+        ids = list(draft_ids) if has_draft else []
+        pending = self._pending_draft.pop(rid, None)
+        if has_draft and any(t < 0 for t in ids):
+            # async-scheduling placeholders: use the block captured by on_draft
+            if pending is not None and len(pending) >= len(ids):
+                ids = pending[: len(ids)]
+            else:
+                ids = [-1] * len(ids)  # unknown; assembler flags it
         steps.append(
             {
                 "anchor": request.num_output_tokens,
-                "draft_ids": list(draft_ids) if has_draft else [],
+                "draft_ids": ids,
                 "accepted": max(len(generated_ids) - num_sampled, 0) if has_draft else 0,
                 "gen": list(generated_ids),
             }
@@ -102,3 +132,4 @@ class RolloutLogger:
     def on_abort(self, request_id: str) -> None:
         self._steps.pop(request_id, None)
         self._started.pop(request_id, None)
+        self._pending_draft.pop(request_id, None)

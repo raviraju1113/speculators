@@ -37,7 +37,10 @@ vllm serve "$MODEL" \
   --gpu-memory-utilization 0.95 --max-model-len 2048 --max-num-seqs "$CONC" \
   --speculative-config "{\"model\": \"$CKPT\", \"num_speculative_tokens\": $K, \"method\": \"dspark\"}" \
   --enforce-eager --no-enable-prefix-caching \
+  --no-async-scheduling \
   --chat-template "$CHAT_TEMPLATE" > "$OUT/server.log" 2>&1 &
+# --no-async-scheduling is REQUIRED for the logger: only the sync path feeds the
+# real draft ids back to the scheduler (the logger refuses to start otherwise).
 SRV=$!
 trap 'kill $SRV 2>/dev/null' EXIT TERM INT
 for _ in $(seq 1 120); do

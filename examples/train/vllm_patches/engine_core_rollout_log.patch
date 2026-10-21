@@ -1,0 +1,32 @@
+--- vllm/v1/engine/core.py.orig
++++ vllm/v1/engine/core.py
+@@ -602,6 +602,14 @@
+             scheduler_output, model_output
+         )
+         self._attach_iteration_details(engine_core_outputs, iteration_details)
++        # LOCAL PATCH (Draft-OPD): hand the real draft ids of the blocks proposed
++        # in this step to the rollout logger. Under async scheduling the
++        # scheduler only sees -1 placeholders; the handler already holds a host
++        # copy (set at the end of sample_tokens), and this GPU step is complete,
++        # so take_draft_token_ids() costs no extra sync.
++        _rl = getattr(self.scheduler, "rollout_logger", None)
++        if _rl is not None and _rl.enabled and self.vllm_config.speculative_config:
++            _rl.on_draft(self.model_executor.take_draft_token_ids())
+ 
+         return engine_core_outputs, scheduler_output.total_num_scheduled_tokens > 0
+ 
+@@ -704,6 +712,14 @@
+             scheduler_output, model_output
+         )
+         self._attach_iteration_details(engine_core_outputs, iteration_details)
++        # LOCAL PATCH (Draft-OPD): hand the real draft ids of the blocks proposed
++        # in this step to the rollout logger. Under async scheduling the
++        # scheduler only sees -1 placeholders; the handler already holds a host
++        # copy (set at the end of sample_tokens), and this GPU step is complete,
++        # so take_draft_token_ids() costs no extra sync.
++        _rl = getattr(self.scheduler, "rollout_logger", None)
++        if _rl is not None and _rl.enabled and self.vllm_config.speculative_config:
++            _rl.on_draft(self.model_executor.take_draft_token_ids())
+ 
+         # NOTE(nick): We can either handle the deferred tasks here or save
+         # in a field and do it immediately once step_with_batch_queue is

@@ -64,6 +64,18 @@ trained but not served, all-sliding 5 layers, optional conv (kernel 2, group 16)
 
 ## 3. Gotchas already known
 
+- **The scheduler never sees the draft ids under async scheduling** (vLLM
+  0.26 default): `scheduled_spec_decode_tokens` holds `-1` placeholders and
+  `take_draft_token_ids()` is only called for structured outputs. The first
+  smoke test logged all-`-1` blocks. Fix in place: the engine core calls
+  `take_draft_token_ids()` right after `update_from_output` (the handler's host
+  copy is ready, no extra sync) and hands it to `RolloutLogger.on_draft`; the
+  next `on_step` substitutes the stored block for the placeholders
+  (`vllm_patches/engine_core_rollout_log.patch`).
+- **`finish=length` clips the last step**: a request hitting `max_tokens` keeps
+  only the first `max_tokens` output ids, so the final step's `gen` is longer
+  than what remains; the assembler compares on the kept prefix.
+
 - **Replay cost is quadratic without prefix caching**: one full prefill of
   `context` per anchor. The hidden-state server runs `--no-enable-prefix-caching`
   (the connector must see every request executed). First-rejected-only cuts the

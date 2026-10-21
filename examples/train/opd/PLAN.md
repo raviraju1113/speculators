@@ -32,20 +32,34 @@ serving path, assembled into the rollout jsonl of `reference.md` §2.
 - Gate 1: invariant holds on 100% of steps over 200 prompts; first-rejection
   histogram printed (App. D style) — also a useful diagnostic on its own.
 
-### Phase 2 — Replay data path  ~3–5 days, 2 A100
-Turn rollouts into training samples with teacher p and student q.
-- [ ] Decide prefix-caching strategy for the hidden-state server
-      (`scripts/launch_vllm.py` + `hs_connectors`): (a) make the connector
-      cache-safe (only new tokens' states needed), or (b) cap rollouts at 2048
-      and pay the per-anchor prefill. Measure both on 20 rollouts first.
-- [ ] `scripts/opd/replay.py`: per anchor, prefill `prompt + response[:a] +
-      draft[:s]` (s = r+1), fetch hidden states, write replay samples
-      (`reference.md` §3) in the trainer's arrow format with an `opd` flag.
-- [ ] Student q: DSpark forward from the anchor over the context hidden states,
-      Markov bias from the drafted token k-1 — reuse `DSparkDraftModel` as in
-      training; **parity script** vs the serving draft's logits (gate 2).
-- Gate 3: greedy re-verification from (p, q) reproduces logged `accepted` on
-  ≥ 99% of anchors.
+### Phase 2 — Replay data path  ~2–3 days, 1–2 A100 (simplified 2026-10-21)
+**Key simplification (first-rejected-only):** every teacher distribution the
+loss needs is in ONE prefill of the verified rollout `prompt + output_ids`:
+- accepted slots `k <= r`: the drafted token equals the rollout token, so the
+  target state at `anchor_pos + k - 1` is exactly the replay state;
+- the first rejected slot `r + 1`: `p(. | c, d_1..d_r)` is the target
+  distribution at the last accepted position — the state that sampled the
+  bonus token in the rollout (same tokens, causal model, identical state).
+So no per-anchor re-prefill and no prefix-caching work: replay data costs the
+same as SFT data, and the hidden-state server runs unchanged. Teacher forcing
+matches serving on every scored slot (the previous token of each scored slot
+is a verified token), so the Markov head sees the same inputs as at serve
+time. Only the full-tail variant (slots > r+1 conditioned on rejected draft
+tokens) would need extra target forwards — deferred.
+- [x] (design) above; the rollout record already carries `anchor` and
+      `accepted` per step.
+- [ ] `scripts/opd/rollouts_to_dataset.py`: rollout jsonl -> the trainer's
+      arrow format (`input_ids`, `loss_mask` over the response, `token_freq`
+      untouched) plus per-row `opd_anchor_pos` / `opd_accepted` lists
+      (`anchor_pos = len(prompt_ids) + anchor`); drop steps with
+      `accepted == K` and `finish=length`-clipped last steps.
+- [ ] Trainer data path: `anchored_block_indices` built from the given anchors
+      (`max_anchors` subsampling) instead of sampled ones; `opd_accepted`
+      threaded to the loss.
+- [ ] **Parity (gate 2)**: student q from the SFT forward at a logged anchor ==
+      the serving draft's logits (serve with `--no-async-scheduling`, log the
+      block, replay in the trainer forward). Gate 3: greedy re-verification
+      from (p, q) reproduces logged `accepted` on >= 99% of anchors.
 
 ### Phase 3 — Loss and trainer integration  ~2 days, 1 A100
 - [ ] `src/speculators/models/dspark/opd_loss.py`: forward KL on accepted
@@ -86,3 +100,10 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-21: Phase 1 done — gate 1 passed (smoke 12450272: 40/40 GSM8K
+  rollouts, invariant on 100% of 1,886 steps; conv ep25 at k=8 on A100:
+  accept_rate 0.70, 50.8% of blocks fully accepted, first-rejection mass
+  8.9% at slot 1 decaying to 4.9% at slot 8). Three vLLM patches
+  (scheduler hook, engine-core draft handoff, worker host copy) + the hard
+  requirement `--no-async-scheduling` (async mode races the next step).
+  Phase 2 simplified: no per-anchor replay prefill needed (see above).

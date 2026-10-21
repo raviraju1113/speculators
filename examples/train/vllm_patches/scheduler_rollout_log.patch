@@ -8,17 +8,21 @@
  from vllm.v1.core.sched.utils import check_stop, remove_all
  from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
  from vllm.v1.kv_cache_interface import KVCacheConfig
-@@ -122,6 +123,9 @@
+@@ -122,6 +123,13 @@
          self.num_sampled_tokens_per_step = (
              1 if not vllm_config.model_config.is_diffusion else 0
          )
 +        # LOCAL PATCH (Draft-OPD, 2026-10-21): per-step draft/accept logging,
 +        # enabled by DSPARK_ROLLOUT_LOG=<dir>. No-op otherwise.
-+        self.rollout_logger = RolloutLogger()
++        self.rollout_logger = RolloutLogger(
++            async_scheduling=bool(
++                getattr(vllm_config.scheduler_config, "async_scheduling", False)
++            )
++        )
  
          # Create KVConnector for the Scheduler. Note that each Worker
          # will have a corresponding KVConnector with Role=WORKER.
-@@ -1704,6 +1708,15 @@
+@@ -1704,6 +1712,15 @@
                      num_invalid_spec_tokens=scheduler_output.num_invalid_spec_tokens,
                      request_id=req_id,
                  )
@@ -34,7 +38,7 @@
  
              # Free encoder inputs only after the step has actually executed.
              if request.has_encoder_inputs:
-@@ -1813,6 +1826,9 @@
+@@ -1813,6 +1830,9 @@
                  finished = self._handle_stopped_request(request)
                  if finished:
                      kv_transfer_params, ec_transfer_params = self._free_request(request)
