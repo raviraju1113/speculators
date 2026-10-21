@@ -23,8 +23,29 @@ for p in algos base qwen3_dflash; do
 done
 ```
 
-Not yet written: a `gemma4_dspark.py` patch to serve DSpark checkpoints that
-carry the DFlash2 local convolution (`conv_kernel_size > 0`). The conv module
-already exists in vLLM main as `DFlashGroupedConv` in
-`model_executor/models/qwen3_dflash2.py`; the Gemma 4 DSpark decoder layer needs
-to be wrapped the same way `DFlash2Qwen3DecoderLayer` wraps the Qwen3 one.
+## DFlash2 local-conv serving (2026-10-21, sc3 eval env `condaenvs/dspark-host`)
+
+Serves speculators DSpark checkpoints trained with `conv_kernel_size > 0`
+(`gemma4_31b_dspark_nemo782k_conv`). Note the checkpoint is routed to
+`Qwen3DSparkModel` (`qwen3_dspark.py`) -- `update_dspark` in `algos.py` sets
+`architectures=["Qwen3DSparkModel"]` for every speculators DSpark checkpoint,
+whatever the target -- so the patch lives there, NOT in `gemma4_dspark.py`
+(that file serves Gemma-4-layer drafts, which ours is not: the draft layers
+are Qwen3-style, `transformer_layer_config.model_type: qwen3`).
+
+| File | What |
+|---|---|
+| `dflash2_conv.py` | new module `vllm/model_executor/models/dflash2_conv.py`: `DFlashGroupedConv` + Triton kernel, backported from vLLM main `qwen3_dflash2.py`; CPU reference path kept for parity tests |
+| `qwen3_dspark_conv.patch` | `DFlash2DSparkDecoderLayer` (conv `prepare` -> attn -> `finish`, same for MLP, inside the residual branches, exactly as `speculators.models.dflash2.model_definitions.Qwen3DFlash2DecoderLayer`); `Qwen3DSparkModel` rebuilds its layers with it when `config.conv_kernel_size > 0`, popping the attention registrations first |
+| `algos_conv.patch` | pass `conv_kernel_size` / `conv_group_size` through `update_dspark` (otherwise the conv weights are dropped at load: `AutoWeightsLoader` ignores names with no parameter) |
+| `test_dflash2_conv_parity.py` | parity vs the training conv on the checkpoint's real weights, blocks 8/5/3, plus a cross-block leak check; CPU exact (0 error), CUDA kernel at bf16 tolerance |
+
+Serve-time conv `block_size` is the per-request query count (`num_speculative_tokens`
+with `sample_from_anchor`, `1 + N` with the bonus-anchor layout), since the draft
+rows are contiguous per-request blocks with the anchor first -- not the training
+`block_size`. Gate job before any conv eval: `examples/train/sbatch_sc3_conv_verify.sh`
+(parity on GPU, serve, confirm "DFlash2 local conv enabled" in the log, 5-prompt
+AIME smoke with an accept_len floor).
+
+Apply on a fresh 0.26.0: copy `dflash2_conv.py` next to `qwen3_dspark.py`, then
+`patch` with `qwen3_dspark_conv.patch` and `algos_conv.patch` (after `algos.patch`).

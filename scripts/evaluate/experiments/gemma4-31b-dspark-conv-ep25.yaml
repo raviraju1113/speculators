@@ -1,0 +1,63 @@
+# DSpark + DFlash2 local conv, final checkpoint (epoch index 25 = the 26th and
+# last epoch of the from-scratch nemo782k run; wandb nemoconv782k_v2) on the
+# standard benchmarks. 1:1 architecture ablation vs nemo782k_scratch: identical
+# recipe (nemo782k, flag=True, 26 ep, lr 6e-4 linear, accum 18, 5 all-sliding
+# layers, block 8), the ONLY difference is two grouped dynamic causal convs per
+# draft layer (kernel 2, group 16, +72.5M params).
+# References (same harness, TP=1, max_tokens 2048, full datasets):
+#   scratch ep25   k8: aime 5.99 / gpqa 4.22 / lcb 5.07;  k5 4.79/3.70/4.25;  k3 3.56/3.02/3.31
+#   fullattn2 ep25 k8: aime 6.06 / gpqa 4.25 / lcb 5.13
+# Training val accept_len: scratch ep25 4.711 (bar); conv at ep18 4.465 vs 4.328.
+# !! True-trained checkpoint: REQUIRES vllm with algos.patch (dspark_bonus_anchor
+#    from config) -- the sc3 conda envs carry it.
+# !! conv checkpoint: REQUIRES a vllm gemma4_dspark.py with DFlash2 conv support.
+#    Unpatched vllm silently DROPS the conv weights in load_weights() and serves
+#    a draft whose trained convs are missing -> wrong numbers with no error.
+#    examples/train/sc3_eval_prelude.sh refuses to start in that case.
+# Submit on the sc3 cluster:
+#   CONFIG=gemma4-31b-dspark-conv-ep25.yaml sbatch examples/train/sbatch_sc3_eval.sh
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES (set by SLURM / the sbatch wrapper)
+
+server:
+  host: 127.0.0.1
+  port: 8431
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0   # 0 = FULL datasets: aime 30 / gpqa 198 / lcb 1055 (~1.5h per experiment)
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-conv-ep25
+
+experiments:
+  - name: conv_ep25_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: conv_ep25_k5
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25
+    num_speculative_tokens: 5
+    speculative_config:
+      method: dspark
+
+  - name: conv_ep25_k3
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

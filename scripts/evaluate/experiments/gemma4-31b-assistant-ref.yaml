@@ -1,0 +1,52 @@
+# Google's native MTP draft (gemma-4-31B-it-assistant, 4 MTP layers) and the
+# no-draft baseline, measured with EXACTLY the settings of the DSpark ep25
+# evals (gemma4-31b-dspark-{scratch,conv}-ep25.yaml): TP=1 on a B200,
+# max_model_len 4096, max_tokens 2048, full datasets. Makes the assistant
+# comparable with conv/scratch on accept_len and, via the baseline, on speedup.
+# The older results/gemma4-31b-3bench table (2026-07-29) is NOT comparable:
+# 4x A100 TP=4, 50-sample subsets, max_tokens 4096.
+# k=8 last: the assistant was only ever run at k3/k5 here; if vLLM rejects a
+# longer MTP chain the earlier entries still complete.
+# Submit on the sc3 cluster:
+#   CONFIG=gemma4-31b-assistant-ref.yaml sbatch --time=16:00:00 examples/train/sbatch_sc3_eval.sh
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES (set by SLURM / the sbatch wrapper)
+
+server:
+  host: 127.0.0.1
+  port: 8432
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0   # 0 = FULL datasets: aime 30 / gpqa 198 / lcb 1055
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-assistant-ref
+
+experiments:
+  - name: baseline            # backbone alone: the speedup denominator on this hardware
+
+  - name: assistant_k3
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-assistant
+    num_speculative_tokens: 3
+
+  - name: assistant_k5
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-assistant
+    num_speculative_tokens: 5
+
+  - name: assistant_k8
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-assistant
+    num_speculative_tokens: 8

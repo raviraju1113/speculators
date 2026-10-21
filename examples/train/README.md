@@ -16,7 +16,7 @@ Obsolete cluster-era and completed one-off scripts are in `archive/`.
 | `..._nemo782k_scratch` | nemo782k, from scratch | 26 | `run_nemo782k_scratch_local.sh` | `nemoscratch782k` | `checkpoint_best -> 25`; == continued run at matched exposure (curriculum irrelevant); k8 aime 5.99 / gpqa 4.22 / lcb 5.07 |
 | `..._nemo782k_fullattn2` | nemo782k, from scratch, full-attn layers {0,3} | 26 | `run_nemo782k_fullattn2_local.sh` | `fullattn2nemo` | `checkpoint_best -> 25`; in-window == scratch (k8 aime 6.06/gpqa 4.25/lcb 5.13) but **decays on long context** — see architecture verdict |
 | `..._nemo782k_fullattn1` | nemo782k, from scratch, full-attn layer {0} | 26 (WSD) | `run_nemo782k_fullattn1_local.sh` | `fullattn1nemo` | done 2026-09-15; `checkpoint_best -> 25` (val 4.50 vs fullattn2 4.75); evals: `gemma4-31b-dspark-fullattn1-ep25.yaml` + LCR bins `TAG=fullattn1_ep25` |
-| `..._nemo782k_conv` | nemo782k, from scratch, all-sliding + **DFlash2 local conv** in every draft layer (`DSPARK_CONV_KERNEL=2`, group 16; +72.5M params) | 26 | `run_nemo782k_conv_local.sh` / `sbatch_nemo782k_conv.sh` | `nemoconv782k_v2` | first attempt (job 319, node 097, 2026-10-13, wandb `nemoconv782k`) cancelled at micro-step ~2970 for the machine move, no checkpoint -- RELAUNCH from scratch with the v2 id; branch `mengmengj/dspark-conv`; 1:1 ablation vs `..._nemo782k_scratch` (identical recipe otherwise). Serving needs a vLLM `gemma4_dspark` conv patch (not written yet) -- compare on val accept_len first |
+| `..._nemo782k_conv` | nemo782k, from scratch, all-sliding + **DFlash2 local conv** in every draft layer (`DSPARK_CONV_KERNEL=2`, group 16; +72.5M params) | 26 | `run_nemo782k_conv_local.sh` / `sbatch_nemo782k_conv.sh` | `nemoconv782k_v2` | done 2026-10-20 on sc3-cp99 (job 11154700, 5 d 7 h; first attempt `nemoconv782k` on lax01 cancelled at step ~2970). `checkpoint_best -> 25`, val 4.779 vs scratch 4.711 (+0.07). Evals 2026-10-21 (`gemma4-31b-dspark-conv-ep25.yaml`, served with `vllm_patches/` conv patch): k8 aime **6.12** / gpqa **4.32** / lcb **5.19** vs scratch 5.99 / 4.22 / 5.07 (+0.10..0.13, tok/s +3-4%); k5 +0.04..0.07; k3 ~0. ctx sweep 1k-32k flat, +0.0..+0.26 vs scratch, no decay. Small, consistent gain; LCR bins not run yet |
 
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
@@ -68,6 +68,20 @@ EPOCHS=26 SCHED_TOTAL=38700 sbatch examples/train/sbatch_nemo782k_fullattn2.sh
 # Scheduler knobs any preset understands (via run_local_podman.sh passthrough):
 #   SCHEDULER_TYPE=linear|cosine|constant|wsd|none   WSD_DECAY_RATIO=0.15
 #   FULL_ATTENTION_INDICES="0 3"   SAMPLE_FROM_ANCHOR=1
+```
+
+```bash
+# SambaNova sc3 B200 cluster (2026-10-15+): bare-metal conda, /import paths,
+# W&B gate on the compute node. See HANDOFF.md §0.
+sbatch examples/train/sbatch_sc3_nemo782k_conv.sh
+
+# Eval on sc3 (twins of sbatch_eval / sbatch_ctx_sweep / sbatch_lcr_bins; all
+# source sc3_eval_prelude.sh: eval conda env, GPU self-test, and a gate that
+# refuses to serve a conv checkpoint on a vllm without the gemma4_dspark conv
+# patch -- unpatched vllm silently drops the conv weights):
+CONFIG=gemma4-31b-dspark-conv-ep25.yaml sbatch examples/train/sbatch_sc3_eval.sh   # aime/gpqa/lcb, k8/k5/k3
+sbatch examples/train/sbatch_sc3_ctx_sweep.sh          # 1k..32k, k8   (CKPT/TAG/K overridable)
+sbatch examples/train/sbatch_sc3_lcr_bins.sh           # AA-LCR bins, needs aa-lcr-*.jsonl copied first
 ```
 
 Monitoring: `summarize_run.py logs/<JOBNAME>.txt`; wandb ids above. WSD sanity:

@@ -1,0 +1,16 @@
+--- vllm/transformers_utils/configs/speculators/algos.py.orig	2026-08-05 21:54:15.401609430 -0700
++++ vllm/transformers_utils/configs/speculators/algos.py	2026-10-21 00:17:46.005580958 -0700
+@@ -175,6 +175,13 @@
+         "block_size",
+         "enable_confidence_head",
+         "confidence_head_with_markov",
++        # LOCAL PATCH (2026-10-21, mengmengj): DFlash2 local conv in the draft
++        # layers (speculators DSparkSpeculatorConfig.conv_kernel_size /
++        # conv_group_size, 0 = off). Served by DFlash2DSparkDecoderLayer in
++        # qwen3_dspark.py; without this passthrough the conv weights would be
++        # dropped at load time.
++        "conv_kernel_size",
++        "conv_group_size",
+     ):
+         if config_dict.get(key) is not None:
+             pre_trained_config[key] = config_dict[key]

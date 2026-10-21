@@ -521,6 +521,10 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --scheduler-wsd-decay-ratio "$WSD_DECAY_RATIO" \
     --num-workers "$NUM_WORKERS" \
     --on-missing generate \
-    --on-generate "$ON_GENERATE"
+    --on-generate "$ON_GENERATE" \
+    --dflash-decay-gamma "${DECAY_GAMMA:-4.0}"
+    # DECAY_GAMMA: per-position loss weight exp(-(k-1)/gamma); 4.0 = DeepSpec's
+    # value and every run so far. The block-12 continuation uses 12 so the new
+    # tail slots actually train (sbatch_sc3_conv_continue.sh).
 
 echo "=== done. checkpoints -> $SAVE_PATH ==="

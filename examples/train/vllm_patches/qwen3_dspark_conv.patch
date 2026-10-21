@@ -1,0 +1,139 @@
+--- vllm/model_executor/models/qwen3_dspark.py.orig	2026-07-30 19:09:50.445043005 -0700
++++ vllm/model_executor/models/qwen3_dspark.py	2026-10-21 00:17:48.184567792 -0700
+@@ -27,12 +27,95 @@
+     VocabParallelEmbedding,
+ )
+ 
+-from .qwen3_dflash import DFlashQwen3ForCausalLM, DFlashQwen3Model
++from vllm.config import CacheConfig, get_current_vllm_config
++from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
++
++from .dflash2_conv import DFlashGroupedConv
++from .qwen3_dflash import (
++    DFlashQwen3DecoderLayer,
++    DFlashQwen3ForCausalLM,
++    DFlashQwen3Model,
++)
+ from .utils import AutoWeightsLoader, maybe_prefix, process_eagle_weight
+ 
+ logger = init_logger(__name__)
+ 
+ 
++class DFlash2DSparkDecoderLayer(DFlashQwen3DecoderLayer):
++    """LOCAL PATCH (2026-10-21, mengmengj): DFlash Qwen3 draft layer with the
++    DFlash2 local convolution around attention and MLP, for speculators DSpark
++    checkpoints trained with ``conv_kernel_size > 0``. Mirrors
++    ``speculators.models.dflash2.model_definitions.Qwen3DFlash2DecoderLayer``
++    and vLLM main's ``DFlash2Qwen3DecoderLayer``.
++    """
++
++    def __init__(
++        self,
++        vllm_config: VllmConfig,
++        *,
++        config,
++        layer_idx: int,
++        cache_config: CacheConfig | None = None,
++        quant_config: QuantizationConfig | None = None,
++        prefix: str = "",
++    ) -> None:
++        super().__init__(
++            vllm_config,
++            config=config,
++            layer_idx=layer_idx,
++            cache_config=cache_config,
++            quant_config=quant_config,
++            prefix=prefix,
++        )
++        speculative_config = vllm_config.speculative_config
++        assert speculative_config is not None
++        # The conv taps run along the draft query rows, which the speculator lays
++        # out as contiguous per-request blocks with the anchor first:
++        # N = num_speculative_tokens rows when sampling from the anchor
++        # (speculators' default), 1 + N with the DFlash bonus-anchor layout.
++        # This is the serve-time block the kernel must not cross, independent of
++        # the training block_size (taps only look back within a block).
++        n_spec = speculative_config.num_speculative_tokens
++        bonus_anchor = bool(getattr(config, "dspark_bonus_anchor", False))
++        block_size = 1 + n_spec if bonus_anchor else n_spec
++        conv_args = dict(
++            hidden_size=config.hidden_size,
++            taps=int(config.conv_kernel_size),
++            group_size=int(getattr(config, "conv_group_size", 16)),
++            block_size=block_size,
++            params_dtype=vllm_config.model_config.dtype,
++            quant_config=quant_config,
++        )
++        self.attention_conv = DFlashGroupedConv(
++            **conv_args, prefix=maybe_prefix(prefix, "attention_conv")
++        )
++        self.mlp_conv = DFlashGroupedConv(
++            **conv_args, prefix=maybe_prefix(prefix, "mlp_conv")
++        )
++
++    def forward(
++        self,
++        positions: torch.Tensor,
++        hidden_states: torch.Tensor,
++        residual: torch.Tensor | None,
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++        if residual is not None:
++            hidden_states, residual = self.input_layernorm(hidden_states, residual)
++        else:
++            residual = hidden_states
++            hidden_states = self.input_layernorm(hidden_states)
++
++        hidden_states, coefficients = self.attention_conv.prepare(hidden_states)
++        hidden_states = self.self_attn(positions=positions, hidden_states=hidden_states)
++        hidden_states = self.attention_conv.finish(hidden_states, coefficients)
++
++        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
++        hidden_states, coefficients = self.mlp_conv.prepare(hidden_states)
++        hidden_states = self.mlp(hidden_states)
++        hidden_states = self.mlp_conv.finish(hidden_states, coefficients)
++        return hidden_states, residual
++
++
+ class DSparkMarkovHead(nn.Module):
+     """Sequential transition-bias head (low-rank V x r, r x V).
+ 
+@@ -81,6 +164,39 @@
+             vllm_config=vllm_config, start_layer_id=start_layer_id, prefix=prefix
+         )
+         config = self.config
++        # LOCAL PATCH (2026-10-21, mengmengj): rebuild the draft layers with the
++        # DFlash2 local conv when the checkpoint was trained with it. The plain
++        # layers above already registered their attention in the static forward
++        # context, so drop those entries first (as gemma4_dspark.py does) and
++        # recreate the layers under the same prefixes -- KV-cache layer names
++        # are unchanged.
++        conv_kernel_size = int(getattr(config, "conv_kernel_size", 0) or 0)
++        if conv_kernel_size > 0:
++            current_vllm_config = get_current_vllm_config()
++            forward_context = current_vllm_config.compilation_config.static_forward_context
++            conv_layers = []
++            for layer_idx in range(len(self.layers)):
++                layer_prefix = maybe_prefix(prefix, f"layers.{layer_idx + start_layer_id}")
++                forward_context.pop(f"{layer_prefix}.self_attn.attn", None)
++                conv_layers.append(
++                    DFlash2DSparkDecoderLayer(
++                        current_vllm_config,
++                        config=config,
++                        layer_idx=layer_idx,
++                        cache_config=current_vllm_config.cache_config,
++                        quant_config=self.quant_config,
++                        prefix=layer_prefix,
++                    )
++                )
++            self.layers = nn.ModuleList(conv_layers)
++            logger.info(
++                "DSpark draft: DFlash2 local conv enabled (kernel %d, group %d, "
++                "serve block %d) in %d layers",
++                conv_kernel_size,
++                int(getattr(config, "conv_group_size", 16)),
++                conv_layers[0].attention_conv.block_size,
++                len(conv_layers),
++            )
+         draft_vocab_size = (
+             getattr(config, "draft_vocab_size", None) or config.vocab_size
+         )

@@ -77,7 +77,8 @@ def main():
     args = ap.parse_args()
 
     from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(TOKENIZER_PATH)
+    # --model doubles as the tokenizer path (TOKENIZER_PATH is only the default).
+    tok = AutoTokenizer.from_pretrained(args.model)
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
