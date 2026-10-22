@@ -93,6 +93,45 @@ checkpoint.
 | 2 | (if triggered) seed 1 for both arms | sc-c96 | = 1b |
 | 3 | (optional) 2×2: add CE-only (`{"ce":1.0}`) for both arms — does the TV distillation term explain any OFF≈ON result? | sc-c96 | = 1b |
 
+## Results
+
+### Seed 0 (2026-10-22)
+
+Data: 94,032 prompts in both arms. 5,935 (5.9%) were dropped because the ON reply
+hit the 6144 cap, and 33 because the prompt exceeded 2048 tokens (it can't fit 6144 new
+tokens in 8192). After the drop, ON replies are ~12% shorter in characters, so over
+the same 3 epochs ON took 6,435 steps vs OFF's 7,556. That confound biases **against**
+ON. Training: 4h29m, both arms concurrent on sc-c96.
+
+Eval: T=0, max 2048 tokens, A100 TP1, batch 1, 200 samples per benchmark (mt-bench,
+writing and qa have 80; humaneval has 164). Δ = AL(ON)/AL(OFF) − 1.
+
+| benchmark | z-lab DFlash k=9 | OFF | ON | Δ |
+|---|---|---|---|---|
+| mt-bench | 3.980 | 2.635 | 2.384 | −9.5% |
+| writing | 3.831 | 2.588 | 2.447 | −5.4% |
+| qa | 4.450 | 2.637 | 2.801 | +6.2% |
+| gsm8k | 4.427 | 3.178 | 3.560 | +12.0% |
+| math500 | 4.972 | 4.517 | 4.694 | +3.9% |
+| humaneval | 4.882 | 3.479 | 3.867 | +11.2% |
+| livecodebench | 4.479 | 3.683 | 3.875 | +5.2% |
+| kn782k_heldout | 4.480 | 3.162 | 3.839 | +21.4% |
+
+Domain Δ: chat −2.9%, math +8.0%, code +8.2%, in-dist +21.4%. Macro Δ over the 7
+benchmarks is **+3.4%** (+5.6% with kn782k_heldout). Under the decision rule this is
+*not equivalent*: macro > 3%, and the math, code and in-dist domains are each > 6%.
+It also falls in the [1.5%, 6%] zone, so **Phase 2 is triggered**.
+
+Caveats:
+- At T=0, only ~37% of samples have the same completion length as the baseline.
+  That holds for z-lab too, so it's bf16 non-determinism in the spec-decode path,
+  not a checkpoint bug. Each draft is scored on slightly different continuations,
+  which adds noise symmetrically.
+- Both arms trail z-lab (100k prompts × 3 epochs vs z-lab's larger budget). This is a
+  relative comparison only.
+- Mid-epoch checkpoints were not retained (only `0`/`1`/`2` epoch ends), so the
+  matched-training-tokens comparison is unavailable for seed 0.
+
 ## Files
 
 - `export_prompts.py` — carve splits from the 782k corpus

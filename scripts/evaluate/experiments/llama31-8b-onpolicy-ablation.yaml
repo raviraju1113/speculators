@@ -59,3 +59,18 @@ experiments:
     num_speculative_tokens: 7
     speculative_config:
       method: dspark
+
+  # Phase 2 seed replicates (triggered: seed-0 macro Δ fell in the [1.5%, 6%] zone).
+  # Run with EXPS="off_policy_s1 on_policy_s1"; they write into the same output_dir,
+  # reusing the seed-0 baseline above as the speedup denominator.
+  - name: off_policy_s1
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/off_s1/epoch2_end
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  - name: on_policy_s1
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/on_s1/epoch2_end
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
