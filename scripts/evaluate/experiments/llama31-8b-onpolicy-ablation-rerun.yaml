@@ -53,3 +53,13 @@ experiments:
   num_speculative_tokens: 7
   speculative_config:
     method: dspark
+- name: mix20
+  draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/mix20_s0/epoch2_end
+  num_speculative_tokens: 7
+  speculative_config:
+    method: dspark
+- name: mix50
+  draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/mix50_s0/epoch2_end
+  num_speculative_tokens: 7
+  speculative_config:
+    method: dspark

@@ -93,6 +93,25 @@ checkpoint.
 | 2 | (triggered, done) seed 1 for both arms | sc-c96 | 4h30m |
 | 3 | (optional) 2×2: add CE-only (`{"ce":1.0}`) for both arms — does the TV distillation term explain any OFF≈ON result? | sc-c96 | = 1b |
 
+## Phase 4: mixed-policy data (registered 2026-10-22, before results)
+
+Question: can regenerating only a slice of the corpus recover on-policy performance?
+- **Arms:** `mix20` and `mix50` use the same 94,032 prompts. A seeded random 20% / 50%
+  of prompts take the ON reply and the rest keep the OFF reply (`make_mix.py`, seed 0).
+  Everything else matches the OFF/ON recipe.
+- **Run:** both mix arms train concurrently on sc-c96 (`ARM_A=mix20 ARM_B=mix50
+  submit_phase1b.sh`), seed 0 only. Training proved near-deterministic across seeds.
+- **Eval:** the 7 benchmarks plus kn782k_heldout. Each arm is evaluated **twice**, and
+  the two runs must have bit-identical per-sample `completion_tokens` before the
+  numbers count. Comparison is against the reproducible OFF/ON runs (s0 rerun, s1).
+- **Recovery** = (AL(mix) − AL(OFF)) / (AL(ON) − AL(OFF)), per domain and macro, using
+  the 2-seed means for OFF and ON.
+- **Decision:** a mix "matches on-policy" if its macro AL is within 3% of AL(ON)'s
+  2-seed mean **and** no domain is more than 6% below ON. A linear mix would give
+  recovery ≈ the ON fraction (0.2 / 0.5). Recovery well above that means a small
+  on-policy slice buys most of the benefit.
+- **Confound:** ON replies are shorter, so mix arms see token counts between OFF and ON.
+
 ## Results (2026-10-22): on-policy wins, by ~10% acceptance length
 
 **Verdict under the pre-registered rule: ON wins.** Over the 7 benchmarks, ON beats OFF
