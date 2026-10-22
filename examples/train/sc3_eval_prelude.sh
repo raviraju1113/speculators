@@ -28,6 +28,13 @@ source "$CONDA_SH" && conda activate "$EVAL_ENV" || { echo "!! cannot activate $
 python -c "import vllm, speculators" 2>/dev/null || { echo "!! $EVAL_ENV lacks vllm/speculators" >&2; exit 2; }
 echo "env: $EVAL_ENV (vllm $(python -c 'import vllm;print(vllm.__version__)'))"
 
+# NCCL for TP>1 serving on the A100 nodes (sc3-c98/c81): the host net plugin
+# breaks init (2-rank all_reduce fails by default, passes with these -- probed
+# 2026-10-22; the training driver sets the same). Harmless at TP=1.
+export NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-lo}"
+
 # --- GPU self-test on the allocated cards (indices as SLURM exposes them) ----
 BAD=""
 for i in $(seq 0 $(( $(nvidia-smi -L | wc -l) - 1 ))); do
