@@ -90,47 +90,74 @@ checkpoint.
 | 1a | ON-arm regeneration: 100k prompts, vLLM DP=8 on sc-c96 | sc-c96 (8×A100) | ~1–2 h (≈55M output tokens) |
 | 1b | Train OFF and ON concurrently, 4 GPUs each (vLLM hidden-state server ×1 + 3 train ranks, online `--on-generate delete`) | sc-c96 | sized from Phase-0 throughput |
 | 1c | Eval both + baseline + z-lab control | 1–2 A100s | ~4–6 h |
-| 2 | (if triggered) seed 1 for both arms | sc-c96 | = 1b |
+| 2 | (triggered, done) seed 1 for both arms | sc-c96 | 4h30m |
 | 3 | (optional) 2×2: add CE-only (`{"ce":1.0}`) for both arms — does the TV distillation term explain any OFF≈ON result? | sc-c96 | = 1b |
 
-## Results
+## Results (2026-10-22): on-policy wins, by ~10% acceptance length
 
-### Seed 0 (2026-10-22)
+**Verdict under the pre-registered rule: ON wins.** Over the 7 benchmarks, ON beats OFF
+on accept_len by **+9.6%** (seed 0 +9.1%, seed 1 +10.3%). That is above the 3% bar, and
+above 2× the seed-to-seed spread (arm-level spread is 2.6% for OFF and 4.1% for ON).
+Every domain is above 6%. No benchmark has OFF ahead in both seeds. So reusing
+another model's completions does **not** come free. For Llama-3.1-8B, regenerating the
+data with the target buys ~10% acceptance length.
 
-Data: 94,032 prompts in both arms. 5,935 (5.9%) were dropped because the ON reply
-hit the 6144 cap, and 33 because the prompt exceeded 2048 tokens (it can't fit 6144 new
-tokens in 8192). After the drop, ON replies are ~12% shorter in characters, so over
-the same 3 epochs ON took 6,435 steps vs OFF's 7,556. That confound biases **against**
-ON. Training: 4h29m, both arms concurrent on sc-c96.
+| benchmark | z-lab DFlash k=9 | OFF s0 | OFF s1 | ON s0 | ON s1 | Δ s0 | Δ s1 | Δ mean |
+|---|---|---|---|---|---|---|---|---|
+| mt-bench | 3.98 | 2.47 | 2.64 | 2.65 | 2.63 | +7.5% | −0.4% | +3.4% |
+| writing | 3.83 | 2.29 | 2.59 | 2.62 | 2.83 | +14.6% | +9.2% | +11.7% |
+| qa | 4.45 | 2.61 | 2.62 | 2.80 | 3.02 | +7.2% | +15.3% | +11.3% |
+| gsm8k | 4.43 | 3.35 | 3.64 | 3.60 | 3.57 | +7.2% | −2.0% | +2.4% |
+| math500 | 4.97 | 4.33 | 4.55 | 4.67 | 5.12 | +7.9% | +12.4% | +10.2% |
+| humaneval | 4.88 | 3.63 | 3.15 | 3.60 | 3.73 | −0.8% | +18.2% | +8.0% |
+| livecodebench | 4.48 | 3.51 | 3.57 | 4.22 | 4.26 | +20.2% | +19.4% | +19.8% |
+| kn782k_heldout | 4.48 | 3.61 | 3.61 | 4.19 | 4.03 | +16.1% | +11.6% | +13.8% |
 
-Eval: T=0, max 2048 tokens, A100 TP1, batch 1, 200 samples per benchmark (mt-bench,
-writing and qa have 80; humaneval has 164). Δ = AL(ON)/AL(OFF) − 1.
+The values are accept_len, and Δ = AL(ON)/AL(OFF) − 1. By domain (mean over seeds): chat +8.8%,
+math +6.3%, code +13.9%, in-dist +13.8%. Macro over all 8 benchmarks: +10.1%.
 
-| benchmark | z-lab DFlash k=9 | OFF | ON | Δ |
-|---|---|---|---|---|
-| mt-bench | 3.980 | 2.635 | 2.384 | −9.5% |
-| writing | 3.831 | 2.588 | 2.447 | −5.4% |
-| qa | 4.450 | 2.637 | 2.801 | +6.2% |
-| gsm8k | 4.427 | 3.178 | 3.560 | +12.0% |
-| math500 | 4.972 | 4.517 | 4.694 | +3.9% |
-| humaneval | 4.882 | 3.479 | 3.867 | +11.2% |
-| livecodebench | 4.479 | 3.683 | 3.875 | +5.2% |
-| kn782k_heldout | 4.480 | 3.162 | 3.839 | +21.4% |
+Setup:
+- Data: 94,032 prompts in both arms. 5,935 (5.9%) were dropped because the ON reply hit
+  the 6144 cap, and 33 because the prompt exceeded 2048 tokens.
+- ON replies are ~12% shorter, so over 3 epochs ON took ~6.43k steps vs OFF's ~7.55k.
+  This confound biases against ON, so the gap is if anything understated.
+- Each pair of arms trained in ~4h30m, concurrently on sc-c96.
+- Eval: T=0, max 2048 new tokens, A100 TP1, batch 1. Each benchmark has 200 samples,
+  except mt-bench, writing and qa (80) and humaneval (164).
 
-Domain Δ: chat −2.9%, math +8.0%, code +8.2%, in-dist +21.4%. Macro Δ over the 7
-benchmarks is **+3.4%** (+5.6% with kn782k_heldout). Under the decision rule this is
-*not equivalent*: macro > 3%, and the math, code and in-dist domains are each > 6%.
-It also falls in the [1.5%, 6%] zone, so **Phase 2 is triggered**.
+### Eval reproducibility (read before re-running)
 
-Caveats:
-- At T=0, only ~37% of samples have the same completion length as the baseline.
-  That holds for z-lab too, so it's bf16 non-determinism in the spec-decode path,
-  not a checkpoint bug. Each draft is scored on slightly different continuations,
-  which adds noise symmetrically.
-- Both arms trail z-lab (100k prompts × 3 epochs vs z-lab's larger budget). This is a
-  relative comparison only.
-- Mid-epoch checkpoints were not retained (only `0`/`1`/`2` epoch ends), so the
-  matched-training-tokens comparison is unavailable for seed 0.
+- **The first seed-0 eval (job 12527538) did not reproduce, so it is excluded.** It is
+  kept in `results/llama31-8b-onpolicy-ablation-t0/{off,on}_policy`.
+  - Two later evals of the same, unchanged checkpoints (`-t0-rerun`, `-t0-rerun2`)
+    agree with each other exactly: 1204/1204 samples have the same completion length,
+    and accept_len matches to the decimal.
+  - The seed-1 checkpoints were also bit-reproducible across two evals.
+  - The bad run gave +3.4% instead of +9.1%, and it flipped chat to −2.9%.
+  - Ruled out as causes: the weights (untouched), the torch.compile cache (seed 1 also
+    compiled fresh and reproduced), and the GPU/port mapping.
+  - The bad run was the only one whose drafts compiled while the baseline and z-lab
+    servers were starting on neighbouring GPUs. That is the remaining suspect, but it
+    is unproven.
+  - **Rule: evaluate any new checkpoint twice and confirm bit-identical
+    `completion_tokens` before trusting a number.**
+- At T=0 a draft's continuations still differ from the no-draft baseline: ~37% of
+  samples have the same length, z-lab included. That is expected spec-decode numerics,
+  and it is deterministic run to run.
+- The z-lab and baseline numbers come from the same job as the excluded run. They are
+  a sanity control only.
+
+Other caveats:
+- Both arms reach 72–81% of z-lab's accept_len (z-lab used a larger training budget
+  and block 10). The comparison is relative only.
+- Training is near-deterministic. Final val accept_len is OFF 3.683 / 3.667 and
+  ON 4.345 / 4.346 across seeds. Seed-to-seed eval differences of up to ±15% per
+  benchmark are therefore mostly from the small per-benchmark n. Trust macro and
+  domain numbers over single benchmarks.
+- Only epoch-end checkpoints were kept, so no matched-training-tokens comparison was
+  possible.
+- Not yet tested: whether this holds for a different target (e.g. Qwen3-4B), and how
+  much of the gap the TV term closes. Phase 3 (CE-only 2×2) would answer the latter.
 
 ## Files
 

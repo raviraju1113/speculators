@@ -1,0 +1,55 @@
+engine: vllm
+backbone: /import/ml-sc-scratch1/mengmengj/models/llama3.1-8b-instruct
+gpus: '0'
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args:
+  - --max-num-seqs
+  - '32'
+eval:
+  backend: vllm
+  benchmarks:
+  - mt-bench
+  - writing
+  - qa
+  - gsm8k
+  - math500
+  - humaneval
+  - livecodebench
+  - kn782k_heldout
+  num_samples: 200
+  max_tokens: 2048
+  temperature: 0.0
+output_dir: /import/ml-sc-scratch1/ravir/spec_decoding_work/speculators/scripts/evaluate/experiments/results/llama31-8b-onpolicy-ablation-t0-rerun
+experiments:
+- name: baseline
+- name: zlab_dflash
+  draft: z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat
+  num_speculative_tokens: 9
+  speculative_config:
+    method: dflash
+- name: off_policy
+  draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/off_s0/epoch2_end
+  num_speculative_tokens: 7
+  speculative_config:
+    method: dspark
+- name: on_policy
+  draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/on_s0/epoch2_end
+  num_speculative_tokens: 7
+  speculative_config:
+    method: dspark
+- name: off_policy_s1
+  draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/off_s1/epoch2_end
+  num_speculative_tokens: 7
+  speculative_config:
+    method: dspark
+- name: on_policy_s1
+  draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/onpolicy_ablation/ckpt/on_s1/epoch2_end
+  num_speculative_tokens: 7
+  speculative_config:
+    method: dspark
