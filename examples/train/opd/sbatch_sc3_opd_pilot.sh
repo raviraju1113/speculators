@@ -45,8 +45,13 @@ CK="$OUT_ROOT/$RUN_NAME/checkpoints"
 if ! ls -d "$CK"/[0-9]* >/dev/null 2>&1; then
   mkdir -p "$CK"
   SEED_EPOCH=$(basename "$SEED_CKPT")
-  echo "seeding $CK/$SEED_EPOCH from $SEED_CKPT"
-  cp -r "$SEED_CKPT" "$CK/$SEED_EPOCH.tmp" && mv "$CK/$SEED_EPOCH.tmp" "$CK/$SEED_EPOCH" || { echo "!! seed copy failed" >&2; exit 3; }
+  if [ "${SEED_WEIGHTS_ONLY:-0}" = "1" ]; then
+    # fresh optimizer + schedule (the trainer tolerates a missing optimizer state)
+    mkdir -p "$CK/$SEED_EPOCH" && cp "$SEED_CKPT/model.safetensors" "$SEED_CKPT/config.json" "$CK/$SEED_EPOCH/" && echo "seeded $CK/$SEED_EPOCH (weights only)"
+  else
+    echo "seeding $CK/$SEED_EPOCH from $SEED_CKPT"
+    cp -r "$SEED_CKPT" "$CK/$SEED_EPOCH.tmp" && mv "$CK/$SEED_EPOCH.tmp" "$CK/$SEED_EPOCH" || { echo "!! seed copy failed" >&2; exit 3; }
+  fi
 fi
 
 # ---- recipe: conv architecture, OPD data, tiny run ---------------------------
@@ -54,7 +59,7 @@ export MODE=full
 export SAMPLE_FROM_ANCHOR=1
 export DSPARK_CONV_KERNEL=2
 export DSPARK_CONV_GROUP=16
-export ACCUM_STEPS=1              # plain train.py
+export ACCUM_STEPS="${ACCUM_STEPS:-1}"   # 1 = plain train.py; >1 = train_accum.py
 export MAX_ANCHORS="${MAX_ANCHORS:-512}"
 export CHECKPOINT_FREQ=1
 export SAVE_BEST=0

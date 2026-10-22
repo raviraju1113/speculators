@@ -104,6 +104,19 @@ tokens) would need extra target forwards — deferred.
   pilot shows round staleness matters.
 - Thinking-mode rollouts (paper caps 4096); our eval is non-thinking at 2048.
 
+### Finding (2026-10-21, pilot `opd_pilot_rounds2`, job 12492724)
+2 rounds x 1,000 nemo782k prompts on 3 A100 ran end to end (1 h 10 min), but
+training HURT the draft: round-1 rollout accept_rate 0.41 -> 0.26 (full
+blocks 19.6% -> 3.8%), val accept_len 2.57 -> 1.95, parity metric 0.996 at
+step 1 -> 0.645 after ~100 steps. Config was fresh AdamW warmed to 3e-4 with
+~10 prompts per step (1 rank, ACCUM 1) and a loss dominated by the
+reverse-KL term (13-22 nats) over a 0.04 forward-KL term, with full-accept
+blocks dropped -> almost no anchoring signal, high LR. Next: sweep on the
+round-0 dataset (no rollouts): LR 2e-5 + ACCUM 8, keep-full-accept blocks,
+lambda_rej in {1, 0.3}; criterion: parity >= 0.99 and val accept_len not
+below the pre-training value after one epoch; then redo 2 rounds with the
+best setting and check that round-1 rollout acceptance RISES.
+
 ## Compute budget
 Dev/pilot: 1–4 A100-80 (sc3-c98 / sc3-c81) — unaffected by the B200 outage.
 Full OPD stage: ~700–1000 B200-hours (paper's 120 H200-h for a 4B target,
