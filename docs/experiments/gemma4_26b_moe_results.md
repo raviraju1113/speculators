@@ -2318,6 +2318,14 @@ acceptance does not need re-tuning for sampled serving.
 
 ## 24. Two-stage curricula and DFlash2 conv (2026-10-16)
 
+> **PARTLY SUPERSEDED (2026-10-22).** The two-stage conclusion STANDS: at
+> matched lr 1e-4 it is 4.082 vs 4.177 for on-policy alone, inside run-to-run
+> variance. The DFlash2 material is superseded by section 32 -- its conv had a
+> real optimizer bug (3-D kernel routed to a 10x-lower LR with decay fighting
+> its identity init), but fixing it changed val accept_len by 0.001, so the
+> 2.828 reported here is a FAIR measurement of the architecture.
+
+
 Two follow-ups to §23, plus a void experiment worth recording because the
 failure mode is reusable.
 
@@ -2430,6 +2438,12 @@ as well.
 ---
 
 ## 25. k sweep, the per-domain matched pair, conv resolved (2026-10-17/19)
+
+> **SUPERSEDED for the k sweep (2026-10-22).** Measured at n=20, where the
+> k=7/k=9 gap sat inside the +/-0.3 AL floor and was never resolved. Section
+> 31.3 re-measures at n=512: k=9 gains a real +0.28 AL but only +1.8%
+> throughput, carried entirely by gsm8k, with bfcl 2.6% SLOWER. k=7 stands.
+
 
 Four results, two of which correct earlier sections.
 
@@ -2559,6 +2573,13 @@ treated as broken plumbing before it is treated as a result.
 
 ## 26. Head-to-head vs the published drafts (2026-10-21)
 
+> **SUPERSEDED (2026-10-22).** Measured at n=20 (520 prompts/draft); six of
+> the 26 rows had gaps inside the noise floor. Section 30 reruns at n=512
+> (4,661 prompts/draft). Our arm moves 4.336 -> 4.609 AL and 2.030x -> 2.126x;
+> every competitor is unchanged within noise, so the shift was OUR arm's
+> small-sample error. The conclusion -- fastest, not the best drafter -- holds.
+
+
 Until now every suite run compared our own checkpoints to each other, so the
 model card reported our numbers with **no competitive context**. This is the
 first head-to-head against what is actually published for this target.
@@ -2667,6 +2688,13 @@ Omega, not acceptance, is the binding constraint on this target.
 
 ## 27. On-policy volume, and the vocabulary we never chose (2026-10-21)
 
+> **SUPERSEDED (2026-10-22).** Both open questions here are now resolved at
+> n=512. Volume: 78k vs 122k is a measured NULL (dAL +0.002, t=0.05), not
+> merely 'cannot tell' -- see 31.1. Vocabulary: the 32k draft vocab was served
+> and is worse on BOTH axes (-1.33 AL, -22% throughput) -- see 31.2, so the
+> 262k vocab that was never deliberately chosen is the measured right choice.
+
+
 ### 27.1 On-policy data does not scale either
 
 §23 established that on-policy data is worth +0.598 mean AL over off-policy.
@@ -2737,6 +2765,11 @@ clearly not the dominant term.
 ---
 
 ## 28. Reading the AgentX result correctly (2026-10-21)
+
+> **SUPERSEDED (2026-10-22).** Section 33 adds the no-draft AgentX baseline
+> (87.5 decode tok/s) that every earlier AgentX number lacked, so those
+> figures finally convert to speedups: ours 1.237x vs the assistant's 1.118x.
+
 
 Three corrections to how §16 and §26's agentic numbers were presented, all
 found by auditing rather than by new measurement.
@@ -3145,3 +3178,435 @@ Best-result checkpoints: `output/gemma4_26b_mtp_rinit_shiftfix_4gpu` (shift-fixe
 `output/gemma4_26b_mtp_assistant_featdistill` (+ feature loss, 2.51).
 Env: vLLM 0.24.0+cu129, torch 2.11.0+cu129, conda `speculator`.
 
+
+---
+
+## 29. AgentX at a sample size that holds (2026-10-21)
+
+§28 read the AgentX result from a cell with **80–92 completed requests**, which
+was too thin for the trace mix to settle: the two arms drew samples whose mean
+output lengths differed by 10% (617 vs 557 tokens), so the arms were not being
+asked the same question. This rerun fixes the sample size and nothing else.
+
+**Setup.** TP=1, concurrency 1, `DURATION=3600` (was 1024), ctx 65536,
+`cc-traces-weka-062126`, temperature 0, `ignore_eos`, `cache-bust
+first_turn_prefix`, seed 42. Arms run in parallel on separate GPUs.
+
+Concurrency is 1 *by necessity*, not by choice: weights are 48.1 GB and KV is
+0.234 MB/token, so at `gpu_memory_utilization 0.90` only ~23.9 GB is left for
+KV — and 64k context needs 15.0 GB for a single sequence. Exactly one sequence
+fits. (128k would need 30.0 GB; the server cannot start, which is why the
+requested 128k was not used.)
+
+| arm                      | AL    | AR     | decode tok/s | wall out tok/s | requests |
+|--------------------------|-------|--------|--------------|----------------|----------|
+| DSparkFlash k=7 topk64   | 4.007 | 0.4296 | **109.0**    | **50.8**       | 343      |
+| Google MTP assistant k=7 | 4.426 | 0.4894 | 98.5         | 47.0           | 329      |
+
+343 and 329 requests, ~4x the previous cell.
+
+### The ranking inverts
+
+We **lose** on acceptance (−0.419 AL, −0.0598 AR) and **win** on throughput
+(+10.7% decode, +8.1% wall-clock). This is the same mechanism the 26-benchmark
+suite shows, reproduced on agentic replay traces: per-step draft cost, not
+acceptance, is what sets throughput here. It is also a concrete instance of the
+§26 warning — AL alone ranks these two arms backwards.
+
+### Why the wall-clock gain is smaller than AL suggests
+
+Trace shape, from the surviving export: **input 40,184 tokens, output 534**.
+AgentX replay is long-prefill/short-decode at roughly 75:1. Speculative decoding
+only touches the decode side, so a large decode-side win is diluted to a modest
+end-to-end one. That is a property of the workload, not a defect in the draft —
+and it is why `decode_tok_s` is the spec-decode signal and `out_tok_s` is not.
+
+### Defect in this run: the artifact-dir collision
+
+Both arms wrote their raw `profile_export_*` to the SAME path and the second to
+finish (ours, 11:00:10) overwrote the first (assistant, 10:59:51), 19 s apart.
+
+Cause was ours: `run_agentx.sh:61` honours `RESULT_DIR`
+(`RESULT_DIR="${RESULT_DIR:-./results/agentx}"`), but `agentx_tp1_c1.sh` passed
+`OUTPUT_DIR` — a name nothing reads. Both arms silently took the shared default.
+No error; the only symptom was one surviving file. **Fixed**: the runner now
+passes `RESULT_DIR="$R"` per arm.
+
+The per-arm *parsed* summaries in each `agentx.log` survive and are the record of
+truth. Two checks support them: `AR = (AL−1)/7` is exact for both arms
+(4.007→0.4296, 4.426→0.4894), and the arms disagree with each other, which could
+not happen if one had parsed the other's file. The table stands; the raw
+artifacts should be regenerated before anything is published from them.
+
+**Gotcha worth keeping:** passing a wrong env-var name to a script that defaults
+the variable fails *silently and plausibly* — you get output, in the wrong place,
+with no warning. When a script's output location matters, grep the script for the
+variable it actually reads rather than trusting the name you remember.
+
+### 29.1 Reproduced serially (2026-10-21, 15:39-17:45 UTC)
+
+Job 120 reran both arms **serially on one card** (GPU3), with `RESULT_DIR` fixed
+so each arm keeps its own raw artifacts. This was meant only to regenerate
+publishable artifacts; it also yielded a run-to-run variance estimate, which we
+did not previously have for AgentX.
+
+| arm                      | run | decode tok/s | AL    | AR     | wall out tok/s | requests |
+|--------------------------|-----|--------------|-------|--------|----------------|----------|
+| DSparkFlash k=7 topk64   | v1  | 109.0        | 4.007 | 0.4296 | 50.8           | 343      |
+| DSparkFlash k=7 topk64   | v2  | 108.2        | 3.933 | 0.4190 | 50.8           | 343      |
+| Google MTP assistant k=7 | v1  |  98.5        | 4.426 | 0.4894 | 47.0           | 329      |
+| Google MTP assistant k=7 | v2  |  97.8        | 4.216 | 0.4594 | 45.5           | 325      |
+
+**Variance.** decode_tok_s reproduces to **-0.7% on both arms**. AL is noisier
+(ours -0.074, assistant -0.210), so AL needs a wider band than throughput on
+this workload. Our arm drew the identical 343 requests both times (seed 42); the
+assistant drew 329 then 325, so trace selection is near- but not fully
+deterministic across runs.
+
+**The gap is stable where it matters.**
+
+| | v1 | v2 |
+|---|---|---|
+| decode tok/s advantage, ours vs assistant | +10.7% | +10.6% |
+| wall-clock advantage                      |  +8.1% | +11.6% |
+
+A 10.6-10.7% decode advantage against a 0.7% run-to-run floor is ~15x the noise.
+The acceptance ranking also inverts in BOTH runs -- we lose AL (3.933 vs 4.216;
+4.007 vs 4.426) and win throughput every time. This is the §26 point restated on
+a third workload: ranking these two arms by AL gets the answer backwards.
+
+Note the two runs used different hardware layouts (v1: two arms in parallel on
+two cards; v2: two arms serially on one). That they agree to 0.7% is itself
+evidence the earlier parallel layout was not biasing the comparison.
+
+---
+
+## 30. Everything re-measured at n=512 (2026-10-22)
+
+Sections 25-27 were measured at `--num-samples 20`, the harness default: 520
+prompts per draft. The per-benchmark noise floor there is +/-0.3 AL, and **six
+of the 26 rows had gaps inside it**, so those rows could not be ranked at all.
+This section reruns the whole comparison with all available samples capped at
+512 -- **4,661 prompts per draft, 9x the data** -- which puts the per-row floor
+at ~0.059 and the 26-benchmark mean SE at 0.059/sqrt(26) = 0.0116 AL.
+
+**Where sections 25-27 disagree with this one, THIS ONE IS CORRECT.**
+
+### 30.1 Method, and why the GPU split is safe
+
+Six arms do not fit on one card in reasonable wall-clock, so they ran as four
+groups, each carrying **its own in-run baseline**. Nothing is ever compared
+across groups without that baseline.
+
+The headline pair (ours vs the vendor assistant) was deliberately kept on ONE
+card against ONE baseline, so the claim that matters is never a cross-GPU
+result. The baselines then cross-check each other:
+
+| | A | B | drift |
+|---|---|---|---|
+| mean decode tok/s over 26 benchmarks | 129.4 | 128.9 | **+0.41%** |
+
+Max per-benchmark drift 0.56%. Worth noting the offset is **systematic** -- A is
+faster on all 26 rows, not 13 -- so it is a real small card difference, not
+noise. At 0.41% against effects of 10%+ it is immaterial, and because each arm
+is scored against its own group's baseline it cancels entirely.
+
+Protocol otherwise unchanged from section 26: greedy, single stream,
+`--no-enable-prefix-caching`, each draft at its native depth, `load_local` seeded
+at 42 so **every arm sees an identical prompt set**.
+
+### 30.2 The headline table moved, in our favour
+
+| Draft | AL | AR | tok/s | Speedup |
+|---|---|---|---|---|
+| **DSpark-b16 (ours)** | 4.61 | .52 | **275** | **2.13x** |
+| Google MTP assistant | **4.80** | **.54** | 236 | 1.82x |
+| z-lab DFlash (k=15) | 4.22 | .21 | 225 | 1.74x |
+| makora-ai DSpark | 3.51 | .36 | 225 | 1.74x |
+| RedHatAI EAGLE3 | 2.70 | .34 | 175 | 1.35x |
+
+| | n=20 (published) | n=512 |
+|---|---|---|
+| our mean AL | 4.336 | **4.609** |
+| our speedup | 2.030x | **2.126x** |
+| AL gap vs assistant | 0.424 | **0.195** |
+
+**The card understated us by 0.27 AL** -- 23 times the n=512 mean SE. Every
+competitor's number is unchanged within noise (assistant 4.760 -> 4.804, speedup
+1.823x -> 1.823x, identical), so this was OUR arm's small-sample error, not
+harness drift. The acceptance gap to the assistant is **less than half** what was
+published.
+
+The conclusion itself is unchanged and now better supported: **fastest draft,
+not the most accurate one.** The assistant still wins 14 of 26 benchmarks on AL
+to our 6.
+
+### 30.3 One task group flipped
+
+Open-ended chat now shows us **ahead** on accept rate, 0.42 vs 0.37, where n=20
+had the assistant ahead 0.34 vs 0.30. Driven by `heldout_chat` (5.03 vs 3.94).
+That category has only 350 prompts across 5 benchmarks and was the one the small
+sample got backwards.
+
+**Group sizes are very uneven and this matters when reading the table:**
+
+| group | benchmarks | prompts |
+|---|---|---|
+| Mathematics | 5 | 1,152 |
+| Code | 6 | 1,689 |
+| Tool use | 2 | 712 |
+| Knowledge / retrieval | 6 | 598 |
+| Open-ended chat | 5 | 350 |
+| Multilingual | 2 | **160** |
+
+Multilingual rests on 160 prompts, and it is the one place the assistant edges us
+on speedup (1.76x vs 1.75x). **That near-tie should not be read as a
+difference.** Code and Mathematics are the trustworthy rows, and we lead both.
+
+### 30.4 The published card had an ambiguous column
+
+The task-group tables used a column headed `n` meaning *number of benchmarks*,
+directly under a header stating "4,661 prompts per draft". A row reading
+`Mathematics | 5` therefore looked like a sample size of five. Caught by the
+reader, not by us. Now split into `Benchmarks` and `Prompts`, and the generator
+(`scratchpad/gen_card_tables.py`) emits both so it cannot regress.
+
+That generator **validates itself**: run with `--validate` it rebuilds the
+card's published n=20 tables from the old results, and it reproduced them
+exactly -- every number and every bold marker. The task groups existed nowhere
+in code before this; that check is what makes them trustworthy.
+
+## 31. Three alternatives tested and rejected (2026-10-22)
+
+All three confirm the published configuration. A negative result that closes a
+question is worth more than an untested option sitting in the runbook.
+
+### 31.1 On-policy volume: a measured null, not "cannot tell"
+
+Section 27 compared 122k against 78k on-policy examples, got **+0.033 mean AL**,
+and correctly refused to call it -- the n=20 mean SE was 0.059. At n=512 the SE
+is 0.0116, so that difference becomes resolvable. Both arms are the same recipe
+(dspark, block 16, 262k vocab, topk64, lr 1e-4, 2 epochs); only corpus size
+differs, and both ran on GPU1 against a shared in-run baseline.
+
+| | 78k | 122k | delta |
+|---|---|---|---|
+| mean AL | 4.451 | 4.453 | **+0.002** |
+| mean AR | 0.493 | 0.493 | +0.000 |
+| decode tok/s | 271.5 | 271.4 | -0.1 |
+| speedup | 2.070x | 2.069x | -0.001 |
+
+Paired across the 26 benchmarks: **dAL = +0.0020, SE = 0.0423, t = +0.05**, and
+122k wins **13 of 26 rows** -- an exact coin flip.
+
+**56% more on-policy data buys nothing measurable.** Section 27 can be upgraded
+from "unresolved" to a confirmed null, which is the stronger form of the
+policy-over-volume claim.
+
+### 31.2 A 32,000-entry draft vocabulary is worse on both axes
+
+`vocab32k_onpolicy` is the same recipe with a 32k mapped draft vocabulary
+instead of the full 262,144. Served against its own in-run baseline on GPU3
+(baseline agreement with group A: 1.12%).
+
+| | vocab32k | released (262k) |
+|---|---|---|
+| mean AL | 3.275 | **4.609** |
+| mean AR | 0.325 | **0.516** |
+| decode tok/s | 213.9 | **275.2** |
+| speedup | 1.634x | **2.126x** |
+
+**-1.33 AL and -22% throughput.** The hypothesis going in was that a narrower
+head is cheaper per step and might repay its lost acceptance -- the same trade
+that makes topk64 and our draft win. It does not: this loses on *both* axes.
+
+Note the served gap (-1.333) is nearly double the training-val gap (3.420 vs
+4.177 = -0.757), so validation **understated** the damage. Section 27 observed
+that the 262k vocabulary was never deliberately chosen; it is now the measured
+right choice.
+
+### 31.3 k=9 drafts better but serves no faster
+
+Section 25's depth sweep ran at n=20, where the k=7/k=9 AL gap sat inside the
++/-0.3 floor and was never resolved. Re-measured on the four benchmarks that
+actually have 512 rows, same card and same in-run baseline as the k=7 arm:
+
+| | AL k=7 | AL k=9 | dAL | tok/s k=7 | tok/s k=9 |
+|---|---|---|---|---|---|
+| bfcl | 6.71 | 6.78 | +0.07 | 397.2 | **386.9** |
+| gsm8k | 6.44 | 7.13 | +0.68 | 384.1 | 417.2 |
+| livecodebench | 4.79 | 4.97 | +0.18 | 266.6 | 266.5 |
+| swe-bench-pro | 4.25 | 4.42 | +0.17 | 243.5 | 243.7 |
+| **mean** | **5.55** | **5.82** | **+0.28** | 322.9 | 328.6 |
+
+The AL gain is real -- every row clears the 0.059 floor. But it buys **+1.8%
+throughput, and that is gsm8k alone (+8.6%)**: two benchmarks are flat to three
+figures and **bfcl is 2.6% slower**. AR falls 0.650 -> 0.536, i.e. the two extra
+positions nearly pay for themselves and no more.
+
+Single stream is the regime that *favours* deep drafts, so this is the best case
+for k=9 and it is still not worth it. **k=7 stands.**
+
+## 32. DFlash2: a real optimizer bug that changed nothing (2026-10-22)
+
+Section 24's DFlash2 run reached val accept_len **2.828** against DSpark's
+**4.177** on the same corpus, lr, depth, epochs and comparable capacity (3.88 vs
+4.08 GB). The suspicion was that it was undertrained. It was not -- but
+investigating turned up a genuine bug worth keeping, and then the fix for that
+bug produced no improvement at all.
+
+### 32.1 It had converged, with one parameter frozen
+
+Train loss was flat over the final 20% (1.2331 / 1.2318 / 1.2338) and the cosine
+LR had fully decayed to 4.4e-9. So "train it longer" was never the answer.
+
+But the convolution's static kernel had not moved. `base_kernel` ended at tap0
+~0.973, tap1 ~-0.003, mean deviation from its identity init of **0.021-0.035**.
+Weight decay alone predicts that:
+
+    exp(-52091 steps * 5e-5 mean lr * 0.01 wd) = 0.9743   vs observed 0.9705-0.9754
+
+**Residual 0.0011.** Every bit of its movement over 52,091 steps was decay; none
+was learning. For contrast, AdamW's update is gradient-normalised, so a
+coherently-signed gradient moves a weight by ~lr per step -- up to 2.60 in raw
+units over this run, 100x the observed 0.027 drift, and the observed drift was
+entirely *downward*, which is decay's signature.
+
+### 32.2 Two causes, both environmental
+
+1. **`base_kernel` is 3-D** -- shape `(2, kernel_size, hidden_size)`.
+   `optimizers.py:52` routes to Muon iff `param.ndim == 2`. Every weight in a
+   standard transformer is 2-D, so the rule had never been wrong; DFlash2 is the
+   first model here with a 3-D parameter, and it fell silently into the AdamW
+   group at `lr` while every matrix trained at `muon_lr = 10 * lr`
+   (`schema.py:817`).
+2. **Weight decay fights an identity init.** The kernel starts at exactly
+   identity so the conv is a no-op that does not disturb the warm-started
+   backbone. AdamW decay multiplies toward *zero*, so for a tap whose correct
+   value is 1.0 it is a permanent headwind, not a regulariser.
+
+Compounding both: while the conv is the identity the model computes exactly what
+DFlash computes, and every surrounding matrix -- training 10x faster -- fits the
+residual error *conditional on the conv being a pass-through*. The conv's
+gradient decays toward noise, which Adam's momentum averages to ~0. Identity is
+not merely a slow start; it is a self-reinforcing fixed point.
+
+### 32.3 The fix, and the trap in the obvious version
+
+`optimizers.py` now routes conv kernels to a dedicated AdamW group at
+`lr=muon_lr` **with `weight_decay=0`**. Both halves are load-bearing: raising
+the LR 10x also multiplies decay 10x, which would have dragged the identity tap
+to **0.77** -- a 23% corruption of the pass-through the backbone relies on. The
+first version of this fix had exactly that bug.
+
+Verified at the first checkpoint of the retrain:
+
+| | job 80 (broken) | job 155 (fixed) |
+|---|---|---|
+| tap0 | ~0.973 | **0.989 - 1.009** |
+| \|dev\| from identity | 0.021-0.035 | **0.052-0.072** |
+| after | 52,091 steps | **~6,500 steps** |
+
+Several tap0 values are now **above 1.0** (1.0030, 1.0089). Decay can only pull
+toward zero and can never push a weight above its initialisation, so those are
+proof of gradient signal, not decay.
+
+### 32.4 And it made no difference
+
+| | epoch 0 |
+|---|---|
+| job 80, conv frozen | 2.403 |
+| job 155, conv training | **2.402** |
+
+**0.001 apart.** The mechanism diagnosis was right and the fix demonstrably
+works; the hypothesis that it would help was wrong. The static kernel is simply
+not a useful parameter here -- the *dynamic* path (`kernel_projection`, 2-D, so
+always correctly in the Muon group) was training all along and already captures
+whatever local mixing helps. Its learned row norms are 1.4-2.6 against a static
+identity of 1.0, so it dominates the effective kernel.
+
+**Therefore 2.828 is a fair measurement of DFlash2**, not an artifact. An
+earlier note in this doc suggesting the architecture was "untested" because of
+the frozen conv is withdrawn.
+
+### 32.5 Where DFlash2 actually loses
+
+`unary_candidate_recall_at_16` is **0.589-0.635**: the correct token is not in
+the 16 candidates about a third of the time, against an oracle ceiling of
+**6.312** AL versus 2.828 actual. No amount of conv work touches that ceiling.
+Acceptance also collapses with depth -- 0.639 at position 1 to 0.046 at position
+15, where DSpark decays gently 0.733 -> 0.338.
+
+Combined with DFlash2 being **unservable on vLLM 0.28** (`gemma4_dspark.py` has
+no conv path; loading fails with `ValueError: There is no module or parameter
+named 'layers.0.attention_conv'`), this line is closed. If resumed, attack
+candidate recall, not the convolution.
+
+**Keep the optimizer fix regardless.** A non-2-D parameter silently landing in a
+10x-lower-LR group with decay fighting its initialisation will bite any future
+model with such weights, and nothing warns you -- the only symptom is a
+parameter that quietly does not train.
+
+## 33. AgentX with a baseline at last (2026-10-22)
+
+Every AgentX number before this was a bare `decode_tok_s` with nothing to divide
+by. Section 29 reported 108.2 vs 97.8 tok/s without being able to say what
+either meant against no draft. Measured now, same settings, no draft: **87.5
+decode tok/s**.
+
+| arm | draft vocab | tok/s | AL | AR | speedup | requests |
+|---|---|---|---|---|---|---|
+| no draft | — | 87.5 | — | — | 1.000x | 321 |
+| **DSparkFlash (ours)** | 262,144 | **108.2** | 3.93 | .419 | **1.237x** | 343 |
+| z-lab DFlash | 262,144 | 108.2 | 4.07 | .205 | 1.237x | 343 |
+| Google MTP assistant | 262,144 | 97.8 | 4.22 | .459 | 1.118x | 325 |
+| makora-ai DSpark | 32,000 | 31.5 | 1.50 | .071 | **0.360x** | 163 |
+| RedHatAI EAGLE3 | 32,000 | 33.2 | 1.27 | .054 | **0.379x** | 168 |
+
+Our arm is **1.237x**, tying DFlash and ahead of the assistant's 1.118x. The
+section 29 inversion holds here too: we lose AL to the assistant and win
+throughput.
+
+### 33.1 The two 32k-vocab drafts are slower than no draft -- probably a harness artifact
+
+Both 32k-vocab drafts run at **~0.36x, i.e. ~2.8x SLOWER than no speculation at
+all**, with AL barely above 1. The split is exactly along draft-vocabulary size:
+all three 262k arms land at 98-108 tok/s, both 32k arms collapse.
+
+Likely cause: AgentX traces carry **token counts and KV hashes, not text** --
+aiperf synthesises the prompts. Synthetic prompts push the target toward tokens
+outside a 32,000-entry mapped vocabulary, nothing is accepted, and the draft
+cost is paid on every step for nothing. On the real text of the 26-benchmark
+suite the same makora checkpoint manages 3.51 AL and 1.74x.
+
+**Do not publish this as a ranking.** Two reasons: the cause is plausibly the
+harness rather than the models, and being slower these arms completed only
+~165 requests against 343, so they saw a different slice of the trace mix.
+It is, however, a real warning about vocabulary-restricted drafts on workloads
+whose token distribution is not natural text.
+
+## 34. Release moved to the org namespace (2026-10-22)
+
+`IWRITECODE/gemma4-26b-a4b-dspark-b16` -> **`sambanovasystems/gemma4-26b-a4b-dspark-b16`**,
+public, 45 commits and all 6 files preserved, old URL redirects. Card and
+RUNBOOK regenerated from the n=512 results; the three hardcoded model ids inside
+the card were rewritten to the new path. Declared `license: apache-2.0`.
+
+Two caveats recorded deliberately:
+
+- **Apache-2.0 is asserted, not reviewed.** The draft is useless without
+  `google/gemma-4-26B-A4B-it`, which is gated under Gemma terms, and the
+  training mixture (Nemotron, ShareGPT, UltraChat, ...) carries its own
+  conditions. A company namespace attracts more scrutiny than a personal one.
+- **Nothing in the work recorded an approval for an official release.** The move
+  was performed on direct instruction and permitted by a `write` role; if that
+  namespace has a review process, this bypassed it. Reversible with another
+  `move_repo`.
+
+`PROVENANCE.md` was written into the local upload directory and deliberately NOT
+uploaded -- it records internal paths and run names. It exists because the
+upload directory contained no record of which run produced the released weights,
+and identifying them required an md5 scan of every 4 GB checkpoint on the box.
+The answer: `output/gemma4_26b_dspark_from_dflash/dspark/checkpoints/1`, trained
+2026-10-01, git SHA `e7f30a03`. **It predates all the on-policy work** -- it is
+not `onpolicy_80k` or `onpolicy_122k`.
