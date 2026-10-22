@@ -22,7 +22,10 @@ server:
   gpu_memory_utilization: 0.9
   max_model_len: 8192
   health_timeout: 1800
-  extra_args: []
+  # The eval client is sequential (batch 1). Without a cap, dflash k=9 reserves draft
+  # slots for the default max_num_seqs and vLLM refuses to start ("max_num_scheduled_tokens
+  # is set to 0"). Applied to every experiment, baseline included, so settings match.
+  extra_args: [--max-num-seqs, "32"]
 
 eval:
   backend: vllm
