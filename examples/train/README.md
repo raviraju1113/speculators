@@ -22,23 +22,26 @@ Obsolete cluster-era and completed one-off scripts are in `archive/`.
 our conv ep25 — accept_len / accept_rate, same harness, both on B200 TP=1
 (`gemma4-31b-assistant-ref.yaml`, 2026-10-21; an A100 rerun agrees to ±0.03):**
 
-| k | bench | assistant | conv ep25 | Δ (conv − assistant) |
-|---|---|---|---|---|
-| 8 | AIME | 5.75 / 0.593 | **6.12 / 0.640** | +0.38 |
-| 8 | GPQA | **5.03 / 0.504** | 4.32 / 0.415 | −0.71 |
-| 8 | LCB | 5.19 / 0.524 | 5.19 / 0.524 | 0.00 |
-| 5 | AIME | 4.79 / 0.757 | **4.83 / 0.766** | +0.04 |
-| 5 | GPQA | **4.28 / 0.655** | 3.76 / 0.551 | −0.52 |
-| 5 | LCB | **4.40 / 0.680** | 4.32 / 0.663 | −0.08 |
-| 3 | AIME | 3.56 / 0.854 | 3.55 / 0.851 | −0.01 |
-| 3 | GPQA | **3.34 / 0.780** | 3.05 / 0.682 | −0.29 |
-| 3 | LCB | **3.40 / 0.799** | 3.34 / 0.779 | −0.06 |
+Baseline (no draft): 62.5 / 62.7 / 63.4 tok/s on AIME / GPQA / LCB.
 
-Conv leads on AIME at k=8, ties LCB, and trails on GPQA at every k — the
-domain where 11.2% of tokens fall outside our 32k draft vocab (3.4% AIME,
-2.7% LCB). Throughput (same B200 hardware, baseline 62.5–63.4 tok/s) favours
-conv at every k because DSpark drafts the block in one pass: k8 341/241/284
-tok/s vs 256/225/235 (5.4×/3.8×/4.5× vs 4.1×/3.6×/3.7×).
+| k | bench | assistant accept_len / rate / tok/s (×base) | conv ep25 accept_len / rate / tok/s (×base) | Δ accept_len | Δ tok/s |
+|---|---|---|---|---|---|
+| 8 | AIME | 5.75 / 0.593 / 256 (4.1×) | **6.12 / 0.640 / 341 (5.5×)** | +0.38 | +33% |
+| 8 | GPQA | **5.03 / 0.504** / 225 (3.6×) | 4.32 / 0.415 / **241 (3.8×)** | −0.71 | +7% |
+| 8 | LCB | 5.19 / 0.524 / 235 (3.7×) | 5.19 / 0.524 / **284 (4.5×)** | 0.00 | +21% |
+| 5 | AIME | 4.79 / 0.757 / 235 (3.8×) | **4.83 / 0.766 / 264 (4.2×)** | +0.04 | +12% |
+| 5 | GPQA | **4.28 / 0.655 / 211 (3.4×)** | 3.76 / 0.551 / 206 (3.3×) | −0.52 | −2% |
+| 5 | LCB | **4.40 / 0.680** / 220 (3.5×) | 4.32 / 0.663 / **233 (3.7×)** | −0.08 | +6% |
+| 3 | AIME | 3.56 / 0.854 / **196 (3.1×)** | 3.55 / 0.851 / 194 (3.1×) | −0.01 | −1% |
+| 3 | GPQA | **3.34 / 0.780 / 184 (2.9×)** | 3.05 / 0.682 / 167 (2.7×) | −0.29 | −9% |
+| 3 | LCB | **3.40 / 0.799 / 185 (2.9×)** | 3.34 / 0.779 / 180 (2.8×) | −0.06 | −3% |
+
+At each model's best k (8), conv is faster on all three benchmarks (+33% AIME,
++21% LCB, +7% GPQA) because DSpark drafts the block in one pass while the
+assistant's 4-layer MTP head drafts k tokens sequentially; the assistant wins
+only at k=3, where acceptance dominates per-step cost. Conv trails on GPQA
+accept_len at every k — the domain where 11.2% of tokens fall outside our 32k
+draft vocab (3.4% AIME, 2.7% LCB).
 
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
