@@ -23,10 +23,19 @@ def main():
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--count", type=int, required=True)
     ap.add_argument("--max-chars", type=int, default=6000, help="skip longer prompts")
+    ap.add_argument("--model", default=None,
+                    help="backbone dir (tokenizer.json); with --max-prompt-tokens, skip prompts "
+                    "that would not fit the rollout context (4/1000 failed in the pilot)")
+    ap.add_argument("--max-prompt-tokens", type=int, default=1800)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     from datasets import load_from_disk
+
+    tok = None
+    if args.model:
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(str(Path(args.model) / "tokenizer.json"))
 
     ds = load_from_disk(args.from_dataset)
     out = Path(args.out)
@@ -40,6 +49,9 @@ def main():
             i += 1
             user = next((m["content"] for m in msgs if m["role"] == "user"), None)
             if not user or len(user) > args.max_chars or user in seen:
+                skipped += 1
+                continue
+            if tok is not None and len(tok.encode(user).ids) > args.max_prompt_tokens:
                 skipped += 1
                 continue
             seen.add(user)

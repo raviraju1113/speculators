@@ -117,6 +117,24 @@ lambda_rej in {1, 0.3}; criterion: parity >= 0.99 and val accept_len not
 below the pre-training value after one epoch; then redo 2 rounds with the
 best setting and check that round-1 rollout acceptance RISES.
 
+### Sweep result (2026-10-22, jobs 12515333/336/337/338, round-0 data, 1 epoch = 91 steps)
+All at LR 2e-5, ACCUM 4, constant schedule, fresh optimizer, weights-only seed:
+
+| variant | val accept_len | val parity | val rej-KL | note |
+|---|---|---|---|---|
+| V4 λ=0 (control, accepted-slot fwd KL only) | 4.163 | 0.990 | 13.97 | stable |
+| V1 λ=1, keep full-accept | 4.114 | 0.978 | 13.68 | stable |
+| V2 λ=0.3, keep full-accept | 4.119 | 0.979 | 13.67 | stable |
+| V3 λ=1, drop full-accept | 3.105 | 0.971 | 13.70 | different (harder) val set; worse |
+
+Reading: at this LR the loss is stable (no damage) but one epoch on 1K prompts
+moves nothing measurable — the rejected-slot term barely decreases. Decision:
+keep full-accept blocks (default now in `run_rounds.sh`), λ=1, LR 5e-5 as the
+starting point for the next multi-round run; judge by round-to-round rollout
+accept_rate. **No further runs until the B200 pool is accessible** (decision
+2026-10-22); engineering continues: `sbatch_sc3_opd_full.sh` preset,
+prompt-pool token filter, docs.
+
 ## Compute budget
 Dev/pilot: 1–4 A100-80 (sc3-c98 / sc3-c81) — unaffected by the B200 outage.
 Full OPD stage: ~700–1000 B200-hours (paper's 120 H200-h for a 4B target,

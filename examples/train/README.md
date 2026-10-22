@@ -18,6 +18,28 @@ Obsolete cluster-era and completed one-off scripts are in `archive/`.
 | `..._nemo782k_fullattn1` | nemo782k, from scratch, full-attn layer {0} | 26 (WSD) | `run_nemo782k_fullattn1_local.sh` | `fullattn1nemo` | done 2026-09-15; `checkpoint_best -> 25` (val 4.50 vs fullattn2 4.75); evals: `gemma4-31b-dspark-fullattn1-ep25.yaml` + LCR bins `TAG=fullattn1_ep25` |
 | `..._nemo782k_conv` | nemo782k, from scratch, all-sliding + **DFlash2 local conv** in every draft layer (`DSPARK_CONV_KERNEL=2`, group 16; +72.5M params) | 26 | `run_nemo782k_conv_local.sh` / `sbatch_nemo782k_conv.sh` | `nemoconv782k_v2` | done 2026-10-20 on sc3-cp99 (job 11154700, 5 d 7 h; first attempt `nemoconv782k` on lax01 cancelled at step ~2970). `checkpoint_best -> 25`, val 4.779 vs scratch 4.711 (+0.07). Evals 2026-10-21 (`gemma4-31b-dspark-conv-ep25.yaml`, served with `vllm_patches/` conv patch): k8 aime **6.12** / gpqa **4.32** / lcb **5.19** vs scratch 5.99 / 4.22 / 5.07 (+0.10..0.13, tok/s +3-4%); k5 +0.04..0.07; k3 ~0. ctx sweep 1k-32k flat, +0.0..+0.26 vs scratch, no decay. Small, consistent gain; LCR bins not run yet |
 
+**Google `gemma-4-31B-it-assistant` (native MTP, 4 layers, full 262k vocab) vs
+our conv ep25 — accept_len / accept_rate, same harness, both on B200 TP=1
+(`gemma4-31b-assistant-ref.yaml`, 2026-10-21; an A100 rerun agrees to ±0.03):**
+
+| k | bench | assistant | conv ep25 | Δ (conv − assistant) |
+|---|---|---|---|---|
+| 8 | AIME | 5.75 / 0.593 | **6.12 / 0.640** | +0.38 |
+| 8 | GPQA | **5.03 / 0.504** | 4.32 / 0.415 | −0.71 |
+| 8 | LCB | 5.19 / 0.524 | 5.19 / 0.524 | 0.00 |
+| 5 | AIME | 4.79 / 0.757 | **4.83 / 0.766** | +0.04 |
+| 5 | GPQA | **4.28 / 0.655** | 3.76 / 0.551 | −0.52 |
+| 5 | LCB | **4.40 / 0.680** | 4.32 / 0.663 | −0.08 |
+| 3 | AIME | 3.56 / 0.854 | 3.55 / 0.851 | −0.01 |
+| 3 | GPQA | **3.34 / 0.780** | 3.05 / 0.682 | −0.29 |
+| 3 | LCB | **3.40 / 0.799** | 3.34 / 0.779 | −0.06 |
+
+Conv leads on AIME at k=8, ties LCB, and trails on GPQA at every k — the
+domain where 11.2% of tokens fall outside our 32k draft vocab (3.4% AIME,
+2.7% LCB). Throughput (same B200 hardware, baseline 62.5–63.4 tok/s) favours
+conv at every k because DSpark drafts the block in one pass: k8 341/241/284
+tok/s vs 256/225/235 (5.4×/3.8×/4.5× vs 4.1×/3.6×/3.7×).
+
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
   same-k, native k=8, stabler outputs. Serving True checkpoints needs the

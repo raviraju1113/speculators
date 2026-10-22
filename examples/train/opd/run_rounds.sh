@@ -101,8 +101,12 @@ for (( r=0; r<ROUNDS; r++ )); do
   unset DSPARK_ROLLOUT_LOG
   python scripts/opd/assemble_rollouts.py --log-dir "$RDIR/engine_log" --responses "$RDIR/responses.jsonl" \
     --out "$RDIR/rollouts.jsonl" --draft-ckpt "$CK/$LAST" --round "$r" | tee "$RDIR/assemble.txt"
+  # KEEP_FULL=1 (default): keep fully-accepted blocks. The sweep (PLAN.md,
+  # 2026-10-22) showed dropping them is clearly worse: they are the forward-KL
+  # anchoring signal; the paper keeps every anchor.
   python scripts/opd/rollouts_to_dataset.py --rollouts "$RDIR/rollouts.jsonl" --model "$MODEL" \
-    --token-freq "$VOCAB_DATA/token_freq.pt" --output "$RDIR/dataset" | tail -2
+    --token-freq "$VOCAB_DATA/token_freq.pt" --output "$RDIR/dataset" \
+    $( [ "${KEEP_FULL:-1}" = "1" ] && echo --keep-full-accept ) | tail -2
   fi
 
   echo "=== round $r: train one epoch on $RDIR/dataset $(date '+%T') ==="
@@ -112,7 +116,10 @@ for (( r=0; r<ROUNDS; r++ )); do
   export EPOCHS=$(( SEED_EPOCH + r + 2 ))
   export MODE=full SAMPLE_FROM_ANCHOR=1 DSPARK_CONV_KERNEL="${DSPARK_CONV_KERNEL:-2}" DSPARK_CONV_GROUP=16
   export ACCUM_STEPS="${ACCUM_STEPS:-1}" SCHED_TOTAL="${SCHED_TOTAL:-5300}" SCHEDULER_TYPE="${SCHEDULER_TYPE:-cosine}"
-  export WARMUP_RATIO="${WARMUP_RATIO:-0.05}" LR="${LR:-3e-4}"
+  # LR: the paper's 3e-4 (24-prompt batches) wrecked our draft at ~10 prompts
+  # per step (pilot 12492724); 2e-5 at ACCUM 4 was stable but moved nothing in
+  # 91 steps. Default 5e-5 for the next run; scale with the effective batch.
+  export WARMUP_RATIO="${WARMUP_RATIO:-0.05}" LR="${LR:-5e-5}"
   export MAX_ANCHORS="${MAX_ANCHORS:-512}" CHECKPOINT_FREQ=1 SAVE_BEST=0 TRAIN_DATA_RATIO="${TRAIN_DATA_RATIO:-0.98}"
   export ON_GENERATE=delete VLLM_TP=1 VLLM_DP="${VLLM_DP:-1}" TRAIN_GPUS_N="${TRAIN_GPUS_N:-1}"
   export GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}" WANDB_MODE="${WANDB_MODE:-offline}" WANDB_PROJECT=gemma4-dspark-opd
