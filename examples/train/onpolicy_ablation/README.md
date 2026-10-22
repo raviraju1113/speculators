@@ -91,6 +91,7 @@ checkpoint.
 | 1b | Train OFF and ON concurrently, 4 GPUs each (vLLM hidden-state server ×1 + 3 train ranks, online `--on-generate delete`) | sc-c96 | sized from Phase-0 throughput |
 | 1c | Eval both + baseline + z-lab control | 1–2 A100s | ~4–6 h |
 | 2 | (triggered, done) seed 1 for both arms | sc-c96 | 4h30m |
+| 4 | (done) mixed-policy arms mix20 / mix50, seed 0 (see Phase 4) | sc-c96 | 4h20m train + 3 evals |
 | 3 | (optional) 2×2: add CE-only (`{"ce":1.0}`) for both arms — does the TV distillation term explain any OFF≈ON result? | sc-c96 | = 1b |
 
 ## Phase 4: mixed-policy data (registered 2026-10-22, before results)
@@ -111,6 +112,56 @@ Question: can regenerating only a slice of the corpus recover on-policy performa
   recovery ≈ the ON fraction (0.2 / 0.5). Recovery well above that means a small
   on-policy slice buys most of the benefit.
 - **Confound:** ON replies are shorter, so mix arms see token counts between OFF and ON.
+
+### Phase 4 results (2026-10-22): 20% on-policy is enough
+
+**Verdict under the pre-registered rule: both mixes match on-policy.** Regenerating a
+random 20% of the corpus with the target recovers **96%** of the OFF→ON gap in macro
+accept_len (3.509 vs ON 3.522, −0.4%). A linear mix would recover 20%. At 50% the mix
+lands at +2.9% over ON's 2-seed mean. That is inside ON's own seed spread (4.1%), so
+read it as "matches ON", not "beats ON".
+
+| benchmark | OFF (2-seed) | mix20 | mix50 | ON (2-seed) |
+|---|---|---|---|---|
+| mt-bench | 2.554 | 2.806 | 2.857 | 2.642 |
+| writing | 2.439 | 2.747 | 2.807 | 2.726 |
+| qa | 2.612 | 2.803 | 2.942 | 2.906 |
+| gsm8k | 3.497 | 3.869 | 3.329 | 3.582 |
+| math500 | 4.441 | 4.714 | 5.183 | 4.894 |
+| humaneval | 3.390 | 3.580 | 3.876 | 3.663 |
+| livecodebench | 3.542 | 4.045 | 4.376 | 4.243 |
+| kn782k_heldout | 3.607 | 4.132 | 4.144 | 4.107 |
+
+| domain | OFF | ON | mix20 (vs ON, recovery) | mix50 (vs ON, recovery) |
+|---|---|---|---|---|
+| chat | 2.535 | 2.758 | 2.785 (+1.0%, 1.12) | 2.869 (+4.0%, 1.50) |
+| math | 3.969 | 4.238 | 4.292 (+1.3%, 1.20) | 4.256 (+0.4%, 1.07) |
+| code | 3.466 | 3.953 | 3.812 (−3.5%, 0.71) | 4.126 (+4.4%, 1.36) |
+| in-dist | 3.607 | 4.107 | 4.132 (+0.6%, 1.05) | 4.144 (+0.9%, 1.07) |
+| **macro7** | 3.211 | 3.522 | **3.509 (−0.4%, 0.96)** | **3.624 (+2.9%, 1.33)** |
+
+The domain values are the mean of their benchmarks' accept_len. Recovery is
+(mix − OFF) / (ON − OFF).
+
+- **Code is the one place 20% falls short.** It recovers 71%, at −3.5% vs ON, which is
+  within the 6% bar. 50% closes it. If code acceptance matters most, regenerate more.
+- **Per-benchmark noise is large.** gsm8k in mix50 is below OFF, while math500 is far
+  above ON. Read domains and macro, not single rows.
+- **Only one seed per mix.** ON and OFF are 2-seed means. Earlier seed pairs moved the
+  arm macro by 2.6–4.1%, so mix20's −0.4% and mix50's +2.9% are both within noise of
+  ON.
+
+**Eval reproducibility, second occurrence.**
+- mix20's two evals were bit-identical.
+- mix50's first eval (job 12739545, `-t0/mix50`) disagreed with its rerun on 736 of
+  1,204 samples. Run 1 gave macro7 3.577.
+- Two further evals (job 12828679, `-t0-mix50-r3` and `-r4`, run concurrently) match the
+  rerun exactly. Runs 2, 3 and 4 agree on all 1,204 samples, so run 1 is excluded.
+- The same pattern as the first seed-0 incident: the bad run was its checkpoint's first
+  eval, with a cold torch.compile alongside another server starting on a neighbouring
+  GPU. mix20 had the same setup and reproduced, so this is still a suspect, not a cause.
+- Both readings of mix50 pass the rule, so the verdict does not depend on which run
+  counts.
 
 ## Results (2026-10-22): on-policy wins, by ~10% acceptance length
 
@@ -184,6 +235,7 @@ Other caveats:
 - `run_regen.sh` — Phase 1a, on-policy regeneration
 - `finalize_arms.py` — Phase 1a', drop capped/failed prompts from both arms
 - `smoke_test.sh` — Phase 0
-- `train_arm.sh` — Phase 1b, one arm (`ARM=off|on`)
+- `train_arm.sh` — Phase 1b, one arm (`ARM=off|on|mix20|mix50`)
+- `make_mix.py` — Phase 4, build a mixed-policy arm from the finalized OFF/ON files
 - `scripts/evaluate/experiments/llama31-8b-onpolicy-ablation.yaml` — Phase 1c
 - `RESULTS.md` — numbers, once they exist
