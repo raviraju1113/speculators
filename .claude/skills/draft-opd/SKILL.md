@@ -87,6 +87,16 @@ trained but not served, all-sliding 5 layers, optional conv (kernel 2, group 16)
   (`plen + anchor - 1`); slot 0 carries its embedding and sees base tokens
   strictly before it. `plen + anchor` is one late and mislabels the
   accepted/rejected slots.
+- **Training flags live in the pydantic schema**
+  (`src/speculators/train/config/schema.py`, `DFlashArgs` for DSpark knobs),
+  not in `scripts/train.py`'s `parse_args()` -- that function is dead code;
+  `main(TrainConfig.resolve())` builds the parser from the schema. A flag added
+  only to `parse_args()` is "unrecognized" at runtime (cost one sweep).
+- **Effective batch**: one micro-step is one 8192-token packed sequence
+  (~10 rollouts of ~600 tokens). The 2-round pilot at ACCUM 1 / 1 rank /
+  fresh Muon+AdamW warmed to 3e-4 (Muon 3e-3) wrecked the draft within ~100
+  steps (parity 0.996 -> 0.65, rollout accept rate 0.41 -> 0.26). Size the
+  batch (ranks x ACCUM) and LR like a fine-tune, not like the SFT recipe.
 - **`finish=length` clips the last step**: a request hitting `max_tokens` keeps
   only the first `max_tokens` output ids, so the final step's `gen` is longer
   than what remains; the assembler compares on the kept prefix.

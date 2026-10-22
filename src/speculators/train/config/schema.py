@@ -464,6 +464,12 @@ class DFlashArgs(_Group):
     dflash_decay_gamma: float = Field(
         default=4.0, description="Decay gamma for DFlash-family loss weighting."
     )
+    opd_lambda_rej: float = Field(
+        default=1.0,
+        description="Draft-OPD: weight of the rejected-slot reverse-KL term relative "
+        "to the accepted-slot forward KL. Only used for datasets carrying "
+        "opd_anchor_mask (scripts/opd/rollouts_to_dataset.py).",
+    )
     per_position_loss_weight: Literal["fixed-exp-decay", "dpace"] | None = Field(
         default=None,
         description="Per-position loss weight option for D-PACE support "
