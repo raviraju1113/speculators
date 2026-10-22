@@ -35,7 +35,8 @@ source /import/ml-sc-scratch1/mengmengj/speculators/examples/train/sc3_eval_prel
 
 CKPT="${CKPT:-/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25}"
 TAG="${TAG:-conv_ep25}"
-METHOD="${METHOD:-dspark}"
+METHOD="${METHOD:-dspark}"   # empty = let vLLM infer it (google assistant MTP)
+TP="${TP:-2}"                # 2 x B200; use TP=4 with --gres=gpu:a100m80:4 on A100-80 nodes
 K_MAIN="${K_MAIN:-8}"
 # fullattn1 k8 OOMed at engine init with 0.92 on lax01 (post-KV warmup wanted
 # 3.6 GiB more); GPU_UTIL=0.88 if that recurs.
@@ -45,14 +46,20 @@ PORT=$(( 20000 + ${SLURM_JOB_ID:-0} % 10000 ))
 
 [ -d "$CKPT" ] || { echo "!! checkpoint missing: $CKPT" >&2; exit 3; }
 check_conv_servable "$CKPT" || exit $?
-MISSING=$(for b in ${BENCHES//,/ }; do [ -f "$REPO/scripts/evaluate/mtp_server_eval/data/$b.jsonl" ] || echo -n "$b.jsonl "; done)
-[ -z "$MISSING" ] || { echo "!! AA-LCR data missing in scripts/evaluate/mtp_server_eval/data: $MISSING -- see header for the rsync" >&2; exit 3; }
+# The bin files come from the lax01 repo by rsync (header); wait for them
+# (up to DATA_WAIT_H hours) so the job can be queued before the copy lands.
+for _ in $(seq 1 $(( ${DATA_WAIT_H:-8} * 12 ))); do
+  MISSING=$(for b in ${BENCHES//,/ }; do [ -f "$REPO/scripts/evaluate/mtp_server_eval/data/$b.jsonl" ] || echo -n "$b.jsonl "; done)
+  [ -z "$MISSING" ] && break
+  echo "$(date '+%T') waiting for AA-LCR data: $MISSING"; sleep 300
+done
+[ -z "$MISSING" ] || { echo "!! AA-LCR data still missing after ${DATA_WAIT_H:-8} h: $MISSING" >&2; exit 3; }
 
 run_pass () {  # $1 = tag (k8|k3|base); remaining args = extra vllm serve args
   local tag=$1; shift
   local log="logs/lcr_bins_server_${TAG}_${tag}_${SLURM_JOB_ID}.log"
   vllm serve "$MODEL" \
-    --host 127.0.0.1 --port "$PORT" --tensor-parallel-size 2 \
+    --host 127.0.0.1 --port "$PORT" --tensor-parallel-size "$TP" \
     --gpu-memory-utilization "$GPU_UTIL" --max-model-len 131072 \
     --enforce-eager --no-enable-prefix-caching \
     --chat-template "$CHAT_TEMPLATE" \
