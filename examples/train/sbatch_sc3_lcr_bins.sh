@@ -81,7 +81,14 @@ run_pass () {  # $1 = tag (k8|k3|base); remaining args = extra vllm serve args
   return $rc
 }
 
-run_pass "k${K_MAIN}" --speculative-config "{\"model\": \"$CKPT\", \"num_speculative_tokens\": ${K_MAIN}, \"method\": \"$METHOD\"}"
-[ "${SKIP_K3:-0}" = "1" ] || run_pass k3 --speculative-config "{\"model\": \"$CKPT\", \"num_speculative_tokens\": 3, \"method\": \"$METHOD\"}"
+spec_cfg () {  # $1 = k; omits "method" when METHOD is empty (vLLM infers it, e.g. google assistant MTP)
+  if [ -n "$METHOD" ]; then
+    echo "{\"model\": \"$CKPT\", \"num_speculative_tokens\": $1, \"method\": \"$METHOD\"}"
+  else
+    echo "{\"model\": \"$CKPT\", \"num_speculative_tokens\": $1}"
+  fi
+}
+run_pass "k${K_MAIN}" --speculative-config "$(spec_cfg "$K_MAIN")"
+[ "${SKIP_K3:-0}" = "1" ] || run_pass k3 --speculative-config "$(spec_cfg 3)"
 [ "${SKIP_BASE:-0}" = "1" ] || run_pass base
 echo "=== lcr bins done $(date '+%F %T') ==="
