@@ -3610,3 +3610,31 @@ and identifying them required an md5 scan of every 4 GB checkpoint on the box.
 The answer: `output/gemma4_26b_dspark_from_dflash/dspark/checkpoints/1`, trained
 2026-10-01, git SHA `e7f30a03`. **It predates all the on-policy work** -- it is
 not `onpolicy_80k` or `onpolicy_122k`.
+
+### 32.6 Final result: the fix worked, the model did not improve (2026-10-23)
+
+The retrain completed both epochs.
+
+| | epoch 0 | epoch 1 |
+|---|---|---|
+| job 80, conv frozen | 2.403 | 2.828 |
+| job 155, conv training | 2.402 | **2.815** |
+
+Identical within 0.013, and epoch 1 is marginally WORSE. The optimizer fix is
+demonstrably effective -- base_kernel moved off identity in a direction weight
+decay cannot produce -- and it bought nothing.
+
+**This closes 32.4's open question.** DFlash2's 2.828 was never an artifact of
+the frozen kernel: the static conv kernel is simply not a useful parameter for
+this architecture, because the dynamic `kernel_projection` path (2-D, correctly
+in the Muon group all along) already supplies whatever local mixing helps.
+
+The binding constraint remains candidate recall -- `unary_candidate_recall_at_16`
+0.589-0.635 against an oracle ceiling of 6.312 AL versus 2.8 actual. Attack that
+or nothing. Combined with DFlash2 being unservable on vLLM 0.28, this line is
+closed.
+
+**Keep the optimizer fix regardless of this null.** A non-2-D parameter silently
+landing in a 10x-lower-LR group, with weight decay pulling it away from a
+correct initialisation of 1.0, will bite any future model carrying such weights,
+and the only symptom is a parameter that quietly does not train.
