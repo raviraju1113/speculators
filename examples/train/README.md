@@ -46,30 +46,31 @@ draft vocab (3.4% AIME, 2.7% LCB).
 **AA-LCR long context, k=8 accept_len — conv ep25 vs the all-sliding scratch
 ep25 (same architecture minus the convs):**
 
-| prompt length | 1k | 2k | 4k | 8k | 16k | 32k | 64k | 96k | ~106–112k |
-|---|---|---|---|---|---|---|---|---|---|
-| **conv ep25** (paired bins, 2026-10-23) | 3.81 | 3.91 | 3.63 | 3.84 | 3.82 | 3.87 | 3.89 | 3.99 | 4.10 |
-| scratch ep25, paired bins (notes, 2026-09) | 3.80 | – | – | – | – | – | – | – | 3.98 |
-| scratch ep25, truncation sweep (`lcr_sweep_spec`, 30 docs) | – | – | – | – | 3.93 | 3.78 | 3.94 | – | 4.04 |
-| conv ep25 k=3 (paired bins) | 2.90 | 2.93 | 2.82 | 2.91 | 2.90 | 2.90 | 2.93 | 2.97 | 2.98 |
+Paired bins: the same questions at every length; n = 100 per bin, 67 at 96k,
+37 at 112k. Scratch numbers are from `lcr_bins_scratch_best_{k8,k3}` on the
+lax01 box (checkpoint 25, the last of the 26 from-scratch epochs).
 
-Both drafts are flat to ~110k (no long-context decay); conv tracks scratch
-within +0.0…+0.15 everywhere we have both. The scratch per-bin result dirs
-stayed on the lax01 box, so only its 1k/112k bin values (from
-`notes/dspark-results-status.md`) and the earlier truncation-sweep series
-(30 documents cut to 16k/32k/64k/full; a different protocol from the paired
-bins, where the same questions are asked at every length, n=100/67/37 for
-96k/112k) are reproduced here. For contrast, the full-attention variants
-decayed to ~3.0 at 112k (`notes/`).
+| k | draft | 1k | 2k | 4k | 8k | 16k | 32k | 64k | 96k | 112k |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 8 | scratch ep25 | 3.80 | 3.73 | 3.51 | 3.68 | 3.71 | 3.68 | 3.77 | 3.92 | 3.98 |
+| 8 | **conv ep25** | 3.81 | 3.91 | 3.63 | 3.84 | 3.82 | 3.87 | 3.89 | 3.99 | 4.10 |
+| 8 | Δ conv − scratch | +0.01 | +0.18 | +0.12 | +0.16 | +0.11 | +0.19 | +0.12 | +0.07 | +0.12 |
+| 3 | scratch ep25 | 2.90 | 2.89 | 2.84 | 2.85 | 2.86 | 2.86 | 2.89 | 2.95 | 2.94 |
+| 3 | **conv ep25** | 2.90 | 2.93 | 2.82 | 2.91 | 2.90 | 2.90 | 2.93 | 2.97 | 2.98 |
+| 3 | Δ conv − scratch | 0.00 | +0.04 | −0.02 | +0.06 | +0.04 | +0.04 | +0.04 | +0.02 | +0.04 |
 
-Decode speed: the conv run was served with TP=4 on four A100-80 (sc3-c98;
-base 18 tok/s, k8 58–60 tok/s up to 32k, 41/31/28 at 64k/96k/112k where
-long-prompt prefill dominates), the scratch sweep with TP=2 on B200 (base
-25.6 tok/s, k8 76→42 tok/s) — different hardware and parallelism, so the
-tok/s columns are not comparable across the two rows; only each run's ratio
-to its own no-draft baseline is (~3.2× for conv at ≤64k, ~3× for scratch at
-16–64k). Google assistant bins: `lcr_bins_assistant_{k8,k3}` (same wrapper,
-`METHOD=` empty).
+accept_rate follows accept_len exactly ((accept_len − 1)/k): scratch k8
+0.35 → 0.37, conv k8 0.35 → 0.39. Both drafts are flat to 112k (no
+long-context decay — the full-attention variants dropped to ~3.0 there,
+`notes/dspark-results-status.md`); conv sits +0.1…+0.2 above scratch at k=8
+from 2k onward, +0.0…+0.06 at k=3, consistent with the in-window benchmarks.
+
+Decode speed (note only, not comparable across rows): scratch was served with
+TP=2 on B200 (k8 72.8 tok/s at 1k → 39.1 at 112k; k3 58 → 29; no-draft
+baseline 25.6), conv with TP=4 on four A100-80 (sc3-c98: k8 58–60 tok/s up to
+32k → 41/31/28 at 64k/96k/112k; k3 45 → 21; baseline 18). The drop beyond 64k
+is long-prompt prefill, present in both. Google assistant bins:
+`lcr_bins_assistant_{k8,k3}` (same wrapper, `METHOD=` empty).
 
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
