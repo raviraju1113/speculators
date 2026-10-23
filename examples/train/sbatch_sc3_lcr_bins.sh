@@ -35,7 +35,9 @@ source /import/ml-sc-scratch1/mengmengj/speculators/examples/train/sc3_eval_prel
 
 CKPT="${CKPT:-/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25}"
 TAG="${TAG:-conv_ep25}"
-METHOD="${METHOD:-dspark}"   # empty = let vLLM infer it (google assistant MTP)
+METHOD="${METHOD-dspark}"    # unset = dspark; set-but-EMPTY (METHOD= ...) = omit, let vLLM infer it
+                             # (google assistant MTP). NOTE ${VAR-default}, not ${VAR:-default}:
+                             # the latter also replaces an empty value (burned one run).
 TP="${TP:-2}"                # 2 x B200; use TP=4 with --gres=gpu:a100m80:4 on A100-80 nodes
 K_MAIN="${K_MAIN:-8}"
 # fullattn1 k8 OOMed at engine init with 0.92 on lax01 (post-KV warmup wanted
