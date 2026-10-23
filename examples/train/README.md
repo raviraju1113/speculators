@@ -43,6 +43,20 @@ only at k=3, where acceptance dominates per-step cost. Conv trails on GPQA
 accept_len at every k — the domain where 11.2% of tokens fall outside our 32k
 draft vocab (3.4% AIME, 2.7% LCB).
 
+**AA-LCR bins, conv ep25 (2026-10-23, TP=4 on 4xA100 sc3-c98; accept_len is
+hardware-independent, tok/s is NOT comparable with the B200 series):**
+
+| bin | 1k | 2k | 4k | 8k | 16k | 32k | 64k | 96k | 112k |
+|---|---|---|---|---|---|---|---|---|---|
+| k8 accept_len | 3.81 | 3.91 | 3.63 | 3.84 | 3.82 | 3.87 | 3.89 | 3.99 | 4.10 |
+| k3 accept_len | 2.90 | 2.93 | 2.82 | 2.91 | 2.90 | 2.90 | 2.93 | 2.97 | 2.98 |
+| k8 / base tok/s | 58/18 | 60/18 | 55/18 | 59/18 | 59/18 | 59/18 | 41/18 | 31/19 | 28/19 |
+
+Flat to 112k (no decay), matching the all-sliding scratch curve recorded in
+`notes/dspark-results-status.md` (k8 ~3.8 at 1k -> ~4.0 at 112k) with conv
++0.0..+0.1; the full-attention variants decayed to ~3.0 at 112k. Google
+assistant bins: `lcr_bins_assistant_{k8,k3}` (same wrapper, `METHOD=` empty).
+
 **Standing decisions**
 - (2026-08-14) Train with `--sample-from-anchor` (True): +0.2–1.3 accept_len
   same-k, native k=8, stabler outputs. Serving True checkpoints needs the
