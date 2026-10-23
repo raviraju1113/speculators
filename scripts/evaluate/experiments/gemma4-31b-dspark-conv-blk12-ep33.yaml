@@ -1,0 +1,59 @@
+# Block-12 continuation of conv ep25 (gemma4_31b_dspark_nemo782k_conv_blk12,
+# epochs 26-33 warm-started from conv ep25 at block 12 / gamma 12, job 12398694,
+# wandb convblk12v1): final checkpoint 33 on the standard benchmarks at
+# k=12 (native block), k=8, k=5, k=3. accept_len is only comparable within the
+# same k; across k compare tok/s (needs B200 -- an A100 run gives accept_len only).
+# References (B200): conv ep25 k8 aime 6.12 / gpqa 4.32 / lcb 5.19 (341/241/284 tok/s).
+# !! conv checkpoint: needs the vllm conv patch (eval env has it).
+#   CONFIG=gemma4-31b-dspark-conv-blk12-ep33.yaml sbatch examples/train/sbatch_sc3_eval.sh
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES (set by SLURM / the sbatch wrapper)
+
+server:
+  host: 127.0.0.1
+  port: 8434
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0   # 0 = FULL datasets: aime 30 / gpqa 198 / lcb 1055 (~1.5h per experiment)
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-conv-blk12-ep33
+
+experiments:
+  - name: blk12_ep33_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+
+  - name: blk12_ep33_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: blk12_ep33_k5
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 5
+    speculative_config:
+      method: dspark
+
+  - name: blk12_ep33_k3
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark
