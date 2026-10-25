@@ -1,0 +1,120 @@
+# AIPerf Server Metrics Export (CSV)
+# aiperf_version: 0.13.0
+# schema_version: 1.0
+# benchmark_id: b5655a45bb29
+# Note: Same benchmark_id and version appear in JSON and Parquet exports
+#
+Endpoint,Type,Metric,Unit,avg,min,max,std,p1,p5,p10,p25,p50,p75,p90,p95,p99,engine,model_name,reason,sleep_state,Description
+127.0.0.1:8400,gauge,process_max_fds,,1048576.0000,1048576.0000,1048576.0000,0.0000,1048576.0000,1048576.0000,1048576.0000,1048576.0000,1048576.0000,1048576.0000,1048576.0000,1048576.0000,1048576.0000,,,,,Maximum number of open file descriptors.
+127.0.0.1:8400,gauge,process_open_fds,,56.8329,56.0000,60.0000,0.4849,56.0000,56.0000,56.0000,57.0000,57.0000,57.0000,57.0000,57.0000,58.0000,,,,,Number of open file descriptors.
+127.0.0.1:8400,gauge,process_resident_memory_bytes,bytes,2966614734.7028,2962001920.0000,2967064576.0000,757757.6797,2963374080.0000,2965659648.0000,2965786624.0000,2965815296.0000,2967044096.0000,2967044096.0000,2967056384.0000,2967056384.0000,2967060480.0000,,,,,Resident memory size in bytes.
+127.0.0.1:8400,gauge,process_start_time_seconds,seconds,1792576509.0200,1792576509.0200,1792576509.0200,0.0000,1792576509.0200,1792576509.0200,1792576509.0200,1792576509.0200,1792576509.0200,1792576509.0200,1792576509.0200,1792576509.0200,1792576509.0200,,,,,Start time of the process since unix epoch in seconds.
+127.0.0.1:8400,gauge,process_virtual_memory_bytes,bytes,42630033468.5861,42630033408.0000,42630049792.0000,994.5168,42630033408.0000,42630033408.0000,42630033408.0000,42630033408.0000,42630033408.0000,42630033408.0000,42630033408.0000,42630033408.0000,42630033408.0000,,,,,Virtual memory size in bytes.
+127.0.0.1:8400,gauge,vllm:kv_cache_usage_perc,ratio,0.0313,0.0000,0.1302,0.0341,0.0000,0.0000,0.0000,0.0000,0.0000,0.0646,0.0754,0.0806,0.1017,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,KV-cache usage. 1 means 100 percent usage.
+127.0.0.1:8400,gauge,vllm:num_requests_running,requests,0.4994,0.0000,3.0000,0.5338,0.0000,0.0000,0.0000,0.0000,0.0000,1.0000,1.0000,1.0000,2.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Number of requests in model execution batches.
+127.0.0.1:8400,gauge,vllm:num_requests_waiting,requests,0.0007,0.0000,1.0000,0.0272,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Number of requests waiting to be processed.
+127.0.0.1:8400,gauge,vllm:engine_sleep_state,,1.0000,1.0000,1.0000,0.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,awake,Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.
+127.0.0.1:8400,gauge,vllm:engine_sleep_state,,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,discard_all,Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.
+127.0.0.1:8400,gauge,vllm:engine_sleep_state,,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,weights_offloaded,Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.
+127.0.0.1:8400,gauge,vllm:num_requests_waiting_by_reason,requests,0.0007,0.0000,1.0000,0.0272,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,capacity,,"Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting."
+127.0.0.1:8400,gauge,vllm:num_requests_waiting_by_reason,requests,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,deferred,,"Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting."
+
+Endpoint,Type,Metric,Unit,total,rate,rate_avg,rate_min,rate_max,rate_std,engine,finished_reason,model_name,position,source,generation,handler,method,status,Description
+127.0.0.1:8400,counter,process_cpu_seconds,seconds,180.0100,0.0499,,,,,,,,,,,,,,Total user and system CPU time spent in seconds.
+127.0.0.1:8400,counter,http_requests,requests,343.0000,0.0951,,,,,,,,,,,/v1/chat/completions,POST,2xx,"Total number of requests by method, status and handler."
+127.0.0.1:8400,counter,python_gc_collections,,161.0000,0.0447,,,,,,,,,,0,,,,Number of times this generation was collected
+127.0.0.1:8400,counter,python_gc_collections,,15.0000,0.0042,,,,,,,,,,1,,,,Number of times this generation was collected
+127.0.0.1:8400,counter,python_gc_collections,,0.0000,0.0000,,,,,,,,,,2,,,,Number of times this generation was collected
+127.0.0.1:8400,counter,python_gc_objects_collected,,18109.0000,5.0234,,,,,,,,,,0,,,,Objects collected during gc
+127.0.0.1:8400,counter,python_gc_objects_collected,,1716.0000,0.4760,,,,,,,,,,1,,,,Objects collected during gc
+127.0.0.1:8400,counter,python_gc_objects_collected,,0.0000,0.0000,,,,,,,,,,2,,,,Objects collected during gc
+127.0.0.1:8400,counter,python_gc_objects_uncollectable,,0.0000,0.0000,,,,,,,,,,0,,,,Uncollectable objects found during GC
+127.0.0.1:8400,counter,python_gc_objects_uncollectable,,0.0000,0.0000,,,,,,,,,,1,,,,Uncollectable objects found during GC
+127.0.0.1:8400,counter,python_gc_objects_uncollectable,,0.0000,0.0000,,,,,,,,,,2,,,,Uncollectable objects found during GC
+127.0.0.1:8400,counter,vllm:estimated_flops_per_gpu,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Estimated number of floating point operations per GPU (for Model Flops Utilization calculations).
+127.0.0.1:8400,counter,vllm:estimated_read_bytes_per_gpu,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Estimated number of bytes read from memory per GPU (for Model Flops Utilization calculations).
+127.0.0.1:8400,counter,vllm:estimated_write_bytes_per_gpu,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Estimated number of bytes written to memory per GPU (for Model Flops Utilization calculations).
+127.0.0.1:8400,counter,vllm:external_prefix_cache_hits,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,"External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens."
+127.0.0.1:8400,counter,vllm:external_prefix_cache_queries,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,"External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens."
+127.0.0.1:8400,counter,vllm:generation_tokens,tokens,183203.0000,50.8198,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Number of generation tokens processed.
+127.0.0.1:8400,counter,vllm:mm_cache_hits,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,"Multi-modal cache hits, in terms of number of cached items."
+127.0.0.1:8400,counter,vllm:mm_cache_queries,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,"Multi-modal cache queries, in terms of number of queried items."
+127.0.0.1:8400,counter,vllm:num_preemptions,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Cumulative number of preemption from the engine.
+127.0.0.1:8400,counter,vllm:prefix_cache_hits,,12700576.0000,3523.0923,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,"Prefix cache hits, in terms of number of cached tokens."
+127.0.0.1:8400,counter,vllm:prefix_cache_queries,,13783226.0000,3823.4154,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,"Prefix cache queries, in terms of number of queried tokens."
+127.0.0.1:8400,counter,vllm:prompt_tokens,tokens,13783226.0000,3823.4154,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Number of prefill tokens processed.
+127.0.0.1:8400,counter,vllm:prompt_tokens_cached,,12700576.0000,3523.0923,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Number of cached prompt tokens (local + external).
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens,tokens,137779.0000,38.2194,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Number of accepted tokens.
+127.0.0.1:8400,counter,vllm:spec_decode_num_draft_tokens,tokens,320726.0000,88.9682,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Number of draft tokens.
+127.0.0.1:8400,counter,vllm:spec_decode_num_drafts,,45818.0000,12.7097,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Number of spec decoding drafts.
+127.0.0.1:8400,counter,vllm:prompt_tokens_by_source,,0.0000,0.0000,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,external_kv_transfer,,,,,Number of prompt tokens by source.
+127.0.0.1:8400,counter,vllm:prompt_tokens_by_source,,12700576.0000,3523.0923,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,local_cache_hit,,,,,Number of prompt tokens by source.
+127.0.0.1:8400,counter,vllm:prompt_tokens_by_source,,1082650.0000,300.3231,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,local_compute,,,,,Number of prompt tokens by source.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,35783.0000,9.9261,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,0,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,27835.0000,7.7213,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,1,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,22507.0000,6.2434,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,2,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,16238.0000,4.5044,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,3,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,13721.0000,3.8062,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,4,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,11614.0000,3.2217,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,5,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:spec_decode_num_accepted_tokens_per_pos,,10081.0000,2.7964,,,,,0,,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,6,,,,,,Accepted tokens per draft position.
+127.0.0.1:8400,counter,vllm:request_success,requests,0.0000,0.0000,,,,,0,abort,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Count of successfully processed requests.
+127.0.0.1:8400,counter,vllm:request_success,requests,0.0000,0.0000,,,,,0,error,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Count of successfully processed requests.
+127.0.0.1:8400,counter,vllm:request_success,requests,343.0000,0.0951,,,,,0,length,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Count of successfully processed requests.
+127.0.0.1:8400,counter,vllm:request_success,requests,0.0000,0.0000,,,,,0,repetition,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Count of successfully processed requests.
+127.0.0.1:8400,counter,vllm:request_success,requests,0.0000,0.0000,,,,,0,stop,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,,,,,Count of successfully processed requests.
+
+Endpoint,Type,Metric,Unit,count,count_rate,sum,sum_rate,avg,p1_estimate,p5_estimate,p10_estimate,p25_estimate,p50_estimate,p75_estimate,p90_estimate,p95_estimate,p99_estimate,engine,model_name,handler,method,Description,buckets
+127.0.0.1:8400,histogram,http_request_duration_highr_seconds,seconds,343,0.0951,1950.7922,0.5411,5.6874,0.1577,0.4769,1.0000,1.6891,2.8940,7.2193,13.3920,21.4908,30.8794,,,,,Latency with many buckets but no API specific labels. Made for more accurate percentile calculations.,0.01=0;0.025=0;0.05=0;0.075=0;0.1=0;0.25=14;0.5=18;0.75=28;1.0=34;1.5=69;2.0=103;2.5=142;3.0=172;3.5=185;4.0=195;4.5=203;5.0=212;7.5=258;10.0=296;30.0=338;60.0=343;+Inf=343
+127.0.0.1:8400,histogram,http_request_duration_seconds,seconds,343,0.0951,1950.7922,0.5411,5.6874,0.1721,0.4811,1.0068,2.7591,5.6797,8.6002,10.3525,10.9366,11.4039,,,/v1/chat/completions,POST,Latency with only few buckets by handler. Made to be only used if aggregation by handler is important.,0.1=0;0.5=18;1.0=34;+Inf=343
+127.0.0.1:8400,histogram,vllm:e2e_request_latency_seconds,seconds,343,0.0951,1949.1405,0.5407,5.6826,0.1591,0.4806,1.0010,1.7185,3.2092,7.3522,13.2525,19.4543,31.0013,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of e2e request latency in seconds.,0.3=14;0.5=18;0.8=30;1.0=34;1.5=70;2.0=103;2.5=143;5.0=212;10.0=296;15.0=314;20.0=326;30.0=338;40.0=342;50.0=343;60.0=343;120.0=343;240.0=343;480.0=343;960.0=343;1920.0=343;7680.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:inter_token_latency_seconds,seconds,45818,12.7097,1695.5647,0.4703,0.0370,0.0168,0.0226,0.0259,0.0301,0.0372,0.0439,0.0478,0.0491,0.0500,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of inter-token latency in seconds.,0.01=1;0.025=3666;0.05=45580;0.075=45760;0.1=45760;0.15=45769;0.2=45784;0.3=45807;0.4=45818;0.5=45818;0.75=45818;1.0=45818;2.5=45818;5.0=45818;7.5=45818;10.0=45818;20.0=45818;40.0=45818;80.0=45818;+Inf=45818
+127.0.0.1:8400,histogram,vllm:iteration_tokens_total,tokens,44396,12.3153,1265853.0000,351.1429,28.5128,0.0670,0.2581,0.4969,1.7370,5.0274,7.0489,7.8232,8.0000,13.7981,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of number of tokens per engine_step.,1.0=9295;8.0=43215;16.0=44052;32.0=44053;64.0=44070;128.0=44083;256.0=44095;512.0=44174;1024.0=44235;2048.0=44300;4096.0=44358;8192.0=44374;16384.0=44376;+Inf=44396
+127.0.0.1:8400,histogram,vllm:request_decode_time_seconds,seconds,343,0.0951,1695.5647,0.4703,4.9433,0.0397,0.1851,0.3035,1.3133,2.3417,6.5845,11.8723,17.7142,30.4702,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of time spent in DECODE phase for request.,0.3=34;0.5=43;0.8=47;1.0=54;1.5=100;2.0=144;2.5=179;5.0=230;10.0=301;15.0=320;20.0=329;30.0=338;40.0=342;50.0=343;60.0=343;120.0=343;240.0=343;480.0=343;960.0=343;1920.0=343;7680.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_generation_tokens,tokens,343,0.0951,183203.0000,50.8198,534.1195,9.0431,14.2385,20.5568,93.4311,185.7910,648.2427,1565.5101,2221.2188,3723.6063,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Number of generation tokens processed.,1.0=0;2.0=0;5.0=0;10.0=6;20.0=33;50.0=45;100.0=89;200.0=177;500.0=243;1000.0=281;2000.0=319;5000.0=343;10000.0=343;20000.0=343;50000.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_inference_time_seconds,seconds,343,0.0951,1918.7176,0.5322,5.5939,0.1412,0.3962,0.9091,1.6366,3.1103,7.2759,13.1886,19.4315,30.9284,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of time spent in RUNNING phase for request.,0.3=14;0.5=23;0.8=33;1.0=37;1.5=75;2.0=108;2.5=146;5.0=215;10.0=297;15.0=314;20.0=326;30.0=338;40.0=342;50.0=343;60.0=343;120.0=343;240.0=343;480.0=343;960.0=343;1920.0=343;7680.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_max_num_generation_tokens,tokens,343,0.0951,183203.0000,50.8198,534.1195,9.0431,14.2385,20.5568,93.4311,185.7910,648.2427,1565.5101,2221.2188,3723.6063,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of maximum number of requested generation tokens.,1.0=0;2.0=0;5.0=0;10.0=6;20.0=33;50.0=45;100.0=89;200.0=177;500.0=243;1000.0=281;2000.0=319;5000.0=343;10000.0=343;20000.0=343;50000.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_params_max_tokens,tokens,343,0.0951,183203.0000,50.8198,534.1195,9.0431,14.2385,20.5568,93.4311,185.7910,648.2427,1565.5101,2221.2188,3723.6063,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of the max_tokens request parameter.,1.0=0;2.0=0;5.0=0;10.0=6;20.0=33;50.0=45;100.0=89;200.0=177;500.0=243;1000.0=281;2000.0=319;5000.0=343;10000.0=343;20000.0=343;50000.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_params_n,,343,0.0951,343.0000,0.0951,1.0000,0.4114,0.4513,0.5012,0.6507,0.9000,1.0000,1.0000,1.0000,1.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of the n request parameter.,1.0=343;2.0=343;5.0=343;10.0=343;20.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_prefill_kv_computed_tokens,tokens,343,0.0951,1082650.0000,300.3231,3156.4140,37.8302,58.3981,149.3845,346.0254,864.6901,2013.4722,4119.3895,19743.3352,41917.3170,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of new KV tokens computed during prefill (excluding cached tokens).,1.0=0;2.0=0;5.0=0;10.0=0;20.0=0;50.0=7;100.0=24;200.0=40;500.0=119;1000.0=178;2000.0=236;5000.0=309;10000.0=321;20000.0=325;50000.0=341;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_prefill_time_seconds,seconds,343,0.0951,223.1528,0.0619,0.6506,0.0082,0.0368,0.0725,0.1795,0.2993,0.5862,1.1653,2.2004,7.1946,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of time spent in PREFILL phase for request.,0.3=172;0.5=238;0.8=291;1.0=306;1.5=313;2.0=323;2.5=328;5.0=335;10.0=343;15.0=343;20.0=343;30.0=343;40.0=343;50.0=343;60.0=343;120.0=343;240.0=343;480.0=343;960.0=343;1920.0=343;7680.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_prompt_tokens,tokens,343,0.0951,13783226.0000,3823.4154,40184.3324,399.0046,3169.8170,22702.0714,31718.1313,44429.7562,50275.0556,55919.1957,57800.5757,59305.6798,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Number of prefill tokens processed.,1.0=0;2.0=0;5.0=0;10.0=0;20.0=0;50.0=0;100.0=0;200.0=2;500.0=12;1000.0=12;2000.0=14;5000.0=24;10000.0=28;20000.0=32;50000.0=254;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_queue_time_seconds,seconds,343,0.0951,2.3566,0.0007,0.0069,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of time spent in WAITING phase for request.,0.3=341;0.5=341;0.8=341;1.0=341;1.5=343;2.0=343;2.5=343;5.0=343;10.0=343;15.0=343;20.0=343;30.0=343;40.0=343;50.0=343;60.0=343;120.0=343;240.0=343;480.0=343;960.0=343;1920.0=343;7680.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:request_time_per_output_token_seconds,seconds,343,0.0951,4.0980,0.0011,0.0119,0.0029,0.0041,0.0055,0.0085,0.0112,0.0155,0.0196,0.0209,0.0220,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of time_per_output_token_seconds per request.,0.01=116;0.025=340;0.05=343;0.075=343;0.1=343;0.15=343;0.2=343;0.3=343;0.4=343;0.5=343;0.75=343;1.0=343;2.5=343;5.0=343;7.5=343;10.0=343;20.0=343;40.0=343;80.0=343;+Inf=343
+127.0.0.1:8400,histogram,vllm:time_to_first_token_seconds,seconds,343,0.0951,254.1790,0.0705,0.7410,0.0609,0.1180,0.1917,0.2672,0.3964,0.6578,1.4264,2.4119,7.2507,0,/nvmedata/hf_checkpoints/gemma-4-26B-A4B-it,,,Histogram of time to first token in seconds.,0.001=0;0.005=0;0.01=0;0.02=0;0.04=0;0.06=2;0.08=12;0.1=12;0.25=60;0.5=215;0.75=273;1.0=291;2.5=326;5.0=335;7.5=339;10.0=343;20.0=343;40.0=343;80.0=343;160.0=343;640.0=343;2560.0=343;+Inf=343
+
+Endpoint,Metric,Key,Value,Description
+127.0.0.1:8400,python_info,implementation,CPython,Python platform information
+127.0.0.1:8400,python_info,major,3,Python platform information
+127.0.0.1:8400,python_info,minor,12,Python platform information
+127.0.0.1:8400,python_info,patchlevel,13,Python platform information
+127.0.0.1:8400,python_info,version,3.12.13,Python platform information
+127.0.0.1:8400,vllm:cache_config_info,_block_size_resolved,True,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,block_size,16,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,cache_dtype,auto,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,enable_prefix_caching,True,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,engine,0,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,gpu_memory_utilization,0.9,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,is_attention_free,False,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_cache_dtype_skip_layers,[],Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_cache_max_concurrency,7.13112360047794,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_cache_memory_bytes,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_cache_size_tokens,467345,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_offloading_backend,native,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_offloading_size,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,kv_sharing_fast_prefill,False,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,mamba_block_size,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,mamba_cache_dtype,auto,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,mamba_cache_mode,none,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,mamba_page_size_padded,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,mamba_ssm_cache_dtype,auto,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,num_cpu_blocks,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,num_gpu_blocks,161142,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,num_gpu_blocks_override,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,prefix_caching_hash_algo,sha256,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,prefix_match_unit,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,replayssm_buffer_len,16,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,skip_page_size_padded,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,sliding_window,None,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,use_replayssm,False,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,user_specified_block_size,False,Information of the LLMEngine CacheConfig
+127.0.0.1:8400,vllm:cache_config_info,user_specified_mamba_block_size,False,Information of the LLMEngine CacheConfig
