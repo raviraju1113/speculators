@@ -168,12 +168,39 @@ convs missing. `vllm_patches/dflash2_conv.py` + `qwen3_dspark_conv.patch` +
 sc3 eval env; `sc3_eval_prelude.sh` refuses to serve a conv checkpoint on an
 unpatched vLLM.
 
-**Block-size follow-up** (in flight): both `conv_blk12` (block 12, γ=12) and a
-matched block-8 control are 8-epoch warm-start continuations of conv ep25
-(`sbatch_sc3_conv_continue.sh`, EPOCHS 34, SCHED_TOTAL 50600); block-12
-finished 2026-10-23 (val accept_len over 12 slots 5.15 → 5.55, still rising
-into the annealing tail); the control is waiting for B200 access. Compare on
-serve-time tok/s (accept_len is not comparable across k).
+### 4.1 Block-size follow-up: block 12 by warm start
+
+Nothing in a DSpark checkpoint has a block-size dimension (convs are
+`[2, taps, hidden]`, the Markov head is `V × r`, no slot embeddings; RoPE
+positions continue past the anchor), so a larger block can be trained from
+the block-8 weights — the data layout (12 mask slots per anchor instead of 8),
+the loss positions and the serve-time `k` are what change. We did that rather
+than a from-scratch block-12 run (5.5 days) to get an answer in under 2.
+
+| | `conv_blk12` (experiment) | `conv_blk8ctrl` (matched-exposure control) |
+|---|---|---|
+| seed | conv ep25 (`checkpoints/25`: weights + optimizer + scheduler state, copied into the new run dir; the trainer resumes from it) | same |
+| block / γ | **12 / 12** (`BLOCK_SIZE=12 DECAY_GAMMA=12`) | 8 / 4 (the recipe's values) |
+| epochs | 26 → 33 (**8 more**, `EPOCHS=34`) | same |
+| schedule | linear, `SCHED_TOTAL=50600` (= 38,700 × 34/26, the budget of the whole 34-epoch trajectory): a warm restart with no new warmup: the resumed scheduler re-opened the LR at 1.6e-4 AdamW / 2.0e-3 Muon (the 6e-4 peak scaled by the budget left in the longer schedule) and decayed it linearly to 1.9e-5 / 1.9e-4 at the end of epoch 33 — not to 0, because both schedules are sized ~3% above the real step count (26 ep = 37.5k steps, not 38.7k), so the zero lies ~1.5k steps past the last step; the scratch and conv runs ended at the same floor | same |
+| everything else | recipe B unchanged: nemo782k, ACCUM 18 × 4 ranks, `MAX_ANCHORS 512`, quarter-epoch saves | same |
+| wrapper | `sbatch_sc3_conv_continue.sh` (8×B200, 4 HS engines + 4 ranks) | same |
+| run | sc3-cp99, job 12398694, 2026-10-21 → 23, 1 d 15 h (~4.8 h/epoch), wandb `convblk12v1` | queued (job 12398695), blocked by the B200 reservation since 2026-10-22 |
+| val accept_len (12-slot blocks) | 5.15, 5.24, 5.29, 5.34, 5.35, 5.47, 5.49, **5.55** for epochs 26…33 | – |
+
+Why γ=12: the per-slot loss weight is `exp(−(k−1)/γ)`; at γ=4 the new slots
+9–12 would get weights 0.14…0.06 and barely train, so the block-12 run uses
+γ = block size (the paper's convention) while the control keeps the recipe's
+γ=4 as a pure continuation. The val number is over 12 slots and is not
+comparable to the block-8 runs' (4.78); it kept rising through the annealing
+tail, which every run shows at the end of its schedule. The serve-time
+verdict (k=12 vs k=8, same hardware) is in §6.3b: in-window acceptance
+unchanged, +7…+16% tok/s on A100. Checkpoints:
+`gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/{25..33}`
+(`checkpoint_best → 33`); to serve at k=12 see §6.3b. Mechanics for any
+further extension: resubmit the wrapper with a larger `EPOCHS` and a
+recomputed `SCHED_TOTAL` (another warm restart), applied to both runs to keep
+the exposure matched.
 
 ## 5. Checkpoint map
 
