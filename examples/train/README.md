@@ -287,13 +287,29 @@ drop beyond 64k is long-prompt prefill. Synthetic-padding sweep 1k–32k
 | 8 | 6.16 / 0.645 | 4.30 / 0.413 | 5.19 / 0.524 | +0.04 / −0.02 / 0.00 |
 | 5 | 4.82 / 0.764 | 3.72 / 0.544 | 4.31 / 0.663 | −0.01 / −0.03 / 0.00 |
 | 3 | 3.55 / 0.849 | 3.03 / 0.677 | 3.33 / 0.775 | −0.01 / −0.02 / −0.01 |
-| 12 | (rerun in flight: the first serve failed on vLLM's scheduling budget, fixed with `--max-num-seqs 32 --max-num-batched-tokens 16384`) | | | |
+| 12 | **7.19 / 0.516** | **4.64 / 0.303** | **5.80 / 0.400** | vs its own k=8: +1.03 / +0.34 / +0.61 |
+
+Decode tok/s, same checkpoint, same node (sc3-c98 A100-80, TP=1, single
+stream; the only fair cross-k comparison we have until B200 returns):
+
+| k | AIME | GPQA | LCB |
+|---|---|---|---|
+| 8 | 113.0 | 80.1 | 93.4 |
+| 12 | **130.8 (+16%)** | **85.4 (+7%)** | **103.1 (+10%)** |
 
 Eight more epochs at block 12 left the first eight slots exactly where conv
 ep25 had them (±0.04 everywhere), so the block-12 run neither helped nor hurt
-in-window acceptance at k ≤ 8; whatever it buys has to come from slots 9–12,
-i.e. k=12 tok/s on B200. The matched block-8 control is still waiting for
-B200 access.
+in-window acceptance; the gain is entirely from slots 9–12. Serving the
+block-12 checkpoint at k=12 accepts 0.3–1.0 more tokens per step than at k=8
+(accept_rate falls, as it must: 0.52/0.30/0.40 vs 0.64/0.41/0.52) and that
+converts into +7…+16% decode tok/s on A100 — largest where runs of accepted
+tokens are longest (AIME), smallest on GPQA, where the draft rarely gets
+past slot 8 anyway. k=12 serving needs `--max-num-seqs 32
+--max-num-batched-tokens 16384` (vLLM's per-step budget goes negative at
+13 tokens/seq otherwise). Open: the B200 number (the verify step is cheaper
+there, so the k=12 overhead is smaller and the gain could be larger), the
+matched block-8 control (does 8 more epochs at block 8 also stand still?),
+and whether a from-scratch block-12/16 run beats the warm start.
 
 ### 6.4 Older / diagnostic result dirs
 
@@ -367,8 +383,9 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
 ## 8. In flight / next
 
 - Block-12 vs block-8 continuation (§4, §6.3b): k=3/5/8 == conv ep25; k=12
-  rerun in flight; control pending B200 access (as of 2026-10-25 every
-  `sc3-cp` node is reserved for `sn50-hdi-0` or draining); decide on tok/s.
+  gives +7…+16% tok/s over k=8 on A100 (accept_len 7.19 / 4.64 / 5.80).
+  Still open: B200 tok/s and the block-8 control (pending B200 access — as of
+  2026-10-25 every `sc3-cp` node is reserved for `sn50-hdi-0` or draining).
 - **Draft-OPD** on-policy post-training (branch `mengmengj/draft-opd`,
   `opd/PLAN.md`, skill `draft-opd`): pipeline done and gated (rollout logger,
   replay-free data path, acceptance-aware loss, round loop); first recipe
