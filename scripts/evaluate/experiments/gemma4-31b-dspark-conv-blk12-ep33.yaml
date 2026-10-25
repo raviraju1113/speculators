@@ -20,6 +20,12 @@ server:
   health_timeout: 1800
   extra_args:
     - "--enforce-eager"
+    # k=12 needs a larger scheduling budget: 13 tokens/seq/step x default max_num_seqs
+    # drove vLLM's max_num_scheduled_tokens negative (-320) and the server refused to start.
+    - "--max-num-seqs"
+    - "32"
+    - "--max-num-batched-tokens"
+    - "16384"
     - "--no-enable-prefix-caching"
     - "--chat-template"
     - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
