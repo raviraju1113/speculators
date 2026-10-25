@@ -263,14 +263,37 @@ Scratch from `lcr_bins_scratch_best_{k8,k3}` (lax01), conv from
 | 3 | scratch ep25 | 2.90 | 2.89 | 2.84 | 2.85 | 2.86 | 2.86 | 2.89 | 2.95 | 2.94 |
 | 3 | **conv ep25** | 2.90 | 2.93 | 2.82 | 2.91 | 2.90 | 2.90 | 2.93 | 2.97 | 2.98 |
 | 8 | fullattn2 ep25 (no YaRN) | ≈ scratch | | | | | | | | ~3.0 |
+| 8 | Google assistant | 4.43 | 4.51 | 4.53 | 4.90 | 5.07 | 5.04 | 5.05 | 5.14 | 5.27 |
+| 3 | Google assistant | 3.18 | 3.22 | 3.19 | 3.28 | 3.35 | 3.32 | 3.34 | 3.36 | 3.41 |
 
-Both flat to 112k; conv +0.1…+0.2 above scratch at k=8 from 2k on. Decode
-speed is a note only (different hardware): scratch TP=2 B200 k8 72.8 → 39.1
-tok/s (baseline 25.6), conv TP=4 on 4×A100 k8 58–60 → 28 (baseline 18); the
+Both our drafts are flat to 112k; conv +0.1…+0.2 above scratch at k=8 from
+2k on. **The Google assistant is far ahead on this benchmark** — +0.6 over
+conv at 1k, rising to +1.2 at 112k at k=8 (its acceptance *grows* with
+context, ours stays flat): AA-LCR is long-document question answering, i.e.
+the same prose/science regime as GPQA, where the 32k draft vocab and the
+math-heavy SFT mix cost us most (§6.2), and the assistant's full-attention
+MTP head conditions directly on the long context while our draft only sees
+it through the target's fused hidden states. Decode speed is a note only
+(different hardware): scratch TP=2 B200 k8 72.8 → 39.1 tok/s (baseline 25.6),
+conv and assistant TP=4 on 4×A100 (conv k8 58–60 → 28, baseline 18); the
 drop beyond 64k is long-prompt prefill. Synthetic-padding sweep 1k–32k
 (`ctx_sweep_*_ep25_k8`, 24 prompts/length): conv 5.53 → 5.48, scratch
-5.53 → 5.45, +0.0…+0.26. Google assistant bins: `lcr_bins_assistant_{k8,k3}`
-(in flight).
+5.53 → 5.45, +0.0…+0.26.
+
+### 6.3b Block-12 continuation (`conv_blk12/checkpoints/33`, A100, accept_len only)
+
+| k | AIME | GPQA | LCB | vs conv ep25 at the same k |
+|---|---|---|---|---|
+| 8 | 6.16 / 0.645 | 4.30 / 0.413 | 5.19 / 0.524 | +0.04 / −0.02 / 0.00 |
+| 5 | 4.82 / 0.764 | 3.72 / 0.544 | 4.31 / 0.663 | −0.01 / −0.03 / 0.00 |
+| 3 | 3.55 / 0.849 | 3.03 / 0.677 | 3.33 / 0.775 | −0.01 / −0.02 / −0.01 |
+| 12 | (rerun in flight: the first serve failed on vLLM's scheduling budget, fixed with `--max-num-seqs 32 --max-num-batched-tokens 16384`) | | | |
+
+Eight more epochs at block 12 left the first eight slots exactly where conv
+ep25 had them (±0.04 everywhere), so the block-12 run neither helped nor hurt
+in-window acceptance at k ≤ 8; whatever it buys has to come from slots 9–12,
+i.e. k=12 tok/s on B200. The matched block-8 control is still waiting for
+B200 access.
 
 ### 6.4 Older / diagnostic result dirs
 
@@ -343,8 +366,9 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
 
 ## 8. In flight / next
 
-- Block-12 vs block-8 continuation (§4): eval of `conv_blk12/checkpoints/33`
-  at k=12/8/5/3 running; control pending B200 access; decide on tok/s.
+- Block-12 vs block-8 continuation (§4, §6.3b): k=3/5/8 == conv ep25; k=12
+  rerun in flight; control pending B200 access (as of 2026-10-25 every
+  `sc3-cp` node is reserved for `sn50-hdi-0` or draining); decide on tok/s.
 - **Draft-OPD** on-policy post-training (branch `mengmengj/draft-opd`,
   `opd/PLAN.md`, skill `draft-opd`): pipeline done and gated (rollout logger,
   replay-free data path, acceptance-aware loss, round loop); first recipe
