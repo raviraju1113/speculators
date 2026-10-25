@@ -1,0 +1,65 @@
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:345] 
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:345]        █     █     █▄   ▄█
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:345]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.26.0
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:345]   █▄█▀ █     █     █     █  model   /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:345]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:345] 
+(APIServer pid=2252680) INFO 10-23 08:50:40 [api_utils.py:273] non-default args: {'model_tag': '/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it', 'chat_template': '/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja', 'host': '127.0.0.1', 'port': 8434, 'model': '/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it', 'max_model_len': 4096, 'enforce_eager': True, 'enable_prefix_caching': False, 'speculative_config': {'model': '/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33', 'num_speculative_tokens': 12, 'method': 'dspark'}}
+(APIServer pid=2252680) INFO 10-23 08:50:40 [model.py:623] Resolved architecture: Gemma4ForConditionalGeneration
+(APIServer pid=2252680) INFO 10-23 08:50:40 [model.py:1788] Using max model len 4096
+(APIServer pid=2252680) INFO 10-23 08:50:40 [model.py:623] Resolved architecture: Qwen3DSparkModel
+(APIServer pid=2252680) INFO 10-23 08:50:40 [model.py:1788] Using max model len 262144
+(APIServer pid=2252680) INFO 10-23 08:50:40 [speculative.py:1126] Overriding draft model max model len from 262144 to 4096
+(APIServer pid=2252680) INFO 10-23 08:50:42 [arg_utils.py:2685] Raising max_num_batched_tokens from 2048 to 2496 to accommodate 'video' input for prefix-LM model /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it.
+(APIServer pid=2252680) INFO 10-23 08:50:42 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=2496.
+(APIServer pid=2252680) INFO 10-23 08:50:42 [config.py:240] Gemma4 model has heterogeneous head dimensions (head_dim=256, global_head_dim=512). FA4 not available, forcing TRITON_ATTN backend.
+(APIServer pid=2252680) INFO 10-23 08:50:42 [vllm.py:1109] Asynchronous scheduling is enabled.
+(APIServer pid=2252680) WARNING 10-23 08:50:42 [vllm.py:1163] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(APIServer pid=2252680) WARNING 10-23 08:50:42 [vllm.py:1213] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(APIServer pid=2252680) INFO 10-23 08:50:42 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(APIServer pid=2252680) Traceback (most recent call last):
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/bin/vllm", line 6, in <module>
+(APIServer pid=2252680)     sys.exit(main())
+(APIServer pid=2252680)              ^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 95, in main
+(APIServer pid=2252680)     args.dispatch_function(args)
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 148, in cmd
+(APIServer pid=2252680)     uvloop.run(run_server(args))
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=2252680)     return __asyncio.run(
+(APIServer pid=2252680)            ^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=2252680)     return runner.run(main)
+(APIServer pid=2252680)            ^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=2252680)     return self._loop.run_until_complete(task)
+(APIServer pid=2252680)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=2252680)     return await main
+(APIServer pid=2252680)            ^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 759, in run_server
+(APIServer pid=2252680)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 773, in run_server_worker
+(APIServer pid=2252680)     async with build_async_engine_client(
+(APIServer pid=2252680)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=2252680)     return await anext(self.gen)
+(APIServer pid=2252680)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 139, in build_async_engine_client
+(APIServer pid=2252680)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=2252680)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=2252680)     return await anext(self.gen)
+(APIServer pid=2252680)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 163, in build_async_engine_client_from_engine_args
+(APIServer pid=2252680)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+(APIServer pid=2252680)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/vllm/engine/arg_utils.py", line 2372, in create_engine_config
+(APIServer pid=2252680)     config = VllmConfig(
+(APIServer pid=2252680)              ^^^^^^^^^^^
+(APIServer pid=2252680)   File "/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py", line 121, in __init__
+(APIServer pid=2252680)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)
+(APIServer pid=2252680) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=2252680)   Value error, max_num_scheduled_tokens is set to -320 based on the speculative decoding settings, which does not allow any tokens to be scheduled. Increase max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs. [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+(APIServer pid=2252680)     For further information visit https://errors.pydantic.dev/2.13/v/value_error

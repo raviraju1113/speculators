@@ -1,0 +1,110 @@
+[
+  {
+    "benchmark": "aa-lcr-1k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 7077,
+    "decode_tok_s": 51.1,
+    "e2e_tok_s": 42.3,
+    "mean_ttft_s": 0.308,
+    "accept_length": 4.431,
+    "accept_rate": 0.4288,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-2k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 8794,
+    "decode_tok_s": 52.5,
+    "e2e_tok_s": 41.5,
+    "mean_ttft_s": 0.464,
+    "accept_length": 4.51,
+    "accept_rate": 0.4387,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-4k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 9983,
+    "decode_tok_s": 53.0,
+    "e2e_tok_s": 36.7,
+    "mean_ttft_s": 0.857,
+    "accept_length": 4.529,
+    "accept_rate": 0.4412,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-8k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 12992,
+    "decode_tok_s": 56.9,
+    "e2e_tok_s": 32.3,
+    "mean_ttft_s": 1.756,
+    "accept_length": 4.904,
+    "accept_rate": 0.488,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-16k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 15585,
+    "decode_tok_s": 58.8,
+    "e2e_tok_s": 24.6,
+    "mean_ttft_s": 3.711,
+    "accept_length": 5.071,
+    "accept_rate": 0.5089,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-32k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 16806,
+    "decode_tok_s": 58.5,
+    "e2e_tok_s": 14.3,
+    "mean_ttft_s": 8.878,
+    "accept_length": 5.04,
+    "accept_rate": 0.505,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-64k",
+    "n": 100,
+    "num_steps": null,
+    "total_completion_tokens": 19473,
+    "decode_tok_s": 44.9,
+    "e2e_tok_s": 7.0,
+    "mean_ttft_s": 23.58,
+    "accept_length": 5.047,
+    "accept_rate": 0.5059,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-96k",
+    "n": 67,
+    "num_steps": null,
+    "total_completion_tokens": 13165,
+    "decode_tok_s": 33.9,
+    "e2e_tok_s": 3.9,
+    "mean_ttft_s": 44.091,
+    "accept_length": 5.142,
+    "accept_rate": 0.5178,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "aa-lcr-112k",
+    "n": 37,
+    "num_steps": null,
+    "total_completion_tokens": 8553,
+    "decode_tok_s": 30.3,
+    "e2e_tok_s": 3.6,
+    "mean_ttft_s": 56.432,
+    "accept_length": 5.267,
+    "accept_rate": 0.5334,
+    "metric_samples": null
+  }
+]
