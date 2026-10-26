@@ -176,6 +176,7 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
     t0 = time.perf_counter()
     first_tok_t = None
     usage = None
+    finish_reason = None
     with requests.post(
         f"{base_url}/v1/chat/completions", json=payload, stream=True, timeout=3600
     ) as r:
@@ -193,6 +194,8 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
                 usage = obj["usage"]
             choices = obj.get("choices") or []
             if choices:
+                if choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
                 delta = choices[0].get("delta") or {}
                 # First token = first chunk carrying any non-empty textual field
                 # (content, reasoning_content, or any parser-specific field), except
@@ -214,6 +217,10 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
         "ttft_s": ttft,
         "decode_time_s": decode_time,
         "e2e_s": t_end - t0,
+        # "length" = hit the max_tokens cap, i.e. generation never terminated.
+        # A draft that inflates this is emitting tokens that get thrown away --
+        # invisible in decode tok/s, which is per-token, not per-request.
+        "finish_reason": finish_reason,
     }
 
 
@@ -293,6 +300,7 @@ def main():
         tot_decode_time = 0.0
         tot_e2e = 0.0
         ttfts = []
+        runaways = 0
         for s in samples:
             try:
                 res = send_chat_stream(
@@ -310,6 +318,8 @@ def main():
                 tot_decode_time += res["decode_time_s"]
             if res["ttft_s"]:
                 ttfts.append(res["ttft_s"])
+            if res["finish_reason"] == "length":
+                runaways += 1
             rec = {**{k: s[k] for k in ("benchmark", "id")}, **res}
             detail_f.write(json.dumps(rec) + "\n")
             detail_f.flush()
@@ -325,6 +335,11 @@ def main():
         decode_tok_s = tot_decode_tokens / tot_decode_time if tot_decode_time else 0.0
         e2e_tok_s = tot_completion / tot_e2e if tot_e2e else 0.0
         mean_ttft = sum(ttfts) / len(ttfts) if ttfts else None
+        # Request-level metrics. decode_tok_s alone cannot tell "finished the
+        # same work sooner" from "spent the same time emitting more tokens":
+        # tok/req and req/s separate those, and runaways flags the pathological
+        # case outright. Serial harness, so req_per_s == 1 / mean_e2e_s.
+        mean_e2e = tot_e2e / n_ok if n_ok else None
         row = {
             "benchmark": bench,
             "n": n_ok,
@@ -333,6 +348,10 @@ def main():
             "decode_tok_s": round(decode_tok_s, 1),
             "e2e_tok_s": round(e2e_tok_s, 1),
             "mean_ttft_s": round(mean_ttft, 3) if mean_ttft else None,
+            "mean_e2e_s": round(mean_e2e, 3) if mean_e2e else None,
+            "req_per_s": round(n_ok / tot_e2e, 4) if tot_e2e else None,
+            "tok_per_req": round(tot_completion / n_ok, 1) if n_ok else None,
+            "runaways": runaways,
             "accept_length": round(accept_len, 3) if accept_len else None,
             "accept_rate": round(accept_rate, 4) if accept_rate else None,
             "metric_samples": None,
@@ -340,6 +359,8 @@ def main():
         summary.append(row)
         print(
             f"--- {bench}: n={n_ok}  decode_tok/s={decode_tok_s:.1f}  "
+            f"tok/req={row['tok_per_req']}  req/s={row['req_per_s']}  "
+            f"runaway={runaways}  "
             f"accept_length={row['accept_length']}  "
             f"accept_rate={row['accept_rate']}"
         )
@@ -350,13 +371,16 @@ def main():
 
     print("\n============================= SUMMARY =============================")
     print(
-        f"{'benchmark':<16}{'n':>4}{'decode_tok/s':>14}{'accept_len':>12}{'accept_rate':>13}"
+        f"{'benchmark':<16}{'n':>4}{'decode_tok/s':>13}{'tok/req':>9}"
+        f"{'req/s':>8}{'runaway':>8}{'accept_len':>11}{'accept_rate':>12}"
     )
     for r in summary:
         al = "n/a" if r["accept_length"] is None else f"{r['accept_length']:.3f}"
         ar = "n/a" if r["accept_rate"] is None else f"{r['accept_rate']:.4f}"
         print(
-            f"{r['benchmark']:<16}{r['n']:>4}{r['decode_tok_s']:>14.1f}{al:>12}{ar:>13}"
+            f"{r['benchmark']:<16}{r['n']:>4}{r['decode_tok_s']:>13.1f}"
+            f"{r['tok_per_req'] or 0:>9.1f}{r['req_per_s'] or 0:>8.3f}"
+            f"{r['runaways']:>8}{al:>11}{ar:>12}"
         )
     print(
         "\naccept_rate = accepted_tokens / draft_tokens (vLLM cumulative counters, delta over this run)"
