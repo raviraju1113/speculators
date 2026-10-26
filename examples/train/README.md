@@ -8,13 +8,44 @@ evaluated, the numbers, and how to run the scripts. Deeper material:
 `.claude/skills/` (`dspark-gemma4-handoff`, `dspark-train-serve-parity`,
 `draft-opd`), `DSPARK_GEMMA4_RUNBOOK.md` (cluster era).
 
-**Status (2026-10-23).** Checkpoint to deploy: **conv ep25**
-(`gemma4_31b_dspark_nemo782k_conv/checkpoints/25`). On B200 at k=8 it decodes
+**Status (2026-10-26).** Checkpoint to deploy: **block-12 ep33**
+(`gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33`, served at k=12), or
+**conv ep25** (`gemma4_31b_dspark_nemo782k_conv/checkpoints/25`) where the
+server runs k=8 — at k≤8 the two are equal. Conv ep25 on B200 at k=8 decodes
 5.5× / 3.8× / 4.5× faster than the target alone on AIME / GPQA / LiveCodeBench
 and beats Google's native `gemma-4-31B-it-assistant` draft on throughput on all
-three (+33% / +7% / +21%); it trails the assistant on GPQA acceptance (vocab
-gap, §6). In flight: block-12 continuation eval, Draft-OPD post-training
-(branch `mengmengj/draft-opd`, `opd/PLAN.md`).
+three (+33% / +7% / +21%); k=12 adds +7…+16% tok/s on top (A100 so far). It
+trails the assistant on GPQA acceptance (vocab gap, §6). Next stage:
+Draft-OPD post-training seeded from block-12 ep33 (§0, §8).
+
+---
+
+## 0. What works so far — the current recipe
+
+The recipe is cumulative: each stage keeps everything from the one before and
+changes one thing. "Works" means it beat the previous stage on the standard
+eval (§6.1) at matched k, with no loss elsewhere.
+
+| stage | change | result | status |
+|---|---|---|---|
+| **1. Data** (§1) | nemo782k: 782k conversations, Gemma-4-31B-it responses, kimi-mtp + Nemotron STEM/math/code | the only SFT corpus used; GPQA is where it is thinnest (science 12%) | fixed |
+| **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
+| **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
+| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 +7…+16% tok/s over k=8 on the same A100 | **works** → blk12 ep33 at k=12 (B200 tok/s and the block-8 control still unconfirmed) |
+| **5. Draft-OPD** (§8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss) | pipeline built and gated; no gain shown yet (paper LR hurt, stable LR moved nothing in a 1k-prompt pilot) | **in progress** — becomes stage 5 of the recipe only if the full run beats blk12 ep33 at k=12 on §6.1 with no loss at k=8 |
+
+**Current working recipe** = stages 1–4: train recipe B for 26 epochs on
+nemo782k, warm-start 8 more epochs at block 12 / γ 12, serve
+`conv_blk12/checkpoints/33` at k=12 (k=8 where the server cannot schedule
+12-slot blocks; see §6.3b for the vLLM flags k=12 needs). Draft-OPD is being
+run on top of exactly this checkpoint (`opd/run_rounds.sh` defaults: seed
+blk12 ep33, k = block = γ = 12).
+
+Tried and not kept: the DFlash2 selector/KL loss (§4, parity and simplicity
+over an untested gain); OPD at the paper's LR 3e-4 (destroyed the draft) and
+OPD with fully-accepted blocks dropped (worse: they carry the anchoring
+signal); a from-scratch block-12 run (5.5 days for an answer the warm start
+gave in 2).
 
 ---
 
@@ -416,8 +447,10 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
 - **Draft-OPD** on-policy post-training (branch `mengmengj/draft-opd`,
   `opd/PLAN.md`, skill `draft-opd`): pipeline done and gated (rollout logger,
   replay-free data path, acceptance-aware loss, round loop); first recipe
-  destabilized the draft at the paper's LR, stable at 2e-5; full run waits for
-  B200 access and a science-weighted prompt pool.
+  destabilized the draft at the paper's LR, stable at 2e-5. Seed is now
+  **block-12 ep33 at k=12** (`run_rounds.sh` defaults, 2026-10-26); the full
+  run (`opd/sbatch_sc3_opd_full.sh`) waits for B200 access and a
+  science-weighted prompt pool. Bar to clear: §0 stage 5.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 
 ## Historical

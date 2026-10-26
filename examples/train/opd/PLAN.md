@@ -8,10 +8,13 @@ variant; round-based weight sync.
 
 ## Goal and success criterion
 
-Post-train the best SFT checkpoint (conv ep25 now; block-12 continuation if it
-wins) with Draft-OPD and beat it on the standard eval at matched k:
-target **≥ +0.3 accept_len at k=8** on aime/gpqa/lcb (paper: +8% τ on DFlash),
-with tok/s following. Hard floor: no regression on the SFT val split.
+Post-train the best SFT checkpoint with Draft-OPD and beat it on the standard
+eval at matched k. Seed (decided 2026-10-26): **`conv_blk12/checkpoints/33`**
+(block 12, README §0/§4.1) — `run_rounds.sh` now defaults to it, with k, block
+size and γ taken from the seed's config (12/12/12); the 2026-10-21/22 pilots
+and sweeps were on conv ep25 at k=8. Target **≥ +0.3 accept_len at k=12** (and
+no loss at k=8) on aime/gpqa/lcb (paper: +8% τ on DFlash), with tok/s
+following. Hard floor: no regression on the SFT val split.
 
 ## Phases
 
@@ -142,6 +145,8 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-26: seed switched to block-12 ep33 (k=12); README §0 defines the
+  cumulative recipe and the bar OPD has to clear to become its third stage.
 - 2026-10-21: Phase 1 done — gate 1 passed (smoke 12450272: 40/40 GSM8K
   rollouts, invariant on 100% of 1,886 steps; conv ep25 at k=8 on A100:
   accept_rate 0.70, 50.8% of blocks fully accepted, first-rejection mass

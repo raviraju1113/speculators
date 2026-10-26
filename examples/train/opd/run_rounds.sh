@@ -9,6 +9,8 @@
 #                so optimizer/scheduler/global_step carry across rounds
 #                -> checkpoints/<SEED_EPOCH + r + 1> = ckpt[r+1]
 #
+# (k=12 at the default seed needs --max-num-batched-tokens: vLLM 0.26 computes
+# a negative scheduled-token budget otherwise -- the k=12 eval hit it first.)
 # Mechanics: the run dir is seeded once with the SFT checkpoint's weights
 # (model.safetensors + config.json, no optimizer -> fresh AdamW, warmup in
 # round 0) as epoch SEED_EPOCH; round r sets EPOCHS=SEED_EPOCH+r+2 so the
@@ -42,11 +44,19 @@ CONDA_SH=/import/snvm-sc-scratch1/mengmengj/miniconda3/etc/profile.d/conda.sh
 ROUNDS="${ROUNDS:-2}"
 PROMPTS="${PROMPTS:?set PROMPTS (jsonl with turns)}"
 P="${P:-1000}"                       # prompts per round (sampled by offset)
-K="${K:-8}"
 MAX_TOKENS="${MAX_TOKENS:-2048}"
 CONC="${CONC:-16}"
-SEED_CKPT="${SEED_CKPT:-/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25}"
-SEED_EPOCH="${SEED_EPOCH:-25}"
+# Seed = the current best SFT checkpoint (README §0): block-12 warm start of
+# conv ep25, served at k=12. Pilots/sweeps before 2026-10-26 used conv ep25
+# (block 8): SEED_CKPT=.../gemma4_31b_dspark_nemo782k_conv/checkpoints/25 SEED_EPOCH=25.
+SEED_CKPT="${SEED_CKPT:-/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33}"
+SEED_EPOCH="${SEED_EPOCH:-33}"
+# Block size follows the seed's config.json; rollouts draft K = block size and
+# training masks that many slots (a block-8 driver default on a block-12 seed
+# would silently train 8 slots). gamma = block size as in the block-12 run.
+SEED_BLOCK=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('block_size', 8))" "$SEED_CKPT/config.json")
+export BLOCK_SIZE="${BLOCK_SIZE:-$SEED_BLOCK}" DECAY_GAMMA="${DECAY_GAMMA:-$SEED_BLOCK}"
+K="${K:-$BLOCK_SIZE}"
 VOCAB_DATA="${VOCAB_DATA:-/import/ml-sc-scratch1/mengmengj/datasets/kimi_nemotron_782k}"   # token_freq + d2t/t2d of the seed
 RUN_NAME="${RUN_NAME:-opd_rounds_${SLURM_JOB_ID}}"
 export OUT_ROOT="${OUT_ROOT:-/import/ml-sc-scratch1/mengmengj/output_opd}"
@@ -54,7 +64,7 @@ WORK="$OUT_ROOT/$RUN_NAME"
 mkdir -p "$WORK/rounds" "$REPO/logs"
 
 echo "=== job $SLURM_JOB_ID on $(hostname) $(date '+%F %T') ==="
-echo "run $RUN_NAME: $ROUNDS rounds x $P prompts, k=$K, seed $SEED_CKPT (epoch $SEED_EPOCH)"
+echo "run $RUN_NAME: $ROUNDS rounds x $P prompts, k=$K, block $BLOCK_SIZE gamma $DECAY_GAMMA, seed $SEED_CKPT (epoch $SEED_EPOCH)"
 nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
 NGPU=$(nvidia-smi -L | wc -l)
 
@@ -85,6 +95,7 @@ for (( r=0; r<ROUNDS; r++ )); do
   CUDA_VISIBLE_DEVICES="$ROLL_GPU" vllm serve "$MODEL" \
     --host 127.0.0.1 --port "$PORT" --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.95 --max-model-len $(( MAX_TOKENS + 2048 )) --max-num-seqs "$CONC" \
+    --max-num-batched-tokens 16384 \
     --speculative-config "{\"model\": \"$CK/$LAST\", \"num_speculative_tokens\": $K, \"method\": \"dspark\"}" \
     --enforce-eager --no-enable-prefix-caching --no-async-scheduling \
     --chat-template "$CHAT_TEMPLATE" > "$RDIR/server.log" 2>&1 &
