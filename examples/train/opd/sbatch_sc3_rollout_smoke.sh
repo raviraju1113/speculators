@@ -6,6 +6,9 @@
 #   cd /import/ml-sc-scratch1/mengmengj/speculators
 #   sbatch -w sc3-c98 --gres=gpu:a100m80:1 examples/train/opd/sbatch_sc3_rollout_smoke.sh
 #   CKPT=<draft dir> K=8 N=40 PROMPTS=<jsonl> sbatch ...
+# B300 (sc3-c130/131, reservation sn50-hdi-0; also the env/arch smoke for OPD):
+#   K=12 sbatch -w sc3-c130 --reservation sn50-hdi-0 --gres=gpu:b300m288:1 \
+#     examples/train/opd/sbatch_sc3_rollout_smoke.sh      # seed = blk12 ep33 default
 #SBATCH -N 1
 #SBATCH --partition=gpuonly
 #SBATCH --gres=gpu:a100m80:1
@@ -19,8 +22,8 @@
 # shellcheck disable=SC1091
 source /import/ml-sc-scratch1/mengmengj/speculators/examples/train/sc3_eval_prelude.sh
 
-CKPT="${CKPT:-/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25}"
-K="${K:-8}"
+CKPT="${CKPT:-/import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33}"
+K="${K:-12}"
 N="${N:-40}"
 CONC="${CONC:-4}"
 MAXTOK="${MAXTOK:-512}"
@@ -28,6 +31,9 @@ PROMPTS="${PROMPTS:-$REPO/scripts/evaluate/eval_datasets/gsm8k.jsonl}"
 OUT="${OUT:-$REPO/output_opd/smoke_${SLURM_JOB_ID}}"
 mkdir -p "$OUT/engine_log"
 check_conv_servable "$CKPT" || exit $?
+# env/arch facts for the log (B300 is sm_103: a torch/vllm built for B200 only
+# works there via forward-compatible PTX; kernels built sm_100a-only will fail)
+python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'archs', torch.cuda.get_arch_list()); print('device', torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
 PORT=$(( 20000 + ${SLURM_JOB_ID:-0} % 10000 ))
 
 # The logger lives in the engine-core process, which inherits the env.
@@ -36,9 +42,12 @@ vllm serve "$MODEL" \
   --host 127.0.0.1 --port "$PORT" --tensor-parallel-size 1 \
   --gpu-memory-utilization 0.95 --max-model-len 2048 --max-num-seqs "$CONC" \
   --speculative-config "{\"model\": \"$CKPT\", \"num_speculative_tokens\": $K, \"method\": \"dspark\"}" \
+  --max-num-batched-tokens "${MAX_BATCHED:-16384}" \
   --enforce-eager --no-enable-prefix-caching \
   --no-async-scheduling \
   --chat-template "$CHAT_TEMPLATE" > "$OUT/server.log" 2>&1 &
+# --max-num-batched-tokens: k=12 drives vLLM 0.26's scheduled-token budget
+# negative at the default (the k=12 eval hit it first).
 # --no-async-scheduling is REQUIRED for the logger: only the sync path feeds the
 # real draft ids back to the scheduler (the logger refuses to start otherwise).
 SRV=$!
