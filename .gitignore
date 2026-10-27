@@ -234,3 +234,5 @@ logs/
 google/
 *.json
 *.yaml
+# GLM-5.3 regeneration pool / outputs (examples/train/glm53)
+data/glm53/

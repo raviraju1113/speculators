@@ -127,6 +127,18 @@ def parse_args():
         help="max_tokens for generation",
     )
     parser.add_argument(
+        "--extra-body",
+        type=json.loads,
+        default=None,
+        metavar="JSON",
+        help=(
+            "JSON object merged into every chat-completion request body, e.g. "
+            "'{\"temperature\": 1.0, \"top_p\": 0.95, \"chat_template_kwargs\": "
+            "{\"reasoning_effort\": \"low\"}}'. Without it vLLM applies the model's "
+            "generation_config defaults."
+        ),
+    )
+    parser.add_argument(
         "--outfile",
         default=None,
         help="Output JSONL path (auto-generated if not specified)",
@@ -306,6 +318,8 @@ async def regenerate_conversation(
     """
     regenerated: list[dict[str, str]] = []
     last_usage = None
+    finish_reasons: list[str | None] = []
+    completion_tokens = 0
     for turn in messages:
         if turn["role"] not in ("system", "user"):
             continue  # drop original assistant turns; we regenerate them
@@ -317,12 +331,16 @@ async def regenerate_conversation(
             "messages": regenerated,
             "max_tokens": args.max_tokens,
         }
+        if args.extra_body:
+            payload.update(args.extra_body)
         async with sem, session.post(endpoint, json=payload) as response:
             data = await response.json()
         content = _choice_content(data)
+        finish_reasons.append(data["choices"][0].get("finish_reason"))
         regenerated.append({"role": "assistant", "content": content})
         last_usage = data.get("usage")
-    return regenerated, last_usage
+        completion_tokens += (last_usage or {}).get("completion_tokens", 0) or 0
+    return regenerated, last_usage, finish_reasons, completion_tokens
 
 
 async def _regenerate_conversation_item(
@@ -333,7 +351,7 @@ async def _regenerate_conversation_item(
     sample_id = queue_item.get("uuid") or f"sample_{idx}"
     start_time = time.time()
     try:
-        regen, usage = await regenerate_conversation(
+        regen, usage, finish_reasons, completion_tokens = await regenerate_conversation(
             sem, session, endpoint, args, queue_item["messages"]
         )
         output = {
@@ -347,11 +365,18 @@ async def _regenerate_conversation_item(
                 "latency_s": round(time.time() - start_time, 3),
                 "usage": usage,
                 "endpoint": endpoint,
+                "finish_reasons": finish_reasons,
+                # Any turn that hit --max-tokens is cut mid-sentence; filter
+                # these out of a training corpus (see prepare_glm53_data.sh).
+                "truncated": "length" in finish_reasons,
             },
         }
         out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
         out_fh.flush()
         stats["ok"] += 1
+        stats["completion_tokens"] = stats.get("completion_tokens", 0) + completion_tokens
+        if output["metadata"]["truncated"]:
+            stats["truncated"] = stats.get("truncated", 0) + 1
     except Exception as e:  # noqa: BLE001
         # Errors go to a sibling .errors.jsonl so the training output stays clean.
         err_fh.write(
@@ -364,7 +389,13 @@ async def _regenerate_conversation_item(
         err_fh.flush()
         stats["errors"] += 1
     finally:
-        progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
+        postfix = {"ok": stats["ok"], "errors": stats["errors"]}
+        if stats.get("truncated"):
+            postfix["trunc"] = stats["truncated"]
+        elapsed = time.time() - stats.get("start_time", start_time)
+        if elapsed > 0 and stats.get("completion_tokens"):
+            postfix["tok/s"] = f"{stats['completion_tokens'] / elapsed:.0f}"
+        progress.set_postfix(postfix, refresh=False)
         progress.update(1)
 
 
@@ -400,6 +431,8 @@ async def worker(
             "messages": [{"role": "user", "content": item["prompt"]}],
             "max_tokens": args.max_tokens,
         }
+        if args.extra_body:
+            payload.update(args.extra_body)
 
         start_time = time.time()
         try:
@@ -573,7 +606,7 @@ async def main():
                 dynamic_ncols=True,
             ) as progress,
         ):
-            stats = {"ok": 0, "errors": 0}
+            stats = {"ok": 0, "errors": 0, "truncated": 0, "completion_tokens": 0, "start_time": time.time()}
             # Round-robin each worker onto an endpoint so load spreads evenly
             # across all reachable servers.
             workers = [
@@ -609,6 +642,14 @@ async def main():
             for _ in range(len(workers)):
                 await queue.put(None)
             await asyncio.gather(*workers)
+
+    elapsed = time.time() - stats["start_time"]
+    tok_s = stats["completion_tokens"] / elapsed if elapsed > 0 else 0.0
+    print(
+        f"\nDone: ok={stats['ok']} errors={stats['errors']} "
+        f"truncated={stats.get('truncated', 0)} completion_tokens={stats['completion_tokens']} "
+        f"elapsed={elapsed:.0f}s ({tok_s:.0f} tok/s) -> {args.outfile}"
+    )
 
 
 if __name__ == "__main__":

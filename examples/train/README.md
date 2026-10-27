@@ -452,6 +452,69 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   run (`opd/sbatch_sc3_opd_full.sh`) waits for B200 access and a
   science-weighted prompt pool. Bar to clear: §0 stage 5.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
+- **GLM-5.3 target** (branch `mengmengj/glm-dflash2`): data-generation pipeline
+  ready, waiting for the B300 node — §9.
+
+## 9. GLM-5.3 DFlash2-MTP draft — data generation (branch `mengmengj/glm-dflash2`)
+
+Second target, same repo and README. Status 2026-10-27: scripts written and
+tested end-to-end against a mock server + the real GLM tokenizer; **nothing
+has run on a GPU yet** (B300 node busy with Draft-OPD setup).
+
+**Target checkpoints** (`/import/ml-sc-nlpcheckpoints-scratch3/mengmengj/`):
+`glm-5.3-bf16/` = `zai-org/GLM-5.3-BF16` (1.51 TB, the canonical copy: training
+loop, tokenizer, prepare_data) and `glm-5.3/` = `zai-org/GLM-5.3` (fp8 block-128,
+756 GB; **no tokenizer files** — copy `tokenizer*.json` from the bf16 dir to
+serve it). 744B params + a 10B MTP layer, 78 layers, 256 experts (8 active),
+vocab 154880, DSA sparse attention (`glm_moe_dsa`, vLLM runs it through the
+`deepseek_v2` model class; FlashMLA kernels are built `sm_100f`, so B300 is
+covered).
+
+**Thinking cannot be switched off.** The chat template always opens the reply
+with `<think>`; the only knob is `reasoning_effort` ∈ {low, high, max (default)}
+via `chat_template_kwargs`. A serve-time draft therefore has to speculate
+through reasoning tokens too, so the regenerated data keeps the whole raw reply
+(`reasoning</think>answer`, no `--reasoning-parser` on the server) and the loss
+mask covers the `<think>…</think>` block.
+
+**Pipeline** (`examples/train/glm53/`, all CPU steps verified):
+
+| step | command | notes |
+|---|---|---|
+| 1. prompt pool | `python examples/train/glm53/extract_prompts.py --dataset datasets/kimi_nemotron_782k --tag nemo782k --output data/glm53/prompts_nemo782k.jsonl` | reads the `messages` column of the gemma arrow shards: 782,413 rows (692k single-turn, 90k multi-turn, 1,276 with a system prompt), old answers dropped, stable ids `nemo782k:<shard>:<row>`. 40 s, 732 MB (gitignored). **Done.** |
+| 2. regenerate | `LIMIT=2000 TIME=2:00:00 bash examples/train/glm53/sngpu_regen_glm53_sc3-c130.sh` (probe) then `TIME=3-00:00:00 bash …` (full, `--resume`s) | one vLLM server TP=8 on sc3-c130 + `script_multiendpoint.py --extra-body` (new flag: temperature/top_p/`chat_template_kwargs`). Defaults: `REASONING_EFFORT=low`, `TEMPERATURE=1.0 TOP_P=0.95` (the checkpoint's generation_config), `MAX_TOKENS=12288`, `MAX_MODEL_LEN=24576`, `CONCURRENCY=256`, bf16 KV. Output `data/glm53/nemo782k_regen_glm53.jsonl`, per-row `finish_reasons`/`truncated`. |
+| 3. tokenize | `bash examples/train/glm53/prepare_glm53_data.sh` | drops truncated rows, blanks `<think>` of non-final turns (mirrors `clear_thinking=true` used at generation), then `prepare_data.py --seq-length 8192 --assistant-pattern …` → `datasets/glm53_nemotron_782k`. |
+
+**Gotchas found while testing**
+- GLM's template emits no end-of-turn token after an assistant reply (the model
+  stops on `<|user|>`, id 154827), so prepare_data's auto-detected regex
+  requires a following `<|user|>` and never matches the last reply →
+  **all-zero loss masks**. `prepare_glm53_data.sh` passes a pattern that also
+  accepts end-of-text; verified: 0 zero-mask rows, mask = `<think>…</think>answer`.
+- The multi-endpoint client is the working one; `script.py` in the same dir
+  is a half-merged file (undefined names) — don't use it.
+- vLLM: env `condaenvs/dspark` has 0.26.0 and registers `GlmMoeDsaForCausalLM`;
+  Z.ai's recipe asks for ≥0.28. If the server fails to load, build a newer env
+  before debugging kernels. DeepGEMM is only needed for the fp8 checkpoint.
+- `sngpu --interactive` is capped (`maxtime`); batch jobs via `--filepath`
+  take `--time 3-00:00:00`. Default partition `gpuonly`, reservation
+  `sn50-hdi-0`, node `sc3-c130` = 8× `b300m288`.
+
+**Cost estimate (bf16, 8× B300, to be replaced by the 2k-row probe's tok/s):**
+the gemma answers total 607M tokens (776/row); at reasoning_effort=low expect
+roughly 2–3× that with the thinking block. Weight-bandwidth bound at high
+concurrency: ~5–10k tok/s for bf16 → **2–4 days**; fp8 would be ~2× faster.
+Read `tok/s` from the client's progress bar / final `Done:` line.
+
+**Adding data later:** extract a new pool with its own `--tag`, merge with
+`scripts/merge_dedup_jsonl.py old.jsonl new.jsonl -o pool.jsonl` (dedups by
+first user prompt), rerun step 2 with `--resume` (only new ids are generated),
+rerun step 3 on the merged output. Keep the regen JSONL — it is the source of
+truth for re-tokenizing or for the next target.
+
+**Open decisions:** reasoning effort for the production serve (low assumed);
+sampled (1.0/0.95, assumed) vs greedy like the gemma data; `--seq-length`
+8192 vs 16384 once the probe shows the reply-length distribution.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
