@@ -87,31 +87,65 @@ for (( r=0; r<ROUNDS; r++ )); do
   echo "=== round $r: rollout from checkpoints/$LAST $(date '+%T') ==="
   conda activate "$EVAL_ENV"
   PORT=$(( 21000 + (${SLURM_JOB_ID:-0} + r) % 9000 ))
-  export DSPARK_ROLLOUT_LOG="$RDIR/engine_log"
-  # First GPU of OUR allocation. nvidia-smi on these nodes lists every physical
-  # card and SLURM only sets CUDA_VISIBLE_DEVICES, so a literal index would
-  # land on another job's GPU (round-0 failure: 1.25 GiB free on cuda:0).
-  ROLL_GPU="${CUDA_VISIBLE_DEVICES%%,*}"; ROLL_GPU="${ROLL_GPU:-0}"
-  CUDA_VISIBLE_DEVICES="$ROLL_GPU" vllm serve "$MODEL" \
-    --host 127.0.0.1 --port "$PORT" --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.95 --max-model-len $(( MAX_TOKENS + 2048 )) --max-num-seqs "$CONC" \
-    --max-num-batched-tokens 16384 \
-    --speculative-config "{\"model\": \"$CK/$LAST\", \"num_speculative_tokens\": $K, \"method\": \"dspark\"}" \
-    --enforce-eager --no-enable-prefix-caching --no-async-scheduling \
-    --chat-template "$CHAT_TEMPLATE" > "$RDIR/server.log" 2>&1 &
-  SRV=$!
-  for _ in $(seq 1 120); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; kill -0 $SRV 2>/dev/null || { echo "!! rollout server died"; tail -20 "$RDIR/server.log"; exit 1; }; sleep 15; done
-  curl -sf "http://127.0.0.1:$PORT/health" >/dev/null || { echo "!! rollout server not healthy" >&2; exit 1; }
+  # Data-parallel rollouts: one server per allocated GPU (ROLL_DP of them),
+  # the round's prompts split into equal shards. One server on one GPU left the
+  # other seven idle for ~2.7 h per 16k-prompt round (pilot 13936853).
+  # nvidia-smi lists every physical card and SLURM only sets
+  # CUDA_VISIBLE_DEVICES, so GPUs are taken from that variable, never by index.
+  IFS=',' read -ra GPUS <<< "${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $(( NGPU - 1 )))}"
+  ROLL_DP="${ROLL_DP:-${#GPUS[@]}}"; [ "$ROLL_DP" -gt "${#GPUS[@]}" ] && ROLL_DP=${#GPUS[@]}
   # offset the pool per round so rounds see different prompts when P < pool size
   OFF=$(( (r * P) % $(wc -l < "$PROMPTS") ))
-  tail -n +$(( OFF + 1 )) "$PROMPTS" > "$RDIR/prompts.jsonl"; [ "$(wc -l < "$RDIR/prompts.jsonl")" -lt "$P" ] && head -n "$P" "$PROMPTS" >> "$RDIR/prompts.jsonl"
-  python scripts/opd/rollout.py --base-url "http://127.0.0.1:$PORT" --model "$MODEL" \
-    --prompts "$RDIR/prompts.jsonl" --limit "$P" --concurrency "$CONC" --max-tokens "$MAX_TOKENS" \
-    --temperature 0 --tag "r$r" --out "$RDIR" || echo "!! some rollout requests failed (continuing)"
-  kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; sleep 5
-  unset DSPARK_ROLLOUT_LOG
-  python scripts/opd/assemble_rollouts.py --log-dir "$RDIR/engine_log" --responses "$RDIR/responses.jsonl" \
-    --out "$RDIR/rollouts.jsonl" --draft-ckpt "$CK/$LAST" --round "$r" | tee "$RDIR/assemble.txt"
+  tail -n +$(( OFF + 1 )) "$PROMPTS" | head -n "$P" > "$RDIR/prompts.jsonl"
+  [ "$(wc -l < "$RDIR/prompts.jsonl")" -lt "$P" ] && head -n $(( P - $(wc -l < "$RDIR/prompts.jsonl") )) "$PROMPTS" >> "$RDIR/prompts.jsonl"
+  split -n "l/$ROLL_DP" -d -a 1 "$RDIR/prompts.jsonl" "$RDIR/prompts.part"
+  SRVS=()
+  for s in $(seq 0 $(( ROLL_DP - 1 ))); do
+    mkdir -p "$RDIR/engine_log/s$s" "$RDIR/s$s"
+    DSPARK_ROLLOUT_LOG="$RDIR/engine_log/s$s" CUDA_VISIBLE_DEVICES="${GPUS[$s]}" vllm serve "$MODEL" \
+      --host 127.0.0.1 --port $(( PORT + s )) --tensor-parallel-size 1 \
+      --gpu-memory-utilization 0.95 --max-model-len $(( MAX_TOKENS + 2048 )) --max-num-seqs "$CONC" \
+      --max-num-batched-tokens 16384 \
+      --speculative-config "{\"model\": \"$CK/$LAST\", \"num_speculative_tokens\": $K, \"method\": \"dspark\"}" \
+      --enforce-eager --no-enable-prefix-caching --no-async-scheduling \
+      --chat-template "$CHAT_TEMPLATE" > "$RDIR/server_s$s.log" 2>&1 &
+    SRVS+=($!)
+  done
+  for s in $(seq 0 $(( ROLL_DP - 1 ))); do
+    for _ in $(seq 1 120); do
+      curl -sf "http://127.0.0.1:$(( PORT + s ))/health" >/dev/null 2>&1 && break
+      kill -0 "${SRVS[$s]}" 2>/dev/null || { echo "!! rollout server s$s died"; tail -20 "$RDIR/server_s$s.log"; exit 1; }
+      sleep 15
+    done
+    curl -sf "http://127.0.0.1:$(( PORT + s ))/health" >/dev/null || { echo "!! rollout server s$s not healthy" >&2; exit 1; }
+  done
+  echo "rollout: $ROLL_DP servers up $(date '+%T')"
+  PIDS=()
+  for s in $(seq 0 $(( ROLL_DP - 1 ))); do
+    python scripts/opd/rollout.py --base-url "http://127.0.0.1:$(( PORT + s ))" --model "$MODEL" \
+      --prompts "$RDIR/prompts.part$s" --concurrency "$CONC" --max-tokens "$MAX_TOKENS" \
+      --temperature 0 --tag "r${r}s$s" --out "$RDIR/s$s" > "$RDIR/s$s/rollout.log" 2>&1 &
+    PIDS+=($!)
+  done
+  for pid in "${PIDS[@]}"; do wait "$pid" || echo "!! some rollout requests failed (continuing)"; done
+  for pid in "${SRVS[@]}"; do kill "$pid" 2>/dev/null; done; wait "${SRVS[@]}" 2>/dev/null; sleep 5
+  : > "$RDIR/rollouts.jsonl"
+  for s in $(seq 0 $(( ROLL_DP - 1 ))); do
+    python scripts/opd/assemble_rollouts.py --log-dir "$RDIR/engine_log/s$s" --responses "$RDIR/s$s/responses.jsonl" \
+      --out "$RDIR/s$s/rollouts.jsonl" --draft-ckpt "$CK/$LAST" --round "$r" > "$RDIR/s$s/assemble.txt" || { echo "!! assemble failed for shard s$s"; tail -5 "$RDIR/s$s/assemble.txt"; exit 1; }
+    cat "$RDIR/s$s/rollouts.jsonl" >> "$RDIR/rollouts.jsonl"
+  done
+  python - "$RDIR/rollouts.jsonl" "$K" <<'PY' | tee "$RDIR/assemble.txt"
+import json, sys
+n = steps = acc = full = 0
+for line in open(sys.argv[1]):
+    r = json.loads(line); n += 1
+    for st in r["steps"]:
+        steps += 1; acc += st["accepted"]; full += st["accepted"] >= int(sys.argv[2])
+k = int(sys.argv[2])
+print(f"round rollouts: {n}  draft steps: {steps}  mean accepted/step: {acc/max(steps,1):.3f}  "
+      f"accept_rate: {acc/max(steps*k,1):.4f}  full blocks: {full/max(steps,1):.3f}  (k={k})")
+PY
   # KEEP_FULL=1 (default): keep fully-accepted blocks. The sweep (PLAN.md,
   # 2026-10-22) showed dropping them is clearly worse: they are the forward-KL
   # anchoring signal; the paper keeps every anchor.

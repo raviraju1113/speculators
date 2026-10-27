@@ -406,6 +406,9 @@ class WandbHandler(logging.Handler):
         self.init_kwargs.setdefault("dir", Path(log_dir))
         self.init_kwargs.setdefault("name", _substitute_placeholders(run_name))
         self.init_kwargs.setdefault("config", {})
+        # Round-based runs (Draft-OPD) resume one wandb run id with a different
+        # data_path each round; without this wandb.init raises ConfigError.
+        self.init_kwargs.setdefault("allow_val_change", True)
 
         self._package_name = "wandb"
         self._run: Run | None = None
