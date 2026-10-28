@@ -61,8 +61,10 @@ if [ "${SPEC_MTP:-0}" = "1" ]; then
     SERVE+=(--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}')
 fi
 
+# --model is the name the server exposes (--served-model-name), not the path:
+# job 13948923 got 2000x HTTP 404 "model does not exist" with the path.
 CLIENT=(python "$REPO/scripts/response_regeneration/script_multiendpoint.py"
-    --input-jsonl "$INPUT_JSONL" --outfile "$OUTFILE" --model "$MODEL"
+    --input-jsonl "$INPUT_JSONL" --outfile "$OUTFILE" --model glm-5.3
     --endpoint "http://127.0.0.1:$PORT/v1/chat/completions"
     --concurrency "$CONCURRENCY" --max-tokens "$MAX_TOKENS"
     --extra-body "$EXTRA_BODY" --skip-sources "" --resume)
