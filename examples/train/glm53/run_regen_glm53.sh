@@ -82,9 +82,18 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENVS_DIR/$CONDA_ENV" 2>/dev/null || conda activate "$CONDA_ENV"
 export PYTHONNOUSERSITE=1
 export HF_HUB_OFFLINE=1
-# Node-local scratch for vLLM's compile cache (the NFS home is tiny).
-export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-${SLURM_TMPDIR:-/tmp}/vllm_cache_$USER}"
-mkdir -p "$LOG_DIR" "$(dirname "$OUTFILE")" "$VLLM_CACHE_ROOT"
+# $HOME has a 10 GB quota and is full: every JIT/compile cache goes to scratch
+# (persistent, so FlashInfer's B300 kernels are built once, not per job).
+# FlashInfer crashed the first probe with "Disk quota exceeded" in
+# ~/.cache/flashinfer during warm-up.
+CACHE_BASE="${CACHE_BASE:-/import/ml-sc-scratch1/mengmengj/cache}"
+export FLASHINFER_WORKSPACE_BASE="$CACHE_BASE"            # -> $CACHE_BASE/.cache/flashinfer
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$CACHE_BASE/vllm}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$CACHE_BASE/triton}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$CACHE_BASE/inductor}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$CACHE_BASE/xdg}"
+export TMPDIR="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
+mkdir -p "$LOG_DIR" "$(dirname "$OUTFILE")" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$XDG_CACHE_HOME" "$CACHE_BASE/.cache"
 
 # --- server ----------------------------------------------------------------
 SERVER_LOG="$LOG_DIR/vllm_glm53_$(date +%Y%m%d_%H%M%S).log"
