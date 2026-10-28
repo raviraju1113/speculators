@@ -145,6 +145,18 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-27: B300 smoke (sc3-c130, 1 GPU, k=12, blk12 ep33): env runs on
+  B300 unchanged; 40/40 GSM8K rollouts, invariant 100%, accept_rate 0.59.
+  Prompt pool: Nemotron-v2 stem is entirely inside nemo782k (354,974/355,000),
+  so the pool is `data/opd_prompts/sci16k.jsonl` = 12k OpenScienceReasoning-2
+  + 4k Nemotron-v2 chat, hash-disjoint from nemo782k (`build_opd_pool.py`).
+  Pilot 13936853 (8 B200, 2 x 1k, LR 5e-5): round-0 rollout accept_rate 0.2194
+  -> round-1 0.2192 (no damage, no movement in 24 steps; parity 0.996 at step 1,
+  rej-KL 15.4 -> 13.8). Fixes: data-parallel rollouts (8 servers), wandb
+  allow_val_change on the hparams setter. Test2 13944090 passed 2 rounds.
+  **Full run launched: job 13944091, sc3-cp84, `opd_full_blk12_sci16k`, 8 rounds
+  x 16k, LR 5e-5 cosine 2850 steps, wandb `opdfullblk12v1`.** Block-8 control
+  12398695 running on sc3-cp83 (moved into the reservation).
 - 2026-10-26: seed switched to block-12 ep33 (k=12); README §0 defines the
   cumulative recipe and the bar OPD has to clear to become its third stage.
 - 2026-10-21: Phase 1 done — gate 1 passed (smoke 12450272: 40/40 GSM8K

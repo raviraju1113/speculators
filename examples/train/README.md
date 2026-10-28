@@ -450,7 +450,11 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   destabilized the draft at the paper's LR, stable at 2e-5. Seed is now
   **block-12 ep33 at k=12** (`run_rounds.sh` defaults, 2026-10-26); the full
   run (`opd/sbatch_sc3_opd_full.sh`) waits for B200 access and a
-  science-weighted prompt pool. Bar to clear: §0 stage 5.
+  science-weighted prompt pool. **Full run launched 2026-10-27** (job
+  13944091, `opd_full_blk12_sci16k`, 8 rounds × 16k prompts from
+  `data/opd_prompts/sci16k.jsonl` = OpenScienceReasoning-2 + Nemotron-v2 chat,
+  disjoint from nemo782k; Nemotron-v2 stem turned out to be entirely inside
+  nemo782k). Bar to clear: §0 stage 5.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 
 ## Historical
