@@ -446,7 +446,9 @@ class WandbHandler(logging.Handler):
         step = getattr(record, "step", None)
         if getattr(record, "hparams", None):
             for k, v in flat_dict.items():
-                self._run.config[k] = v
+                # update() with allow_val_change: __setitem__ raises ConfigError
+                # when a resumed run (Draft-OPD rounds) changes e.g. data_path.
+                self._run.config.update({k: v}, allow_val_change=True)
             return
 
         self._run.log(flat_dict, step=step)
