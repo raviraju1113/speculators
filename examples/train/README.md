@@ -504,11 +504,26 @@ mask covers the `<think>…</think>` block.
   take `--time 3-00:00:00`. Default partition `gpuonly`, reservation
   `sn50-hdi-0`, node `sc3-c130` = 8× `b300m288`.
 
-**Cost estimate (bf16, 8× B300, to be replaced by the 2k-row probe's tok/s):**
-the gemma answers total 607M tokens (776/row); at reasoning_effort=low expect
-roughly 2–3× that with the thinking block. Weight-bandwidth bound at high
-concurrency: ~5–10k tok/s for bf16 → **2–4 days**; fp8 would be ~2× faster.
-Read `tok/s` from the client's progress bar / final `Done:` line.
+**Probes (2026-10-28, bf16 on sc3-c130, effort low, 1.0/0.95, max_tokens 12288):**
+
+| job | config | steady gen tok/s | notes |
+|---|---|---|---|
+| 14088500 | TP=8, 256 concurrent, 24k window | 3.0k (max 3.7k) | 2000 rows in 17 min; 2275 tok/s incl. ramp-down; server up in 6 min |
+| 14093662 | TP=8 **+EP**, 384 concurrent, 32k window | 3.1k (max 3.9k) | KV (755k tok, bf16) hit 100% once long thinkers accumulated → preemption, 2.5k tok/s with ~180 running |
+
+Reply lengths at effort low: mean 1150 completion tok/row, median 306, p90
+1.9k, 2.2% hit the 12288 cap (long competitive-programming thinking, 5/45
+looping). Think block median 62 chars — most replies barely think. Decode step
+≈85 ms vs the ~25 ms weight-bandwidth floor, so bf16 MoE kernels, then KV
+capacity, are the limits; EP buys ~5–10%. Full run ≈ 0.9B tokens ≈ **3–3.5
+days** at ~3k tok/s. Full run launched 2026-10-28 11:00 as `glm53_regen_full`
+with EP, `--kv-cache-dtype fp8_e4m3` (doubles KV; the vLLM recipe serves GLM-5.3
+with fp8 KV, and the GLM-5.2 KV ablation in `docs/user_guide/tutorials/` showed
+no acceptance effect), 320 concurrent, 4-day limit; resumable with the same
+command. Failure history: `--disable-log-requests` gone in vLLM 0.26; FlashInfer
+JIT + vLLM usage stats wrote to `$HOME` (10 GB quota, 9 used) → caches moved to
+`/import/ml-sc-scratch1/mengmengj/cache`, `VLLM_NO_USAGE_STATS=1`; client
+`--model` must be the served name (`glm-5.3`), not the path (2000× HTTP 404).
 
 **Adding data later:** extract a new pool with its own `--tag`, merge with
 `scripts/merge_dedup_jsonl.py old.jsonl new.jsonl -o pool.jsonl` (dedups by
@@ -519,7 +534,7 @@ truth for re-tokenizing or for the next target.
 **Decided 2026-10-27:** reasoning_effort **low**; **sampled** at the
 checkpoint's generation_config (temperature 1.0, top_p 0.95) — same as the
 gemma data turned out to be (§1), the serving default, and the DSpark recipe.
-**Open:** `--seq-length` 8192 vs 16384 once the probe shows reply lengths.
+**Open:** `--seq-length` 8192 vs 16384 (p90 reply 1.9k tok, p99 at the 12288 cap: 8192 truncates ~2–3% of rows); `MAX_TOKENS` 12288 vs 16384 for the long-thinking tail.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
