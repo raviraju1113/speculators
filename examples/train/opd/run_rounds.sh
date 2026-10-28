@@ -45,6 +45,13 @@ mkdir -p "$OPD_CACHE/xdg_cache" "$OPD_CACHE/xdg_config" "$OPD_CACHE/triton" "$OP
 export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
 export XDG_CACHE_HOME="$OPD_CACHE/xdg_cache" XDG_CONFIG_HOME="$OPD_CACHE/xdg_config"
 export VLLM_CACHE_ROOT="$OPD_CACHE/vllm" TRITON_CACHE_DIR="$OPD_CACHE/triton" TORCHINDUCTOR_CACHE_DIR="$OPD_CACHE/inductor"
+# flashinfer ignores XDG: its JIT dir is $FLASHINFER_WORKSPACE_BASE/.cache/flashinfer
+# (default $HOME). Round-2 training of 13949602 died in its sampling-kernel
+# build there (home quota). Seed the new dir with the prebuilt kernels once, and
+# keep vLLM's sampler off flashinfer so no JIT happens at startup at all.
+export FLASHINFER_WORKSPACE_BASE="$OPD_CACHE/flashinfer_home"
+[ -d "$FLASHINFER_WORKSPACE_BASE/.cache/flashinfer" ] || { mkdir -p "$FLASHINFER_WORKSPACE_BASE/.cache" && cp -r "$HOME/.cache/flashinfer" "$FLASHINFER_WORKSPACE_BASE/.cache/" 2>/dev/null; }
+export VLLM_USE_FLASHINFER_SAMPLER=0
 export MODEL=/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
 export CHAT_TEMPLATE="$MODEL/chat_template.jinja"
 EVAL_ENV=/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host       # patched vLLM (serving)
@@ -93,6 +100,10 @@ source "$CONDA_SH"
 for (( r=0; r<ROUNDS; r++ )); do
   LAST=$(ls -d "$CK"/[0-9]* | xargs -n1 basename | sort -n | tail -1)
   RDIR="$WORK/rounds/r$r"; mkdir -p "$RDIR/engine_log"
+  # Resume: a round whose checkpoint exists is complete. (Before this check a
+  # resumed job re-ran round r's training from the newest checkpoint -- 14088570
+  # retrained round-1 data from checkpoint 35.)
+  if [ -d "$CK/$(( SEED_EPOCH + r + 1 ))" ]; then echo "round $r: checkpoints/$(( SEED_EPOCH + r + 1 )) exists, round complete, skipping"; continue; fi
   if [ -f "$RDIR/dataset/state.json" ]; then echo "round $r: dataset exists, skipping rollout"; else
   echo "=== round $r: rollout from checkpoints/$LAST $(date '+%T') ==="
   conda activate "$EVAL_ENV"

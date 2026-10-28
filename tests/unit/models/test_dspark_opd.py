@@ -70,6 +70,27 @@ def test_opd_loss_lambda_weighting():
     assert torch.allclose(l1, (t["opd_acc_loss"] + t["opd_rej_loss"]) / 2, atol=1e-6)
 
 
+def test_opd_loss_rej_valid_drops_out_of_vocab_rejected_slots():
+    torch.manual_seed(4)
+    block, nb, v = 4, 2, 32
+    logits = torch.randn(1, nb * block, v)
+    targets = torch.randn(1, nb * block, v)
+    loss_mask = torch.ones(1, nb * block)
+    accepted = torch.tensor([1, 2])  # rejected slots: block0 slot1, block1 slot2
+    rej_valid = torch.ones(nb, block, dtype=torch.bool)
+    rej_valid[1, 2] = False  # block1's bonus token is outside the draft vocab
+    l_all, t_all = opd_loss(logits, targets, loss_mask, accepted, block)
+    l_msk, t_msk = opd_loss(logits, targets, loss_mask, accepted, block, rej_valid=rej_valid)
+    assert t_all["opd_rej_slots"] == 2 and t_msk["opd_rej_slots"] == 1
+    assert t_msk["opd_rej_oov_slots"] == 1 and t_all["opd_rej_oov_slots"] == 0
+    assert torch.allclose(t_msk["opd_acc_loss"], t_all["opd_acc_loss"])
+    # the surviving rejected term is exactly block 0's reverse KL
+    from speculators.models.dspark.metrics import _reverse_kl
+    rev = _reverse_kl(logits, targets).view(nb, block)
+    assert torch.allclose(t_msk["opd_rej_loss"], rev[0, 1], atol=1e-6)
+    assert not torch.allclose(l_msk, l_all)
+
+
 def test_compute_metrics_opd_branch_runs():
     torch.manual_seed(3)
     block, nb, v = 8, 4, 48
