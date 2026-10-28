@@ -71,6 +71,7 @@ def opd_loss(
     rej_gamma: float = 0.8,
     first_rejected_only: bool = True,
     rej_valid: torch.Tensor | None = None,  # [num_blocks, block_size] bool
+    rej_kl: str = "reverse",  # "reverse" (paper) | "forward" (ablation)
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Acceptance-aware distillation (arXiv 2605.29343 eqs. 10-13): forward KL
     on accepted slots, ``gamma^(j-r)``-weighted reverse KL on rejected slots
@@ -95,7 +96,9 @@ def opd_loss(
         rej_oov = ((rej_w > 0) & ~rej_valid.to(torch.bool)).sum().to(torch.float32)
         rej_w = rej_w * rej_valid.to(torch.float32)
     fwd = _forward_kl(logits, targets).view(num_blocks, block_size)
-    rev = _reverse_kl(logits, targets).view(num_blocks, block_size)
+    rev = (_reverse_kl if rej_kl == "reverse" else _forward_kl)(logits, targets).view(
+        num_blocks, block_size
+    )
     l_acc = (fwd * acc_w).sum() / (acc_w.sum() + _EPS)
     l_rej = (rev * rej_w).sum() / (rej_w.sum() + _EPS)
     loss = (l_acc + lambda_rej * l_rej) / (1.0 + lambda_rej)
@@ -144,6 +147,7 @@ def compute_metrics(
     opd_accepted: torch.Tensor | None = None,  # [num_blocks] Draft-OPD accepted counts
     opd_lambda_rej: float = 1.0,
     opd_rej_valid: torch.Tensor | None = None,  # [num_blocks, block_size], see opd_loss
+    opd_rej_kl: str = "reverse",
 ) -> tuple[torch.Tensor, dict]:
     """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
 
@@ -169,7 +173,7 @@ def compute_metrics(
         # position decay (the paper decays rejected slots only, via rej_gamma).
         loss, opd_terms = opd_loss(
             logits, targets, loss_mask, opd_accepted, block_size,
-            lambda_rej=opd_lambda_rej, rej_valid=opd_rej_valid,
+            lambda_rej=opd_lambda_rej, rej_valid=opd_rej_valid, rej_kl=opd_rej_kl,
         )
         term_losses = {}
         # Confidence-head labels only where the draft was actually scored.
