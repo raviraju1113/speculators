@@ -145,6 +145,24 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-28: **the paper's objective as implemented degrades the draft.**
+  Full run 13949602 (blk12 ep33, sci16k, k=12, LR 5e-5, λ=1, reverse KL on
+  the first rejected slot): rollout accept_rate 0.2117 (ckpt 33) -> 0.2090
+  (34) -> 0.1987 (35); val forward-KL on accepted slots 0.29 -> 0.49. Both
+  runs that night died on $HOME quota (vLLM usage stats, then flashinfer JIT);
+  all caches now live on scratch and the sampler JIT is off. Diagnostics
+  (`opd_diag_r0`, LR≈0): teacher alignment is correct — teacher argmax ==
+  drafted token on 99.7% of accepted slots and == bonus token on 98% of
+  in-vocab rejected slots (gate 3, now a logged metric) — but **28% of
+  first-rejected slots have a bonus token outside the 32k draft vocab** (36%
+  at slot 0; renormalized targets make reverse KL train toward a token the
+  target never produced), and the rejected term is **18 nats vs 0.08** for the
+  accepted term, i.e. the gradient is ~200:1 the rejected slot. Fixes: OOV
+  rejected slots dropped from the loss (`rej_valid`), `--opd-rej-kl
+  {reverse,forward}`. Pilots (2 x 4k prompts, paired baseline at ckpt 33 on
+  prompts 4000-7999 = 0.2112): A `opd_pilot_lam005` (λ=0.05, reverse),
+  B `opd_pilot_fwd` (λ=1, forward KL on the rejected slot). Resume bug fixed
+  (round r skipped when its checkpoint exists).
 - 2026-10-27: B300 smoke (sc3-c130, 1 GPU, k=12, blk12 ep33): env runs on
   B300 unchanged; 40/40 GSM8K rollouts, invariant 100%, accept_rate 0.59.
   Prompt pool: Nemotron-v2 stem is entirely inside nemo782k (354,974/355,000),
