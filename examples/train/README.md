@@ -32,7 +32,7 @@ eval (§6.1) at matched k, with no loss elsewhere.
 | **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
 | **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
 | **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 +7…+16% tok/s over k=8 on the same A100 | **works** → blk12 ep33 at k=12 (B200 tok/s and the block-8 control still unconfirmed) |
-| **5. Draft-OPD** (§8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss) | pipeline built and gated; no gain shown yet (paper LR hurt, stable LR moved nothing in a 1k-prompt pilot) | **in progress** — becomes stage 5 of the recipe only if the full run beats blk12 ep33 at k=12 on §6.1 with no loss at k=8 |
+| **5. Draft-OPD** (§8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external prompts): paired rollout acceptance at k=12 up every round, 0.212 → 0.257 (+22%, mean accepted/step 2.54 → 3.09); SFT-val accept_len drifts down 3.61 → 3.31 | **verdict pending** — B200 eval of ckpt 41/40 vs blk12 ep33 at k=12 and k=8 running (jobs 14148796/14148797); becomes stage 5 only if it beats blk12 ep33 at k=12 on §6.1 with no loss at k=8 |
 
 **Current working recipe** = stages 1–4: train recipe B for 26 epochs on
 nemo782k, warm-start 8 more epochs at block 12 / γ 12, serve
@@ -42,10 +42,13 @@ run on top of exactly this checkpoint (`opd/run_rounds.sh` defaults: seed
 blk12 ep33, k = block = γ = 12).
 
 Tried and not kept: the DFlash2 selector/KL loss (§4, parity and simplicity
-over an untested gain); OPD at the paper's LR 3e-4 (destroyed the draft) and
+over an untested gain); OPD at the paper's LR 3e-4 (destroyed the draft),
 OPD with fully-accepted blocks dropped (worse: they carry the anchoring
-signal); a from-scratch block-12 run (5.5 days for an answer the warm start
-gave in 2).
+signal), OPD with the paper's full-weight reverse KL on the rejected slot
+(acceptance fell every round: 28% of those slots point at a token outside
+the 32k draft vocab and the term is ~200× the accepted one), and forward KL
+on the rejected slot (worse than reverse at the same weight); a from-scratch
+block-12 run (5.5 days for an answer the warm start gave in 2).
 
 ---
 
@@ -454,7 +457,12 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   13944091, `opd_full_blk12_sci16k`, 8 rounds × 16k prompts from
   `data/opd_prompts/sci16k.jsonl` = OpenScienceReasoning-2 + Nemotron-v2 chat,
   disjoint from nemo782k; Nemotron-v2 stem turned out to be entirely inside
-  nemo782k). Bar to clear: §0 stage 5.
+  nemo782k). That run (λ_rej=1) lost acceptance every round; **v2**
+  (λ_rej 0.05, out-of-vocab rejected slots masked, job 14101064, 2026-10-28)
+  gained every round: paired rollout accept_rate at k=12 0.2117 → 0.2573
+  over 8 rounds (ckpt 33 → 40; final ckpt 41). Bar to clear: §0 stage 5 —
+  B200 eval `gemma4-31b-dspark-opd-v2.yaml` running (jobs 14148796 /
+  14148797, results in `results/gemma4-31b-dspark-opd-v2`).
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 
 ## Historical

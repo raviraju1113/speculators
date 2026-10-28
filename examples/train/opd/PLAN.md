@@ -145,6 +145,21 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-28 **full run v2 finished: +22% paired rollout acceptance, monotone.**
+  Job 14101064 (`opd_full_blk12_sci16k_v2`, sc3-cp84, 8 x B200, 2h15m for
+  8 rounds; λ_rej 0.05 reverse KL, OOV rejected slots masked, LR 5e-5 cosine,
+  KEEP_FULL, STOP_ON_DROP never fired). Paired rollout accept_rate at k=12 on
+  the 16k pool, measured by the next round's rollout: ckpt 33 (seed) 0.2117 →
+  34 0.2264 → 35 0.2268 → 36 0.2318 → 37 0.2383 → 38 0.2456 → 39 0.2512 →
+  40 0.2573 (mean accepted/step 2.54 → 3.09, fully-accepted blocks 4.5% →
+  5.6%); ckpt 41 is the final one and has no rollout number. Caveat: the SFT
+  validation set (nemo782k val) moves the other way — val accept_len 3.61
+  (ckpt 34) → 3.31 (41), accepted-slot forward KL 0.15 → 0.24 — so the draft
+  is specialising to the target's own outputs on the pool's distribution,
+  and the benchmark eval is the arbiter. **Verdict eval launched** (stage 5 bar,
+  same hardware): `scripts/evaluate/experiments/gemma4-31b-dspark-opd-v2.yaml`
+  — job 14148796 opd41 k12/k8 + opd40 k12, job 14148797 blk12 ep33 k12/k8
+  (its existing numbers are A100), both 1 B200 on sc3-cp84, ~1.5h/experiment.
 - 2026-10-28 pilots (2 x 4k, paired seed baseline on round-1 prompts 0.2112;
   round 0 reproduced the seed's 0.2149 in both): **A λ=0.05 reverse: round-1
   0.2146 (+0.0034)**; B forward KL on the rejected slot: 0.2050 (−0.006,
