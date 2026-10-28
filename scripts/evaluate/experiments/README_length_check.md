@@ -113,6 +113,42 @@ baseline and each config (repeats averaged) and prints per benchmark:
 - Greedy cap hits grow for *every* config including baseline: that is the
   model's own runaway rate at 16k, not a draft effect.
 
+## What the literature says (checked 2026-10-28)
+
+No paper reports a *systematic* lengthening of replies under speculative
+decoding, for diffusion/block drafts or any other kind. What is documented:
+
+- **Greedy divergence from numerics, not bias.** Verifying k+1 positions in
+  one batch runs different kernels / reduction orders than one-token decode,
+  so near-tied argmaxes flip and the two runs then continue as different
+  samples of the same model. Koziev et al. (arXiv 2609.15504, *Orthrus*, a
+  hybrid AR-diffusion drafter): bf16 exact-trajectory match on only ~45% of
+  1,190 prompts, FP32 matches on all, no downstream degradation. The
+  llama.cpp issue #25618 shows the same for `draft-dspark`, `draft-dflash`
+  and `draft-mtp` alike, worse on quantized targets; lengths move both ways
+  (50 vs 56 tokens, 301-374 token spread). A production write-up (vLLM,
+  8B target + 1B draft, 2,000 prompts) saw 1.2% exact-match failures.
+  Our old tables agree: ±2% paired length, balanced direction.
+- **Stop-condition bugs that DO lengthen outputs, and scale with draft length.**
+  Yang (Zenodo preprint, Oct 2026, *The "Lossless" Illusion*): logit
+  processors see only committed tokens, so `min_tokens`, stop strings and
+  thinking budgets inside an accepted batch are missed; on Qwen3-0.6B / vLLM
+  V1 that produced duplicated `</think>` and replies running past the greedy
+  stop in a few % of cases. Plus six vLLM / one SGLang distribution bugs in
+  the sampled path. Synthetic / small-model evidence, single author, but the
+  mechanism is real and longer blocks make it more likely. **If a colleague's
+  setup used min_tokens, stop strings or a thinking budget, check this first.**
+- **Lossy verification changes outputs by design.** Wang et al. (arXiv
+  2607.26627): typical acceptance / threshold / interpolated verification
+  loses accuracy, more on harder tasks (+0.4 pp GSM8K to +6.7 pp AIME gap).
+  Not our case: vLLM's DSpark path is exact argmax / rejection sampling, the
+  confidence head is unused at serve time, and the DSpark paper (arXiv
+  2607.05147) requires the non-anticipating property for losslessness.
+- **Nobody reports mean reply length.** DFlash (arXiv 2602.06036) and DSpark
+  report acceptance length and tok/s only, with a 2048 cap; neither prints
+  completion tokens or wall-clock vs baseline. That is the gap this check
+  fills.
+
 ## Running
 
 One SLURM job per experiment (the 16k cap makes the baseline's runaway
