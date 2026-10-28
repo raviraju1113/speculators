@@ -342,6 +342,13 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--only", help="comma-separated experiment names to run")
     ap.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="override server.port (two jobs on one node must not share a port: "
+        "the second eval would silently talk to the first job's server)",
+    )
+    ap.add_argument(
         "--dry-run",
         action="store_true",
         help="print serve + eval commands without launching anything",
@@ -357,6 +364,8 @@ def main() -> None:
 
     args = parse_args()
     cfg = load_config(args.config)
+    if args.port is not None:
+        cfg.setdefault("server", {})["port"] = args.port
     out_root = args.output_dir or Path(cfg.get("output_dir", "./results/experiments"))
 
     experiments = cfg["experiments"]

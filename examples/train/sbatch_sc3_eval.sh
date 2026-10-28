@@ -36,7 +36,11 @@ done
 
 cd "$REPO/scripts/evaluate/experiments"
 ONLY_ARGS=(); [ -n "${ONLY:-}" ] && ONLY_ARGS=(--only "$ONLY")
-python run_experiments.py --config "$CONFIG" "${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"}"
+# Unique port per job: SLURM packs several 1-GPU eval jobs onto one node, and
+# two servers on 127.0.0.1:<same port> would make one eval score the other's draft.
+PORT="${PORT:-$(( 8400 + SLURM_JOB_ID % 1000 ))}"
+echo "server port: $PORT"
+python run_experiments.py --config "$CONFIG" --port "$PORT" "${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"}"
 RC=$?
 echo "=== eval done rc=$RC $(date '+%F %T') ==="
 exit $RC
