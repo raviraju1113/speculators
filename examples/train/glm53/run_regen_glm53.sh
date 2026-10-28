@@ -56,7 +56,7 @@ SERVE=(vllm serve "$MODEL" --host 127.0.0.1 --port "$PORT" --api-key ""
     --tensor-parallel-size "$TP" --max-model-len "$MAX_MODEL_LEN"
     --max-num-seqs "$CONCURRENCY" --gpu-memory-utilization "$GPU_MEM_UTIL"
     --kv-cache-dtype "$KV_CACHE_DTYPE" --served-model-name glm-5.3
-    --trust-remote-code --disable-log-requests)
+    --trust-remote-code)
 if [ "${SPEC_MTP:-0}" = "1" ]; then
     SERVE+=(--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}')
 fi
