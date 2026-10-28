@@ -229,7 +229,7 @@ def build_eval_command(
     }.get(evalcfg["backend"])
     if script is None:
         sys.exit(f"eval.backend must be vllm|sglang (got {evalcfg['backend']!r})")
-    return [
+    cmd = [
         sys.executable,
         str(MTP_EVAL_DIR / script),
         "--base-url",
@@ -245,6 +245,19 @@ def build_eval_command(
         "--output-dir",
         str(out_dir),
     ]
+    # Sampled runs (vllm evaluator only): top_p / top_k / seed / repeats pass
+    # through when set; unset keeps the evaluator's defaults (server defaults
+    # for the sampling fields, one pass per prompt).
+    if evalcfg["backend"] == "vllm":
+        for key, flag in (
+            ("top_p", "--top-p"),
+            ("top_k", "--top-k"),
+            ("seed", "--seed"),
+            ("repeats", "--repeats"),
+        ):
+            if evalcfg.get(key) is not None:
+                cmd += [flag, str(evalcfg[key])]
+    return cmd
 
 
 def wait_for_health(base_url: str, proc: subprocess.Popen, timeout: int) -> bool:

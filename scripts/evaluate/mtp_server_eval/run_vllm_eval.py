@@ -156,7 +156,11 @@ def accept_stats(before, after):
 # identical to the SGLang eval's approach; vLLM's OpenAI-compatible streaming
 # API shape (delta.content / usage in the final chunk) matches.
 # --------------------------------------------------------------------------- #
-def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
+def send_chat_stream(base_url, model, prompt, max_tokens, temperature, sampling=None):
+    """``sampling``: optional extra sampling fields (top_p, top_k, seed, ...)
+    merged into the request. Keys with value None are dropped, so a knob the
+    caller did not set falls back to the server's default (vLLM applies the
+    model's generation_config.json for fields the request omits)."""
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -165,9 +169,11 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    payload.update({k: v for k, v in (sampling or {}).items() if v is not None})
     t0 = time.perf_counter()
     first_tok_t = None
     usage = None
+    finish_reason = None
     with requests.post(
         f"{base_url}/v1/chat/completions", json=payload, stream=True, timeout=3600
     ) as r:
@@ -185,6 +191,8 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
                 usage = obj["usage"]
             choices = obj.get("choices") or []
             if choices:
+                if choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
                 delta = choices[0].get("delta") or {}
                 # First token = first chunk carrying any non-empty textual field
                 # (content, reasoning_content, or any parser-specific field), except
@@ -206,6 +214,9 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
         "ttft_s": ttft,
         "decode_time_s": decode_time,
         "e2e_s": t_end - t0,
+        # "length" = the reply was cut by max_tokens (a runaway / cap hit);
+        # "stop" = the model ended its turn.
+        "finish_reason": finish_reason,
     }
 
 
@@ -242,6 +253,21 @@ def main():
     )
     ap.add_argument("--max-tokens", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--top-p", type=float, default=None, help="unset = server default")
+    ap.add_argument("--top-k", type=int, default=None, help="unset = server default")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="per-request sampling seed (seed + repeat index); unset = nondeterministic",
+    )
+    ap.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="send every prompt this many times (sampled runs: averages out the "
+        "per-draw length noise); each pass is tagged `rep` in the details",
+    )
     ap.add_argument(
         "--output-dir",
         default=os.getenv("RESULT_DIR", str(DATA_DIR.parent / "results")),
@@ -253,7 +279,8 @@ def main():
     spec_on = baseline_counters["drafts"] is not None
     print(
         f"server={args.base_url}  model={model}  spec_decoding={'on' if spec_on else 'off/unknown'}  "
-        f"max_tokens={args.max_tokens}  temperature={args.temperature}"
+        f"max_tokens={args.max_tokens}  temperature={args.temperature}  "
+        f"top_p={args.top_p}  top_k={args.top_k}  seed={args.seed}  repeats={args.repeats}"
     )
     if not spec_on:
         print(
@@ -284,33 +311,46 @@ def main():
         tot_decode_tokens = 0
         tot_decode_time = 0.0
         tot_e2e = 0.0
+        cap_hits = 0
         ttfts = []
-        for s in samples:
-            try:
-                res = send_chat_stream(
-                    args.base_url, model, s["prompt"], args.max_tokens, args.temperature
+        for rep in range(args.repeats):
+            for s in samples:
+                sampling = {"top_p": args.top_p, "top_k": args.top_k}
+                if args.seed is not None:
+                    sampling["seed"] = args.seed + rep
+                try:
+                    res = send_chat_stream(
+                        args.base_url,
+                        model,
+                        s["prompt"],
+                        args.max_tokens,
+                        args.temperature,
+                        sampling,
+                    )
+                except Exception as e:
+                    print(f"  [{bench}:{s['id']}] request failed: {e}")
+                    continue
+                ct = res["completion_tokens"] or 0
+                n_ok += 1
+                tot_completion += ct
+                tot_e2e += res["e2e_s"]
+                cap_hit = res["finish_reason"] == "length"
+                cap_hits += cap_hit
+                if res["decode_time_s"] and ct > 1:
+                    tot_decode_tokens += ct - 1  # 1st token is TTFT, not decode
+                    tot_decode_time += res["decode_time_s"]
+                if res["ttft_s"]:
+                    ttfts.append(res["ttft_s"])
+                rec = {**{k: s[k] for k in ("benchmark", "id")}, "rep": rep, **res}
+                detail_f.write(json.dumps(rec) + "\n")
+                detail_f.flush()
+                dtoks = (ct - 1) if ct > 1 else 0
+                dts = res["decode_time_s"] or 0.0
+                print(
+                    f"  [{bench}:{s['id']}{f'#{rep}' if args.repeats > 1 else ''}] {ct} tok"
+                    f"{' (CAP)' if cap_hit else ''}, ttft={res['ttft_s'] or 0:.2f}s, "
+                    f"decode={dtoks / dts if dts else 0:.1f} tok/s, e2e={res['e2e_s']:.1f}s"
                 )
-            except Exception as e:
-                print(f"  [{bench}:{s['id']}] request failed: {e}")
-                continue
-            ct = res["completion_tokens"] or 0
-            n_ok += 1
-            tot_completion += ct
-            tot_e2e += res["e2e_s"]
-            if res["decode_time_s"] and ct > 1:
-                tot_decode_tokens += ct - 1  # 1st token is TTFT, not decode
-                tot_decode_time += res["decode_time_s"]
-            if res["ttft_s"]:
-                ttfts.append(res["ttft_s"])
-            rec = {**{k: s[k] for k in ("benchmark", "id")}, **res}
-            detail_f.write(json.dumps(rec) + "\n")
-            detail_f.flush()
-            dtoks = (ct - 1) if ct > 1 else 0
-            dts = res["decode_time_s"] or 0.0
-            print(
-                f"  [{bench}:{s['id']}] {ct} tok, ttft={res['ttft_s'] or 0:.2f}s, "
-                f"decode={dtoks / dts if dts else 0:.1f} tok/s"
-            )
 
         counters_after = scrape_spec_counters(args.base_url)
         accept_len, accept_rate = accept_stats(counters_before, counters_after)
@@ -328,12 +368,25 @@ def main():
             "accept_length": round(accept_len, 3) if accept_len else None,
             "accept_rate": round(accept_rate, 4) if accept_rate else None,
             "metric_samples": None,
+            # Length / latency add-ons (does a draft change WHAT the target
+            # says, not just how fast?): mean reply length, how many replies
+            # were cut by max_tokens, and wall-clock per request.
+            "repeats": args.repeats,
+            "mean_completion_tokens": round(tot_completion / n_ok, 1) if n_ok else None,
+            "cap_hits": cap_hits,
+            "cap_hit_rate": round(cap_hits / n_ok, 4) if n_ok else None,
+            "total_e2e_s": round(tot_e2e, 1),
+            "mean_e2e_s": round(tot_e2e / n_ok, 2) if n_ok else None,
+            "max_tokens": args.max_tokens,
+            "temperature": args.temperature,
         }
         summary.append(row)
         print(
             f"--- {bench}: n={n_ok}  decode_tok/s={decode_tok_s:.1f}  "
             f"accept_length={row['accept_length']}  "
-            f"accept_rate={row['accept_rate']}"
+            f"accept_rate={row['accept_rate']}  "
+            f"mean_tok={row['mean_completion_tokens']}  cap_hits={cap_hits}  "
+            f"e2e={tot_e2e:.0f}s"
         )
 
     detail_f.close()
@@ -342,13 +395,15 @@ def main():
 
     print("\n============================= SUMMARY =============================")
     print(
-        f"{'benchmark':<16}{'n':>4}{'decode_tok/s':>14}{'accept_len':>12}{'accept_rate':>13}"
+        f"{'benchmark':<16}{'n':>5}{'decode_tok/s':>14}{'accept_len':>12}{'accept_rate':>13}"
+        f"{'mean_tok':>10}{'cap_hits':>10}{'e2e_s':>9}"
     )
     for r in summary:
         al = "n/a" if r["accept_length"] is None else f"{r['accept_length']:.3f}"
         ar = "n/a" if r["accept_rate"] is None else f"{r['accept_rate']:.4f}"
         print(
-            f"{r['benchmark']:<16}{r['n']:>4}{r['decode_tok_s']:>14.1f}{al:>12}{ar:>13}"
+            f"{r['benchmark']:<16}{r['n']:>5}{r['decode_tok_s']:>14.1f}{al:>12}{ar:>13}"
+            f"{r['mean_completion_tokens'] or 0:>10.1f}{r['cap_hits']:>10}{r['total_e2e_s']:>9.0f}"
         )
     print(
         "\naccept_rate = accepted_tokens / draft_tokens (vLLM cumulative counters, delta over this run)"

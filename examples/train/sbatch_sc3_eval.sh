@@ -22,7 +22,8 @@
 #SBATCH -o logs/%x-%j.out
 
 # shellcheck disable=SC1091
-source /import/ml-sc-scratch1/mengmengj/speculators/examples/train/sc3_eval_prelude.sh
+# REPO may point at a worktree (e.g. speculators-glm): submit with REPO=<path> sbatch --chdir=<path> ...
+source "${REPO:-/import/ml-sc-scratch1/mengmengj/speculators}/examples/train/sc3_eval_prelude.sh"
 
 CONFIG="${CONFIG:-gemma4-31b-dspark-conv-ep25.yaml}"
 CFG="$REPO/scripts/evaluate/experiments/$CONFIG"
