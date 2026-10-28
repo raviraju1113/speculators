@@ -35,6 +35,16 @@
 
 set -uo pipefail
 export REPO=/import/ml-sc-scratch1/mengmengj/speculators
+# Keep every cache/config write off $HOME: the full run 13944091 lost its
+# round-0 training to "[Errno 122] Disk quota exceeded" from a vLLM worker
+# writing ~/.config/vllm/usage_stats.json (home is a NetApp qtree with its own
+# quota). Scratch1 has TBs free; a cold cache costs a few minutes of kernel
+# compilation once.
+export OPD_CACHE="${OPD_CACHE:-/import/ml-sc-scratch1/mengmengj/cache}"
+mkdir -p "$OPD_CACHE/xdg_cache" "$OPD_CACHE/xdg_config" "$OPD_CACHE/triton" "$OPD_CACHE/inductor" "$OPD_CACHE/vllm"
+export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
+export XDG_CACHE_HOME="$OPD_CACHE/xdg_cache" XDG_CONFIG_HOME="$OPD_CACHE/xdg_config"
+export VLLM_CACHE_ROOT="$OPD_CACHE/vllm" TRITON_CACHE_DIR="$OPD_CACHE/triton" TORCHINDUCTOR_CACHE_DIR="$OPD_CACHE/inductor"
 export MODEL=/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
 export CHAT_TEMPLATE="$MODEL/chat_template.jinja"
 EVAL_ENV=/import/snvm-sc-scratch1/mengmengj/condaenvs/dspark-host       # patched vLLM (serving)
