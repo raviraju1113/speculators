@@ -516,11 +516,12 @@ Reply lengths at effort low: mean 1150 completion tok/row, median 306, p90
 looping). Think block median 62 chars — most replies barely think. Decode step
 ≈85 ms vs the ~25 ms weight-bandwidth floor, so bf16 MoE kernels, then KV
 capacity, are the limits; EP buys ~5–10%. Full run ≈ 0.9B tokens ≈ **3–3.5
-days** at ~3k tok/s. Full run launched 2026-10-28 11:00 as `glm53_regen_full`
-with EP, `--kv-cache-dtype fp8_e4m3` (doubles KV; the vLLM recipe serves GLM-5.3
+days** at ~3k tok/s. A full run (`glm53_regen_full`, job 14101099) was launched
+2026-10-28 11:00 and **cancelled minutes later, before generating anything**:
+the serving decisions below are still open. Its config was EP, `--kv-cache-dtype fp8_e4m3` (doubles KV; the vLLM recipe serves GLM-5.3
 with fp8 KV, and the GLM-5.2 KV ablation in `docs/user_guide/tutorials/` showed
-no acceptance effect), 320 concurrent, 4-day limit; resumable with the same
-command. Failure history: `--disable-log-requests` gone in vLLM 0.26; FlashInfer
+no acceptance effect), 320 concurrent, 4-day limit; restart with the same
+command once decided (resumes past the 4,532 probe rows already in the file). Failure history: `--disable-log-requests` gone in vLLM 0.26; FlashInfer
 JIT + vLLM usage stats wrote to `$HOME` (10 GB quota, 9 used) → caches moved to
 `/import/ml-sc-scratch1/mengmengj/cache`, `VLLM_NO_USAGE_STATS=1`; client
 `--model` must be the served name (`glm-5.3`), not the path (2000× HTTP 404).
@@ -534,7 +535,11 @@ truth for re-tokenizing or for the next target.
 **Decided 2026-10-27:** reasoning_effort **low**; **sampled** at the
 checkpoint's generation_config (temperature 1.0, top_p 0.95) — same as the
 gemma data turned out to be (§1), the serving default, and the DSpark recipe.
-**Open:** `--seq-length` 8192 vs 16384 (p90 reply 1.9k tok, p99 at the 12288 cap: 8192 truncates ~2–3% of rows); `MAX_TOKENS` 12288 vs 16384 for the long-thinking tail.
+**Blocking the full run (waiting on the serving team):** which thinking mode
+GLM-5.3 will be served in (`reasoning_effort` low/high/max — the probes used
+low) and which weight precision (bf16 vs fp8 — the probes used bf16). The data
+must match serve time, so nothing more is generated until both are known.
+**Open after that:** `--seq-length` 8192 vs 16384 (p90 reply 1.9k tok, p99 at the 12288 cap: 8192 truncates ~2–3% of rows); `MAX_TOKENS` 12288 vs 16384 for the long-thinking tail.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
