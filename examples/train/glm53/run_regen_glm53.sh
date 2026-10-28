@@ -11,7 +11,8 @@
 #   REASONING_EFFORT  low | high | max (GLM-5.3 cannot switch thinking off; default low)
 #   TEMPERATURE / TOP_P  sampling (default: the model's generation_config, 1.0 / 0.95)
 #   MAX_TOKENS     per-reply cap (default 12288: thinking + answer)
-#   MAX_MODEL_LEN  server context (default 24576; must exceed longest prompt + MAX_TOKENS)
+#   MAX_MODEL_LEN  server context (default 32768; must exceed longest prompt + MAX_TOKENS)
+#   EXPERT_PARALLEL 1 -> --enable-expert-parallel (EP over the 8 GPUs instead of TP for the experts)
 #   CONCURRENCY    in-flight requests (default 256)
 #   TP             tensor-parallel size (default: all visible GPUs)
 #   KV_CACHE_DTYPE auto (bf16) by default; fp8_e4m3 trades fidelity for cache
@@ -30,7 +31,7 @@ REASONING_EFFORT="${REASONING_EFFORT:-low}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 TOP_P="${TOP_P:-0.95}"
 MAX_TOKENS="${MAX_TOKENS:-12288}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-24576}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"   # 71 pool prompts exceed 12k tokens; 24576 rejected 2 of 2000
 CONCURRENCY="${CONCURRENCY:-256}"
 TP="${TP:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
@@ -60,6 +61,9 @@ SERVE=(vllm serve "$MODEL" --host 127.0.0.1 --port "$PORT" --api-key ""
 if [ "${SPEC_MTP:-0}" = "1" ]; then
     SERVE+=(--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}')
 fi
+if [ "${EXPERT_PARALLEL:-0}" = "1" ]; then
+    SERVE+=(--enable-expert-parallel)
+fi
 
 # --model is the name the server exposes (--served-model-name), not the path:
 # job 13948923 got 2000x HTTP 404 "model does not exist" with the path.
@@ -70,7 +74,7 @@ CLIENT=(python "$REPO/scripts/response_regeneration/script_multiendpoint.py"
     --extra-body "$EXTRA_BODY" --skip-sources "" --resume)
 [ -n "${LIMIT:-}" ] && CLIENT+=(--limit "$LIMIT")
 
-echo "[regen] model=$MODEL tp=$TP effort=$REASONING_EFFORT temp=$TEMPERATURE top_p=$TOP_P max_tokens=$MAX_TOKENS"
+echo "[regen] model=$MODEL tp=$TP ep=${EXPERT_PARALLEL:-0} mtp=${SPEC_MTP:-0} effort=$REASONING_EFFORT temp=$TEMPERATURE top_p=$TOP_P max_tokens=$MAX_TOKENS max_model_len=$MAX_MODEL_LEN concurrency=$CONCURRENCY"
 echo "[regen] $INPUT_JSONL -> $OUTFILE"
 if [ -n "${DRY_RUN:-}" ]; then
     printf '[dry-run] server: '; printf '%q ' "${SERVE[@]}"; echo
@@ -84,6 +88,7 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENVS_DIR/$CONDA_ENV" 2>/dev/null || conda activate "$CONDA_ENV"
 export PYTHONNOUSERSITE=1
 export HF_HUB_OFFLINE=1
+export VLLM_NO_USAGE_STATS=1   # usage reporter writes to ~/.config and tripped the home quota
 # $HOME has a 10 GB quota and is full: every JIT/compile cache goes to scratch
 # (persistent, so FlashInfer's B300 kernels are built once, not per job).
 # FlashInfer crashed the first probe with "Disk quota exceeded" in
