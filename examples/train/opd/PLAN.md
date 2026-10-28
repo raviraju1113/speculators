@@ -145,6 +145,14 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-28 pilots (2 x 4k, paired seed baseline on round-1 prompts 0.2112;
+  round 0 reproduced the seed's 0.2149 in both): **A λ=0.05 reverse: round-1
+  0.2146 (+0.0034)**; B forward KL on the rejected slot: 0.2050 (−0.006,
+  worse — matches the paper's "mixed > all-forward"). A's val forward-KL on
+  accepted slots still drifts up (0.086 -> 0.14 -> 0.20), so the full run v2
+  (`opd_full_blk12_sci16k_v2`, λ=0.05, OOV mask, LR 5e-5, 8 x 16k, round-0
+  rollouts reused from v1) runs with STOP_ON_DROP: a round whose paired
+  acceptance falls >0.002 below the previous round ends the run.
 - 2026-10-28: **the paper's objective as implemented degrades the draft.**
   Full run 13949602 (blk12 ep33, sci16k, k=12, LR 5e-5, λ=1, reverse KL on
   the first rejected slot): rollout accept_rate 0.2117 (ckpt 33) -> 0.2090

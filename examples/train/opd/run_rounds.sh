@@ -167,6 +167,18 @@ k = int(sys.argv[2])
 print(f"round rollouts: {n}  draft steps: {steps}  mean accepted/step: {acc/max(steps,1):.3f}  "
       f"accept_rate: {acc/max(steps*k,1):.4f}  full blocks: {full/max(steps,1):.3f}  (k={k})")
 PY
+  # Guard (STOP_ON_DROP=1): on-policy acceptance must not fall round over
+  # round. With P = pool size every round rolls out the same prompts, so the
+  # numbers are paired. The v1 full run (13949602) lost 0.003 then 0.010 per
+  # round at lambda=1; pilots at lambda=0.05 gained 0.003 (2026-10-28).
+  RATE=$(grep -oE 'accept_rate: [0-9.]+' "$RDIR/assemble.txt" | awk '{print $2}')
+  if [ "${STOP_ON_DROP:-1}" = "1" ] && [ "$r" -gt 0 ] && [ -f "$WORK/rounds/r$(( r - 1 ))/assemble.txt" ]; then
+    PREV=$(grep -oE 'accept_rate: [0-9.]+' "$WORK/rounds/r$(( r - 1 ))/assemble.txt" | awk '{print $2}')
+    if python -c "import sys; sys.exit(0 if float('$RATE') < float('$PREV') - ${DROP_TOL:-0.002} else 1)"; then
+      echo "!! round $r rollout accept_rate $RATE < previous $PREV - ${DROP_TOL:-0.002}: STOP_ON_DROP -- not training on this round; last good checkpoint: checkpoints/$LAST" >&2
+      exit 9
+    fi
+  fi
   # KEEP_FULL=1 (default): keep fully-accepted blocks. The sweep (PLAN.md,
   # 2026-10-22) showed dropping them is clearly worse: they are the forward-KL
   # anchoring signal; the paper keeps every anchor.
