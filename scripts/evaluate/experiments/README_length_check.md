@@ -124,7 +124,7 @@ cd /import/ml-sc-scratch1/mengmengj/speculators-glm
 for y in gemma4-31b-length-check gemma4-31b-length-check-sampled; do
   for e in baseline assistant_k8 conv_ep25_k8 blk12_ep33_k12; do
     REPO=$PWD ONLY=$e CONFIG=$y.yaml \
-      sbatch --chdir=$PWD --time=12:00:00 -J ${y#gemma4-31b-}_$e examples/train/sbatch_sc3_eval.sh
+      sbatch --chdir=$PWD --reservation sn50-hdi-0 --time=12:00:00 -J ${y#gemma4-31b-}_$e examples/train/sbatch_sc3_eval.sh
   done
 done
 # results: scripts/evaluate/experiments/results/<yaml>/<experiment>/
@@ -134,6 +134,8 @@ python ../mtp_server_eval/compare_lengths.py --dir results/gemma4-31b-length-che
 python ../mtp_server_eval/compare_speedup.py --dir results/gemma4-31b-length-check --baseline baseline
 ```
 
+The B200 nodes sit inside the `sn50-hdi-0` reservation (we are members):
+without `--reservation` the jobs pend on "Resources" forever.
 Each job gets its own server port (`8400 + job id % 1000`), so several can
 share a node. `blk12_ep33_k12` needs `--max-num-seqs 32
 --max-num-batched-tokens 16384` (per-experiment `server.extra_args` in the
@@ -141,6 +143,7 @@ yaml), as in the blk12 yaml.
 
 ## Status
 
-- 2026-10-28: harness changes + yamls committed on `mengmengj/glm-dflash2`;
-  8 jobs submitted (see the job table in the commit / Slack thread). Results
-  and the reading go here when they land.
+- 2026-10-28 15:00: harness changes + yamls committed on `mengmengj/glm-dflash2`;
+  8 jobs running (greedy 14155310-13, sampled 14155314-17, sc3-cp84/85, logs
+  in `logs/length-check*-<job>.out`). Results and the reading go here when
+  they land.
