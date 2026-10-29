@@ -633,10 +633,35 @@ at max effort (sets `MAX_TOKENS` and `--seq-length` — 8192 will not do if
 thinking runs 5–20k tokens) and tok/s with long sequences (sets the full-run
 `--time`). The full run follows with the same env (drop `LIMIT`, `OUTFILE`),
 and must start from an empty OUTFILE if any setting changes.
-**Open after the probe:** `--seq-length` (8192 vs 16384 vs 32768 — truncation
-cuts the *answer*, which is what the draft most needs), `MAX_TOKENS`, and
-whether prompts whose max-effort reply exceeds the window are dropped or
+**Probe result (2026-10-29, job 14300425, 2 h 27 min on sc3-c130):** 1,996 ok,
+4 rejected by the server (prompt > 16,385 tokens + 32,768 requested > 49,152
+window — leave them; the pool has ~0.2% such prompts), 100 hit the 32,768 cap.
+Reply length (completion tokens, thinking + answer): mean 5,163, median 1,490,
+p75 5,524, p90 15,365, p95 32,566; ≥ 8,192: 18%, ≥ 16,384: 9.3%, capped at
+32,768: 5.0%. Prompt tokens mean 467, median 150, p99 5,870, max 15,229.
+prompt + completion fits 8,192 for 79.7% of rows, 16,384 for 89.9%, 32,768 for
+94.9%. The capped 5% produce 31.5% of all generated tokens (and are dropped by
+`prepare_glm53_data.sh`); a 16,384 cap would cost 21% of generation time and
+drop 9.3% of rows instead of 5%. Throughput: server 3.3–3.6k gen tok/s at 256
+in flight (bf16 KV, no preemptions), tailing to 2.3k as the long replies drain;
+the client's end-to-end average was 1,459 tok/s because the tail ran alone.
+Projected full run: 782k × 5,163 ≈ 4.0B completion tokens ≈ 14 days on one
+B300 node at 3.4k tok/s (7 days on two).
+**Decided (2026-10-29):** keep `MAX_TOKENS` 32768 so the probe rows are reused
+unchanged (resume) and the 16–32k replies survive for a later `--seq-length`
+choice; `--seq-length` is chosen at tokenization time: 16384 keeps 90% of rows
+whole (8192 only 80%), 32768 keeps 95%. Over-window prompts are dropped, not
 regenerated at `high`.
+**Full run launched 2026-10-29:** job `glm53_regen_full` (14321602, sc3-c130,
+`--time 14-00:00:00`), same env as the probe minus `LIMIT`/`OUTFILE`
+(`REASONING_EFFORT=max TEMPERATURE=1.0 TOP_P=0.95 MAX_TOKENS=32768
+MAX_MODEL_LEN=49152 EXPERT_PARALLEL=1 KV_CACHE_DTYPE=auto CONCURRENCY=256`).
+`data/glm53/nemo782k_regen_glm53.jsonl` was seeded with the 1,996 probe rows
+(the earlier effort-low rows moved to `nemo782k_regen_glm53_effort-low.jsonl.bak`)
+and the client `--resume`s past them. If the job dies or times out, resubmit the
+same command: it resumes. To halve the wall time, split the remaining prompts
+into a second shard and run it on sc3-c131 (idle in the same reservation) with
+its own `INPUT_JSONL`/`OUTFILE`/`NODE`, then concatenate.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,

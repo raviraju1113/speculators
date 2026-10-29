@@ -28,7 +28,7 @@ mkdir -p "$LOG_DIR"
 # sngpu copies the script to a spool dir, so the runner is referenced by its
 # absolute path and gets the env through --export (sbatch default is ALL, but
 # make the pass-through explicit for the variables the runner reads).
-PASS=(REPO MODEL INPUT_JSONL OUTFILE REASONING_EFFORT TEMPERATURE TOP_P MAX_TOKENS
+PASS=(REPO MODEL INPUT_JSONL OUTFILE REASONING_EFFORT TEMPERATURE TOP_P MAX_TOKENS EXPERT_PARALLEL PORT
       MAX_MODEL_LEN CONCURRENCY TP KV_CACHE_DTYPE GPU_MEM_UTIL SPEC_MTP LIMIT CONDA_ENV LOG_DIR)
 for v in "${PASS[@]}"; do [ -n "${!v:-}" ] && export "$v"; done
 export REPO
