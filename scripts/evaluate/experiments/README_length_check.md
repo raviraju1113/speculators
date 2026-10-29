@@ -221,11 +221,11 @@ are the knobs to compare next, not the draft architecture.
 ## Running
 
 One SLURM job per experiment (the 16k cap makes the baseline's runaway
-prompts slow; budget 12 h each), submitted from the worktree so the main
-checkout stays untouched for the jobs running from it:
+prompts slow; budget 12 h each), submitted from the repo root (the branch
+was developed in a worktree at the time, hence `REPO=$PWD`):
 
 ```bash
-cd /import/ml-sc-scratch1/mengmengj/speculators-glm
+cd /import/ml-sc-scratch1/mengmengj/speculators
 for y in gemma4-31b-length-check gemma4-31b-length-check-sampled; do
   for e in baseline assistant_k8 conv_ep25_k8 blk12_ep33_k12; do
     REPO=$PWD ONLY=$e CONFIG=$y.yaml \
@@ -248,7 +248,8 @@ yaml), as in the blk12 yaml.
 
 ## Status
 
-- 2026-10-28 15:00: harness changes + yamls committed on `mengmengj/glm-dflash2`;
+- 2026-10-28 15:00: harness changes + yamls committed on `mengmengj/glm-dflash2`
+  (then a worktree; since 2026-10-29 checked out in the main `speculators` dir);
   8 jobs (greedy 14155310-13, sampled 14155314-17, sc3-cp84/85) submitted.
 - 2026-10-28 20:00: all 8 finished (greedy baseline 6h15, others 45 min-2h50).
 - 2026-10-29: results + reading above. Verdict: no draft-specific length

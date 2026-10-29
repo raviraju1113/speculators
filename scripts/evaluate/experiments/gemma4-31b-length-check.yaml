@@ -1,0 +1,80 @@
+# Response-length / end-to-end-latency check for the DSpark drafts, GREEDY.
+# Question (colleague's observation on diffusion-style drafts): acceptance and
+# decode tok/s look good, but replies get LONGER so end-to-end time does not
+# improve. Same prompts, same cap, baseline vs each draft; the comparison is
+# paired per prompt (mtp_server_eval/compare_lengths.py).
+#
+# Settings vs the earlier tables (gemma4-31b-assistant-ref / -conv-ep25 /
+# -conv-blk12-ep33): max_tokens 2048 -> 16384 so runaways are visible instead
+# of silently clipped (reported as cap hits), max_model_len 4096 -> 20480.
+# Greedy (temperature 0): the controlled experiment -- with exact argmax
+# verification the draft must not change the tokens, so any length drift here
+# is an artifact. The production-like sampled twin is
+# gemma4-31b-length-check-sampled.yaml. See README_length_check.md.
+#
+# One job per experiment (a 16k cap makes the baseline's runaway prompts slow;
+# ~4-5 h each), from the worktree:
+#   cd /import/ml-sc-scratch1/mengmengj/speculators
+#   for e in baseline assistant_k8 conv_ep25_k8 blk12_ep33_k12; do
+#     REPO=$PWD ONLY=$e CONFIG=gemma4-31b-length-check.yaml \
+#       sbatch --chdir=$PWD --reservation sn50-hdi-0 --time=12:00:00 -J len_$e examples/train/sbatch_sc3_eval.sh
+#   done
+#   # then: python ../mtp_server_eval/compare_lengths.py --dir results/gemma4-31b-length-check --baseline baseline
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES (set by SLURM / the sbatch wrapper)
+
+server:
+  host: 127.0.0.1
+  port: 8440                  # overridden per job by sbatch_sc3_eval.sh (--port)
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  # 16384 reply + longest prompt (lcb 1876 tok) + margin. The old evals ran
+  # 4096 / 2048, which cut 10% of the baseline's lcb replies.
+  max_model_len: 20480
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0   # FULL datasets: aime 30 / gpqa 198 / lcb 1055
+  max_tokens: 16384
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-length-check
+
+experiments:
+  - name: baseline            # the length / wall-clock reference: same prompts, no draft
+
+  - name: assistant_k8        # Google's native MTP draft (AR, 4 MTP layers)
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-assistant
+    num_speculative_tokens: 8
+
+  - name: conv_ep25_k8        # our DSpark + DFlash2-conv draft, block 8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/25
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: blk12_ep33_k12      # block-12 continuation, served at its native k
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+    server:
+      extra_args:
+        - "--enforce-eager"
+        # k=12 needs a larger scheduling budget (see gemma4-31b-dspark-conv-blk12-ep33.yaml)
+        - "--max-num-seqs"
+        - "32"
+        - "--max-num-batched-tokens"
+        - "16384"
+        - "--no-enable-prefix-caching"
+        - "--chat-template"
+        - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
