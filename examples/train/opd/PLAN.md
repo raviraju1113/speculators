@@ -161,11 +161,13 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
   14149872 / 14149874, README §6.5): accept_len AIME / GPQA / LCB at k=12
   seed 7.19 / 4.64 / 5.80 → ckpt 40 6.29 / 4.21 / 4.79 → ckpt 41 6.19 / 4.21 /
   4.73 (−14 / −9 / −18%); at k=8 seed 6.15 / 4.30 / 5.21 → ckpt 41 5.47 / 4.01 /
-  4.45 (−11 / −7 / −15%), tok/s 340 / 239 / 282 → 304 / 225 / 243. The pool
+  4.45 (−11 / −7 / −15%), tok/s 340 / 239 / 282 → 304 / 225 / 243. One round
+  (ckpt 34, job 14192076) is already flat-to-negative: 7.17 / 4.56 / 5.74 vs
+  the seed's B200 k=12 7.20 / 4.58 / 5.79, tok/s 388 / 249 / 307 vs 395 / 254 /
+  313 — there is no stopping point at which OPD on this pool helps. The pool
   gain is real and the benchmark loss is real: the draft learned the pool's
   distribution (science MCQ + chat) and forgot math/code, and nothing in the
-  loop anchors it to SFT. Pending: ckpt 34 (one round) and the seed's k=12
-  B200 tok/s (job 14192076). Before any further OPD run: (a) a pool from the
+  loop anchors it to SFT. Before any further OPD run: (a) a pool from the
   benchmark domains (math / code prompts the SFT corpus never saw, or
   nemo782k prompts themselves — the "seen prompt" objection only matters for
   the accepted slots, the rejected-slot signal is new either way), (b) SFT

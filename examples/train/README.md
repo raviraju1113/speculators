@@ -31,7 +31,7 @@ eval (§6.1) at matched k, with no loss elsewhere.
 | **1. Data** (§1) | nemo782k: 782k conversations, Gemma-4-31B-it responses, kimi-mtp + Nemotron STEM/math/code | the only SFT corpus used; GPQA is where it is thinnest (science 12%) | fixed |
 | **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
 | **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
-| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 +7…+16% tok/s over k=8 on the same A100 | **works** → blk12 ep33 at k=12 (B200 tok/s and the block-8 control still unconfirmed) |
+| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 over k=8: +7…+16% tok/s on A100, +6…+16% on B200 (395 / 254 / 313 tok/s on AIME / GPQA / LCB, §6.5) | **works** → blk12 ep33 at k=12 (block-8 control still running) |
 | **5. Draft-OPD** (§6.5, §8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted** (2026-10-28) — fails the bar below; next try needs a benchmark-domain pool and/or SFT replay |
 
 **Current working recipe** = stages 1–4: train recipe B for 26 epochs on
@@ -390,21 +390,26 @@ OPD ckpt 41 = seed + 8 rounds × 16k on-policy prompts (`sci16k`); ckpt 40 =
 7 rounds (the last one with a paired pool number, 0.2573 vs seed 0.2117);
 ckpt 34 = 1 round. accept_len is hardware-invariant (blk12 ep33 k=8: A100
 6.159 / 4.302 / 5.192 vs B200 6.150 / 4.297 / 5.207), so the seed's k=12
-accept_len below is from its A100 run (§6.3b) while its B200 tok/s is pending.
+accept_len at k=12 reproduces its A100 run (§6.3b: 7.19 / 4.64 / 5.80).
 
 | draft | k | AIME acc_len | GPQA | LCB | AIME tok/s | GPQA | LCB |
 |---|---|---|---|---|---|---|---|
-| blk12 ep33 (seed) | 12 | **7.19** | **4.64** | **5.80** | pending (14192076) | | |
+| blk12 ep33 (seed) | 12 | **7.20** | **4.58** | **5.79** | **394.9** | **253.9** | **312.5** |
 | OPD ckpt 40 | 12 | 6.29 | 4.21 | 4.79 | 343.1 | 232.3 | 257.4 |
 | OPD ckpt 41 | 12 | 6.19 | 4.21 | 4.73 | 337.9 | 231.2 | 255.1 |
-| OPD ckpt 34 | 12 | pending (14192076) | | | | | |
+| OPD ckpt 34 (1 round) | 12 | 7.17 | 4.56 | 5.74 | 388.1 | 248.7 | 306.9 |
 | blk12 ep33 (seed) | 8 | **6.15** | **4.30** | **5.21** | **340.1** | **238.7** | **281.9** |
 | OPD ckpt 41 | 8 | 5.47 | 4.01 | 4.45 | 303.5 | 224.7 | 243.1 |
 
 OPD moved the pool and the benchmarks in opposite directions: +22% paired
 acceptance on the 16k science/chat pool, −14% / −9% / −18% accept_len on
-AIME / GPQA / LCB at k=12 and −11% / −7% / −15% at k=8, and the loss grows
-with rounds (ckpt 40 → 41 is still falling). The pool (75% OpenScienceReasoning-2
+AIME / GPQA / LCB at k=12 and −11% / −7% / −15% at k=8. The loss accumulates
+with rounds: one round (ckpt 34, +7% on the pool) is already −0.5% / −0.4% /
+−0.8% accept_len and −2% tok/s, i.e. no gain to be had at any stopping point;
+ckpt 40 → 41 is still falling.
+**Side result: block 12 on B200** — the seed at k=12 vs its own k=8 gives
++16% / +6% / +11% tok/s (394.9 / 253.9 / 312.5 vs 340.1 / 238.7 / 281.9),
+closing the §0 stage-4 question. The pool (75% OpenScienceReasoning-2
 multiple choice, 25% Nemotron chat) is far from the benchmarks' math and
 code, and nothing in the round loop anchors the draft to its SFT distribution,
 so the on-policy objective is a domain shift rather than a refinement. The
@@ -474,8 +479,8 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
 
 - Block-12 vs block-8 continuation (§4, §6.3b): k=3/5/8 == conv ep25; k=12
   gives +7…+16% tok/s over k=8 on A100 (accept_len 7.19 / 4.64 / 5.80).
-  Still open: B200 tok/s and the block-8 control (pending B200 access — as of
-  2026-10-25 every `sc3-cp` node is reserved for `sn50-hdi-0` or draining).
+  B200 confirmed 2026-10-28 (§6.5): k=12 395 / 254 / 313 tok/s vs k=8
+  340 / 239 / 282. Still open: the block-8 control (job 12398695, sc3-cp83).
 - **Draft-OPD** on-policy post-training (branch `mengmengj/draft-opd`,
   `opd/PLAN.md`, skill `draft-opd`): pipeline done and gated (rollout logger,
   replay-free data path, acceptance-aware loss, round loop); first recipe
