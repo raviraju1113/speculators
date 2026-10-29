@@ -149,6 +149,75 @@ decoding, for diffusion/block drafts or any other kind. What is documented:
   completion tokens or wall-clock vs baseline. That is the gap this check
   fills.
 
+## Results (jobs finished 2026-10-28, read 2026-10-29)
+
+Raw: `results/gemma4-31b-length-check{,-sampled}/<exp>/mtp_eval_{summary.json,details.jsonl}`
+and `compare_lengths.json` next to them. tok_ratio = config tokens / baseline
+tokens, paired per prompt; [..] = 95% bootstrap CI over prompts; cap = replies
+cut at 16384 (baseline -> config); e2e = wall-clock ratio (<1 = faster).
+
+### Greedy (temperature 0, full datasets, B200 TP=1)
+
+| config | pooled tok_ratio | AIME (30) | GPQA (198) | LCB (1055) | LCB >1.5x / <0.67x | cap AIME/GPQA/LCB | e2e AIME/GPQA/LCB |
+|---|---|---|---|---|---|---|---|
+| assistant_k8 (Google MTP) | 1.062 | 0.92 [0.64,1.23] | 1.12 [0.99,1.32] | 1.06 [0.99,1.14] | 4.5% / 3.0% | 0->0, 1->2, 7->8 | 0.22 / 0.30 / 0.29 |
+| conv_ep25_k8 (DSpark+conv) | 1.050 | 0.82 [0.60,1.03] | 1.04 [0.83,1.29] | 1.06 [1.00,1.13] | 5.4% / 3.3% | 0->0, 1->1, 7->7 | 0.15 / 0.26 / 0.25 |
+| blk12_ep33_k12 (DSpark+conv) | 1.056 | 1.29 [0.74,2.17] | 1.02 [0.98,1.06] | 1.05 [0.98,1.13] | 5.1% / 4.1% | 0->1, 1->1, 7->10 | 0.22 / 0.26 / 0.23 |
+
+Decode tok/s (accept_len) at the 16k cap: baseline 62.5 / 63.1 / 63.8;
+assistant_k8 259 (5.68) / 240 (5.35) / 238 (5.39); conv_ep25_k8 343 (6.11) /
+255 (4.55) / 271 (5.33); blk12_ep33_k12 363 (7.43) / 248 (4.66) / 296 (5.95).
+Same as the 2048-cap tables within noise.
+
+### Sampled (T 1.0, top_p 0.95, top_k 64; 100 prompts per benchmark, 3 draws)
+
+| config | pooled tok_ratio | AIME (30x3) | GPQA (100x3) | LCB (100x3) | cap | e2e AIME/GPQA/LCB |
+|---|---|---|---|---|---|---|
+| assistant_k8 | 1.044 | 1.19 [0.92,1.57] | 0.95 [0.83,1.05] | 1.06 [0.98,1.13] | 1->1, 1->0, 0->0 | 0.34 / 0.30 / 0.32 |
+| conv_ep25_k8 | 0.982 | 0.97 [0.76,1.22] | 0.95 [0.85,1.03] | 1.03 [0.93,1.13] | 1->0, 1->0, 0->0 | 0.21 / 0.27 / 0.26 |
+| blk12_ep33_k12 | 1.059 | 1.35 [1.11,1.64] | 0.94 [0.81,1.06] | 1.00 [0.94,1.07] | 1->1, 1->0, 0->0 | 0.28 / 0.26 / 0.23 |
+
+Noise floor: the baseline's own three draws differ in total AIME tokens by
+1.26x (46.0k / 55.3k / 44.0k) and GPQA by 1.22x; LCB by 1.07x. Decode
+speedups under sampling: assistant 3.2-3.5x, conv k8 3.5-4.6x, blk12 k12
+3.7-4.8x (acceptance drops ~0.5 vs greedy, as expected).
+
+### Reading
+
+1. **No systematic lengthening from the DSpark / diffusion-style drafts.**
+   Under sampling, the production-like case, conv k8 is 0.98 pooled, and GPQA
+   is *shorter* for all three drafts (0.94-0.95). The only cell with a CI
+   above 1 is blk12 on AIME (1.35), 30 prompts where the baseline's own
+   draw-to-draw spread is 1.26x and one draw of blk12 (80k vs 54k / 62k
+   tokens) carries the excess; LCB for the same draft is 1.00. Google's
+   autoregressive MTP draft shows the same pattern (AIME 1.19, GPQA 0.95,
+   LCB 1.06), so nothing here separates block drafts from AR drafts.
+2. **Greedy shows a small common shift, +5-6% pooled, for all three drafts
+   alike,** carried by LCB (+5-6%, CIs touching 1.0) where the share of
+   replies >1.5x the baseline exceeds the <0.67x share by 1-2 points
+   (16-20 prompts of 1055). Since the AR assistant draft shows it identically,
+   it is a property of vLLM's speculative path vs single-token decode
+   (batch-shape numerics; see the literature section), not of the draft
+   architecture. Where the two paths diverge, either can be the one that runs
+   away: AIME id 80 goes 1,730 -> 16,384 under blk12 k12, AIME id 70 goes
+   8,669 -> 1,391 under both k8 drafts.
+3. **End-to-end wall-clock is 3-6.6x lower in every cell** (e2e_ratio
+   0.15-0.34), i.e. the decode speedup survives the length drift almost
+   intact: pooled e2e speedup ~ decode speedup / 1.05. The colleague's
+   "same end-to-end time" is not reproduced on this target with these
+   drafts in vLLM.
+4. **Cap hits at 16k are rare and balanced:** greedy LCB 7 baseline vs 7 / 8
+   / 10; sampled 0-1 everywhere. The 2048 cap of the old tables was cutting
+   10% of LCB replies, so those tables understated everyone's length equally
+   but hid nothing draft-specific.
+
+Caveats: AIME has 30 prompts and is inconclusive on its own in every table;
+the sampled set used 100 prompts per benchmark (3 draws); one target
+(Gemma-4-31B-it), one engine (vLLM 0.26, exact verification). If the
+colleague's effect came from a different serving stack (lossy / threshold
+acceptance, stop-string or min_tokens processors, quantized target), those
+are the knobs to compare next, not the draft architecture.
+
 ## Running
 
 One SLURM job per experiment (the 16k cap makes the baseline's runaway
@@ -180,6 +249,8 @@ yaml), as in the blk12 yaml.
 ## Status
 
 - 2026-10-28 15:00: harness changes + yamls committed on `mengmengj/glm-dflash2`;
-  8 jobs running (greedy 14155310-13, sampled 14155314-17, sc3-cp84/85, logs
-  in `logs/length-check*-<job>.out`). Results and the reading go here when
-  they land.
+  8 jobs (greedy 14155310-13, sampled 14155314-17, sc3-cp84/85) submitted.
+- 2026-10-28 20:00: all 8 finished (greedy baseline 6h15, others 45 min-2h50).
+- 2026-10-29: results + reading above. Verdict: no draft-specific length
+  effect; e2e speedup 3-6.6x. Open: compare against the colleague's serving
+  stack settings if their observation persists.

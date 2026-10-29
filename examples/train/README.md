@@ -457,10 +457,11 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   science-weighted prompt pool. Bar to clear: §0 stage 5.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 - **Response-length / end-to-end check** (does a DSpark draft make the
-  target's replies longer?): greedy + sampled reruns of baseline, assistant
-  k8, conv ep25 k8, blk12 ep33 k12 with max_tokens 16384 and the new
-  length/cap-hit/e2e metrics — plan, concerns and reading guide in
-  `scripts/evaluate/experiments/README_length_check.md` (submitted 2026-10-28).
+  target's replies longer?) — done 2026-10-29: no draft-specific effect.
+  Greedy +5-6% pooled tokens for DSpark *and* Google's AR MTP draft alike
+  (vLLM spec-path numerics, LCB-driven); sampled conv k8 0.98, GPQA shorter
+  for every draft; e2e wall-clock 3-6.6x lower in every cell. Plan, tables
+  and reading: `scripts/evaluate/experiments/README_length_check.md`.
 - **GLM-5.3 target** (branch `mengmengj/glm-dflash2`): data-generation pipeline
   ready, waiting for the B300 node — §9.
 
