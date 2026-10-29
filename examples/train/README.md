@@ -556,17 +556,23 @@ toward the mode and under-represent the diversity the draft meets at T=1
 (the gemma drafts, trained on T=1 data, lose ~0.5 accept_len going from
 greedy to T=1 serving even so; see `scripts/evaluate/experiments/README_length_check.md`).
 Keep 1.0 / 0.95 unless serving is pinned lower.
-**Precision:** still assumed **bf16** (what the probes used; the fp8 dir now
-has tokenizer files too, so switching is `MODEL=.../glm-5.3`). Confirm before
-the full run.
-**Probe at the decided settings (2026-10-29):** job `glm53_probe_max`, 2,000
-prompts, effort max, T 1.0 / top_p 0.95, MAX_TOKENS 32768, MAX_MODEL_LEN
-49152, EP, fp8 KV, 320 concurrent → `data/glm53/probe_effort-max_T1.0.jsonl`.
-Purpose: reply-length distribution at max effort (sets `MAX_TOKENS` and
-`--seq-length` — 8192 will not do if thinking runs 5–20k tokens) and tok/s
-with long sequences (sets the full-run `--time`). The full run follows with
-the same env (drop `LIMIT`, `OUTFILE`), and must start from an empty OUTFILE
-if any setting changes.
+**Decided 2026-10-29 (user):** serving is **bf16 weights**, so the data is
+generated from the bf16 checkpoint with **bf16 KV cache** (`KV_CACHE_DTYPE=auto`).
+The earlier full-run config used `fp8_e4m3` KV purely to double KV capacity
+(the vLLM recipe serves GLM-5.3 that way); it is NOT what we serve, so it is
+dropped — the samples must come from the served numerics. Cost: the bf16 KV
+pool (~755k tokens at TP=8) holds fewer long max-effort sequences, so
+concurrency goes back to 256 and the probe measures whether that preempts.
+**Probe at the decided settings (2026-10-29):** job `glm53_probe_max`
+(14300425; the first attempt 14298895 ran fp8 KV for 8 min and was cancelled,
+its 27 rows set aside as `probe_effort-max_T1.0_fp8kv_cancelled.jsonl.bak`),
+2,000 prompts, effort max, T 1.0 / top_p 0.95, MAX_TOKENS 32768,
+MAX_MODEL_LEN 49152, EP, bf16 KV, 256 concurrent →
+`data/glm53/probe_effort-max_T1.0.jsonl`. Purpose: reply-length distribution
+at max effort (sets `MAX_TOKENS` and `--seq-length` — 8192 will not do if
+thinking runs 5–20k tokens) and tok/s with long sequences (sets the full-run
+`--time`). The full run follows with the same env (drop `LIMIT`, `OUTFILE`),
+and must start from an empty OUTFILE if any setting changes.
 **Open after the probe:** `--seq-length` (8192 vs 16384 vs 32768 — truncation
 cuts the *answer*, which is what the draft most needs), `MAX_TOKENS`, and
 whether prompts whose max-effort reply exceeds the window are dropped or
