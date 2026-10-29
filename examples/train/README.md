@@ -31,7 +31,7 @@ eval (§6.1) at matched k, with no loss elsewhere.
 | **1. Data** (§1) | nemo782k: 782k conversations, Gemma-4-31B-it responses, kimi-mtp + Nemotron STEM/math/code | the only SFT corpus used; GPQA is where it is thinnest (science 12%) | fixed |
 | **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
 | **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
-| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 over k=8: +7…+16% tok/s on A100, +6…+16% on B200 (395 / 254 / 313 tok/s on AIME / GPQA / LCB, §6.5) | **works** → blk12 ep33 at k=12 (block-8 control: val +0.03 after 8 epochs, i.e. the draft had converged at block 8; benchmark eval job 14280765) |
+| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 over k=8: +7…+16% tok/s on A100, +6…+16% on B200 (395 / 254 / 313 tok/s on AIME / GPQA / LCB, §6.5) | **works** → blk12 ep33 at k=12 (block-8 control closed 2026-10-29: 8 more epochs at block 8 == conv ep25 on every benchmark at k=8 and k=5, §6.3b — the draft had converged, the k=12 gain is from the new slots) |
 | **5. Draft-OPD** (§6.5, §8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted** (2026-10-28) — fails the bar below; next try needs a benchmark-domain pool and/or SFT replay |
 
 **Current working recipe** = stages 1–4: train recipe B for 26 epochs on
@@ -255,7 +255,7 @@ Outputs under `/sms-scratch/mengmengj/output/` (lax01) or
 | `..._nemo782k_fullattn1` | nemo782k | 26 (WSD) | A + full-attn layer {0} | `fullattn1nemo` | `checkpoints/25`, val 4.50; `25_yarn_full` = YaRN serve config | same verdict; YaRN rescue experiment |
 | `..._nemo782k_conv` | nemo782k | 26 | **B** | `nemoconv782k_v2` | `checkpoints/25`, val **4.779** | **current best** |
 | `..._conv_blk12` | nemo782k, continued from conv ep25 | 26 → 33 | B, block 12, γ 12 | `convblk12v1` | `checkpoints/33`, val 5.55 (12 slots) | block-size ablation (eval in flight) |
-| `..._conv_blk8ctrl` | same continuation at block 8 | 26 → 33 | B | `convblk8ctrlv1` | `checkpoints/33` (= `checkpoint_best`), val 4.806 (conv ep25: 4.779) | matched-exposure control; B200 eval at k=8/5 job 14280765 |
+| `..._conv_blk8ctrl` | same continuation at block 8 | 26 → 33 | B | `convblk8ctrlv1` | `checkpoints/33` (= `checkpoint_best`), val 4.806 (conv ep25: 4.779) | matched-exposure control: == conv ep25 at k=8/5 on B200 (§6.3b); no reason to serve it |
 
 Checkpoints are 13 GB (weights + optimizer); old epoch dirs are pruned by
 hand. `checkpoints/<n>/config.json` + `model.safetensors` are what vLLM needs.
@@ -371,10 +371,20 @@ converts into +7…+16% decode tok/s on A100 — largest where runs of accepted
 tokens are longest (AIME), smallest on GPQA, where the draft rarely gets
 past slot 8 anyway. k=12 serving needs `--max-num-seqs 32
 --max-num-batched-tokens 16384` (vLLM's per-step budget goes negative at
-13 tokens/seq otherwise). Open: the B200 number (the verify step is cheaper
-there, so the k=12 overhead is smaller and the gain could be larger), the
-matched block-8 control (does 8 more epochs at block 8 also stand still?),
-and whether a from-scratch block-12/16 run beats the warm start.
+13 tokens/seq otherwise). Both open questions are now closed. B200 (§6.5): k=12 gives 395 / 254 / 313
+tok/s vs k=8 340 / 239 / 282, +16% / +6% / +11%. Block-8 control
+(`conv_blk8ctrl/checkpoints/33`, B200, job 14280765,
+`results/gemma4-31b-dspark-conv-blk8ctrl-ep33`):
+
+| k | AIME | GPQA | LCB | vs conv ep25 (B200, same k) |
+|---|---|---|---|---|
+| 8 | 6.17 / 0.646 / 342 tok/s | 4.30 / 0.412 / 239 | 5.20 / 0.525 / 284 | +0.04 / −0.02 / +0.01 |
+| 5 | 4.82 / 0.764 / 268 | 3.75 / 0.551 / 211 | 4.30 / 0.661 / 234 | −0.01 / 0.00 / −0.01 |
+
+Eight more epochs at block 8 change nothing at k=8 or k=5 either (±0.04,
+the same band as the block-12 run's k≤8 rows): the draft had converged at
+block 8 after 26 epochs, so the block-12 run gave nothing away in the first
+eight slots, and everything it gained is from slots 9–12.
 
 ### 6.4 Older / diagnostic result dirs
 
@@ -485,8 +495,8 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   gives +7…+16% tok/s over k=8 on A100 (accept_len 7.19 / 4.64 / 5.80).
   B200 confirmed 2026-10-28 (§6.5): k=12 395 / 254 / 313 tok/s vs k=8
   340 / 239 / 282. Block-8 control finished 2026-10-29 (val 4.78 → 4.81 over
-  8 epochs: converged); its k=8/k=5 benchmark eval is job 14280765
-  (`results/gemma4-31b-dspark-conv-blk8ctrl-ep33`) — expect == conv ep25.
+  8 epochs) and its B200 eval == conv ep25 at k=8 and k=5 (§6.3b): stage 4
+  is closed.
 - **Draft-OPD** on-policy post-training (branch `mengmengj/draft-opd`,
   `opd/PLAN.md`, skill `draft-opd`): pipeline done and gated (rollout logger,
   replay-free data path, acceptance-aware loss, round loop); first recipe
