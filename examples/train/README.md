@@ -538,14 +538,39 @@ first user prompt), rerun step 2 with `--resume` (only new ids are generated),
 rerun step 3 on the merged output. Keep the regen JSONL — it is the source of
 truth for re-tokenizing or for the next target.
 
-**Decided 2026-10-27:** reasoning_effort **low**; **sampled** at the
-checkpoint's generation_config (temperature 1.0, top_p 0.95) — same as the
-gemma data turned out to be (§1), the serving default, and the DSpark recipe.
-**Blocking the full run (waiting on the serving team):** which thinking mode
-GLM-5.3 will be served in (`reasoning_effort` low/high/max — the probes used
-low) and which weight precision (bf16 vs fp8 — the probes used bf16). The data
-must match serve time, so nothing more is generated until both are known.
-**Open after that:** `--seq-length` 8192 vs 16384 (p90 reply 1.9k tok, p99 at the 12288 cap: 8192 truncates ~2–3% of rows); `MAX_TOKENS` 12288 vs 16384 for the long-thinking tail.
+**Decided 2026-10-27:** **sampled** at the checkpoint's generation_config
+(temperature 1.0, top_p 0.95) — same as the gemma data turned out to be (§1),
+the serving default, and the DSpark recipe.
+**Decided 2026-10-29:** thinking mode = **`reasoning_effort: max`** (the
+serving default; users may lower it). The earlier effort-low probe rows
+(`nemo782k_regen_glm53.jsonl`, 4,532 rows) are therefore NOT part of the
+dataset.
+**Temperature, checked 2026-10-29:** a colleague proposed 0.3 "like MiniMax
+recommends". Neither vendor says that: MiniMax M2 / M2.1 / M2.7 model cards
+recommend temperature 1.0, top_p 0.95, top_k 40; GLM-5.3's
+`generation_config.json` and Z.ai's docs say temperature 1.0, top_p 0.95
+(tune one, not both) and every model-card benchmark ran at 0.95–1.0. The
+draft is trained on these samples to speculate what the *served* model
+emits, and the served default is 1.0/0.95 — 0.3 would sharpen the data
+toward the mode and under-represent the diversity the draft meets at T=1
+(the gemma drafts, trained on T=1 data, lose ~0.5 accept_len going from
+greedy to T=1 serving even so; see `scripts/evaluate/experiments/README_length_check.md`).
+Keep 1.0 / 0.95 unless serving is pinned lower.
+**Precision:** still assumed **bf16** (what the probes used; the fp8 dir now
+has tokenizer files too, so switching is `MODEL=.../glm-5.3`). Confirm before
+the full run.
+**Probe at the decided settings (2026-10-29):** job `glm53_probe_max`, 2,000
+prompts, effort max, T 1.0 / top_p 0.95, MAX_TOKENS 32768, MAX_MODEL_LEN
+49152, EP, fp8 KV, 320 concurrent → `data/glm53/probe_effort-max_T1.0.jsonl`.
+Purpose: reply-length distribution at max effort (sets `MAX_TOKENS` and
+`--seq-length` — 8192 will not do if thinking runs 5–20k tokens) and tok/s
+with long sequences (sets the full-run `--time`). The full run follows with
+the same env (drop `LIMIT`, `OUTFILE`), and must start from an empty OUTFILE
+if any setting changes.
+**Open after the probe:** `--seq-length` (8192 vs 16384 vs 32768 — truncation
+cuts the *answer*, which is what the draft most needs), `MAX_TOKENS`, and
+whether prompts whose max-effort reply exceeds the window are dropped or
+regenerated at `high`.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
