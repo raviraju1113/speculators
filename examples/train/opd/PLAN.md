@@ -152,14 +152,29 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
   the 16k pool, measured by the next round's rollout: ckpt 33 (seed) 0.2117 →
   34 0.2264 → 35 0.2268 → 36 0.2318 → 37 0.2383 → 38 0.2456 → 39 0.2512 →
   40 0.2573 (mean accepted/step 2.54 → 3.09, fully-accepted blocks 4.5% →
-  5.6%); ckpt 41 is the final one and has no rollout number. Caveat: the SFT
-  validation set (nemo782k val) moves the other way — val accept_len 3.61
-  (ckpt 34) → 3.31 (41), accepted-slot forward KL 0.15 → 0.24 — so the draft
-  is specialising to the target's own outputs on the pool's distribution,
-  and the benchmark eval is the arbiter. **Verdict eval launched** (stage 5 bar,
-  same hardware): `scripts/evaluate/experiments/gemma4-31b-dspark-opd-v2.yaml`
-  — job 14148796 opd41 k12/k8 + opd40 k12, job 14148797 blk12 ep33 k12/k8
-  (its existing numbers are A100), both 1 B200 on sc3-cp84, ~1.5h/experiment.
+  5.6%); ckpt 41 is the final one and has no rollout number. (The per-round
+  val metrics — accept_len 3.61 → 3.31, accepted-slot forward KL 0.15 → 0.24 —
+  are on a held-out slice of each round's own rollouts, so their composition
+  shifts with the draft; not comparable across rounds.)
+- 2026-10-28 **verdict: v2 fails the stage-5 bar — not adopted.** B200 eval
+  (`scripts/evaluate/experiments/gemma4-31b-dspark-opd-v2.yaml`, jobs
+  14149872 / 14149874, README §6.5): accept_len AIME / GPQA / LCB at k=12
+  seed 7.19 / 4.64 / 5.80 → ckpt 40 6.29 / 4.21 / 4.79 → ckpt 41 6.19 / 4.21 /
+  4.73 (−14 / −9 / −18%); at k=8 seed 6.15 / 4.30 / 5.21 → ckpt 41 5.47 / 4.01 /
+  4.45 (−11 / −7 / −15%), tok/s 340 / 239 / 282 → 304 / 225 / 243. The pool
+  gain is real and the benchmark loss is real: the draft learned the pool's
+  distribution (science MCQ + chat) and forgot math/code, and nothing in the
+  loop anchors it to SFT. Pending: ckpt 34 (one round) and the seed's k=12
+  B200 tok/s (job 14192076). Before any further OPD run: (a) a pool from the
+  benchmark domains (math / code prompts the SFT corpus never saw, or
+  nemo782k prompts themselves — the "seen prompt" objection only matters for
+  the accepted slots, the rejected-slot signal is new either way), (b) SFT
+  replay mixed into each round's dataset, (c) 1–2 rounds at most. Two
+  infra fixes from this eval: per-job server port in `sbatch_sc3_eval.sh`
+  (co-scheduled 1-GPU jobs shared 127.0.0.1:8434 — the second eval would
+  have scored the first job's draft) and the cache/flashinfer block from
+  `run_rounds.sh` moved into `sc3_eval_prelude.sh` (two servers JIT-building
+  the flashinfer sampler in the same $HOME dir at once: one died).
 - 2026-10-28 pilots (2 x 4k, paired seed baseline on round-1 prompts 0.2112;
   round 0 reproduced the seed's 0.2149 in both): **A λ=0.05 reverse: round-1
   0.2146 (+0.0034)**; B forward KL on the rejected slot: 0.2050 (−0.006,

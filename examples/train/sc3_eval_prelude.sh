@@ -35,6 +35,22 @@ export NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-lo}"
 
+# --- caches off $HOME -------------------------------------------------------
+# Same block as opd/run_rounds.sh. $HOME is quota-limited, and flashinfer's JIT
+# dir ($HOME/.cache/flashinfer) is shared by every job of ours on the cluster:
+# two eval servers starting within seconds of each other on one node (14149872 /
+# 14149874, 2026-10-28) raced in the same ninja build dir and one died. Scratch
+# workspace seeded from the prebuilt kernels + vLLM sampler off flashinfer, so
+# startup does no JIT at all (temperature-0 evals are argmax either way).
+export OPD_CACHE="${OPD_CACHE:-/import/ml-sc-scratch1/mengmengj/cache}"
+mkdir -p "$OPD_CACHE/xdg_cache" "$OPD_CACHE/xdg_config" "$OPD_CACHE/triton" "$OPD_CACHE/inductor" "$OPD_CACHE/vllm"
+export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
+export XDG_CACHE_HOME="$OPD_CACHE/xdg_cache" XDG_CONFIG_HOME="$OPD_CACHE/xdg_config"
+export VLLM_CACHE_ROOT="$OPD_CACHE/vllm" TRITON_CACHE_DIR="$OPD_CACHE/triton" TORCHINDUCTOR_CACHE_DIR="$OPD_CACHE/inductor"
+export FLASHINFER_WORKSPACE_BASE="$OPD_CACHE/flashinfer_home"
+[ -d "$FLASHINFER_WORKSPACE_BASE/.cache/flashinfer" ] || { mkdir -p "$FLASHINFER_WORKSPACE_BASE/.cache" && cp -r "$HOME/.cache/flashinfer" "$FLASHINFER_WORKSPACE_BASE/.cache/" 2>/dev/null; }
+export VLLM_USE_FLASHINFER_SAMPLER=0
+
 # --- GPU self-test on the allocated cards (indices as SLURM exposes them) ----
 BAD=""
 for i in $(seq 0 $(( $(nvidia-smi -L | wc -l) - 1 ))); do

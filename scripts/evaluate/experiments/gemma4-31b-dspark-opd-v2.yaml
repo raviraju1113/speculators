@@ -65,6 +65,14 @@ experiments:
     speculative_config:
       method: dspark
 
+  # one OPD round only (pool +7%, best held-out val accept_len of the run):
+  # does ANY amount of OPD help the benchmarks, or does it hurt from round 1?
+  - name: opd34_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_full_blk12_sci16k_v2/checkpoints/34
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+
   - name: blk12_ep33_k12
     draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
     num_speculative_tokens: 12
