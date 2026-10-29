@@ -66,6 +66,10 @@ def compare(base, cfg):
         nct = sum(cfg[k]["tok"] for k in nocap)
         rows[bench] = {
             "n": len(bk),
+            "base_tok": bt,
+            "cfg_tok": ct,
+            "base_e2e": be,
+            "cfg_e2e": ce,
             "tok_ratio": ct / bt if bt else None,
             "med_ratio": statistics.median(ratios) if ratios else None,
             "gt_1_5": sum(r > 1.5 for r in ratios) / len(ratios) if ratios else None,
@@ -117,27 +121,32 @@ def main():
     benches = sorted({b for t in table.values() for b in t})
     print(f"baseline = {base_label}  (paired by (benchmark, id); repeats averaged)\n")
     hdr = (
-        f"  {'config':<20}{'n':>5}{'tok_ratio':>10}{'med_ratio':>10}{'>1.5x':>7}{'<0.67x':>7}"
-        f"{'cap b->c':>10}{'e2e_ratio':>10}{'tok/s':>8}{'nocap_n':>8}{'nocap_r':>8}"
+        f"  {'config':<20}{'n':>5}{'total tok':>11}{'mean tok':>9}{'cap':>5}{'wall-clock s':>13}"
+        f"{'tok_ratio':>10}{'>1.5x':>7}{'<0.67x':>7}{'e2e_ratio':>10}"
     )
     for bench in benches:
-        b_toks = [v["tok"] for k, v in base.items() if k[0] == bench]
-        b_cap = sum(v["cap"] for k, v in base.items() if k[0] == bench)
-        print(f"=== {bench}: baseline mean {statistics.fmean(b_toks):.0f} tok, {b_cap} cap hits ===")
+        b = [v for k, v in base.items() if k[0] == bench]
+        bt, be, bcap = sum(v["tok"] for v in b), sum(v["e2e"] for v in b), sum(v["cap"] for v in b)
+        print(f"=== {bench} ===")
         print(hdr)
+        print(
+            f"  {base_label:<20}{len(b):>5}{bt:>11,.0f}{bt / len(b):>9.0f}{bcap:>5}{be:>13,.0f}"
+            f"{'1.000':>10}{'-':>7}{'-':>7}{'1.000':>10}"
+        )
         for label, t in table.items():
             r = t.get(bench)
             if not r:
                 continue
             print(
-                f"  {label:<20}{r['n']:>5}{fmt(r['tok_ratio'], '.3f'):>10}{fmt(r['med_ratio'], '.3f'):>10}"
-                f"{fmt(r['gt_1_5'], '.1%'):>7}{fmt(r['lt_0_67'], '.1%'):>7}"
-                f"{str(r['cap_base']) + '->' + str(r['cap_cfg']):>10}{fmt(r['e2e_ratio'], '.3f'):>10}"
-                f"{fmt(r['tok_s'], '.0f'):>8}{r['nocap_n']:>8}{fmt(r['nocap_tok_ratio'], '.3f'):>8}"
+                f"  {label:<20}{r['n']:>5}{r['cfg_tok']:>11,.0f}{r['cfg_tok'] / r['n']:>9.0f}{r['cap_cfg']:>5}"
+                f"{r['cfg_e2e']:>13,.0f}{fmt(r['tok_ratio'], '.3f'):>10}"
+                f"{fmt(r['gt_1_5'], '.1%'):>7}{fmt(r['lt_0_67'], '.1%'):>7}{fmt(r['e2e_ratio'], '.3f'):>10}"
             )
         print()
-    print("tok_ratio/e2e_ratio = config / baseline (1.0 = same length / same wall-clock); "
-          "'cap' = replies cut by max_tokens.")
+    print("total/mean tok = completion tokens (repeats averaged per prompt); cap = replies cut by "
+          "max_tokens; wall-clock = summed e2e seconds. tok_ratio / e2e_ratio = config / baseline, "
+          "so the baseline row is 1.000; >1.5x / <0.67x = share of prompts whose reply is that much "
+          "longer / shorter than the baseline's.")
     if args.json:
         args.json.write_text(json.dumps({"baseline": base_label, "table": table}, indent=2))
         print(f"json -> {args.json}")

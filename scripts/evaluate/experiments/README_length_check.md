@@ -152,63 +152,119 @@ decoding, for diffusion/block drafts or any other kind. What is documented:
 ## Results (jobs finished 2026-10-28, read 2026-10-29)
 
 Raw: `results/gemma4-31b-length-check{,-sampled}/<exp>/mtp_eval_{summary.json,details.jsonl}`
-and `compare_lengths.json` next to them. tok_ratio = config tokens / baseline
-tokens, paired per prompt; [..] = 95% bootstrap CI over prompts; cap = replies
-cut at 16384 (baseline -> config); e2e = wall-clock ratio (<1 = faster).
+and `compare_lengths.json` next to them. Every table below is raw numbers
+with the baseline as its own row: **total tok** = sum of completion tokens
+over all replies, **mean tok** = per reply, **cap** = replies cut at 16384,
+**wall-clock** = summed end-to-end seconds for the whole benchmark (the
+number that answers "is it faster end to end"), **dec tok/s** = decode
+throughput, **accept_len** = accepted tokens per step incl. the bonus token.
 
 ### Greedy (temperature 0, full datasets, B200 TP=1)
 
-| config | pooled tok_ratio | AIME (30) | GPQA (198) | LCB (1055) | LCB >1.5x / <0.67x | cap AIME/GPQA/LCB | e2e AIME/GPQA/LCB |
-|---|---|---|---|---|---|---|---|
-| assistant_k8 (Google MTP) | 1.062 | 0.92 [0.64,1.23] | 1.12 [0.99,1.32] | 1.06 [0.99,1.14] | 4.5% / 3.0% | 0->0, 1->2, 7->8 | 0.22 / 0.30 / 0.29 |
-| conv_ep25_k8 (DSpark+conv) | 1.050 | 0.82 [0.60,1.03] | 1.04 [0.83,1.29] | 1.06 [1.00,1.13] | 5.4% / 3.3% | 0->0, 1->1, 7->7 | 0.15 / 0.26 / 0.25 |
-| blk12_ep33_k12 (DSpark+conv) | 1.056 | 1.29 [0.74,2.17] | 1.02 [0.98,1.06] | 1.05 [0.98,1.13] | 5.1% / 4.1% | 0->1, 1->1, 7->10 | 0.22 / 0.26 / 0.23 |
+AIME, 30 prompts:
 
-Decode tok/s (accept_len) at the 16k cap: baseline 62.5 / 63.1 / 63.8;
-assistant_k8 259 (5.68) / 240 (5.35) / 238 (5.39); conv_ep25_k8 343 (6.11) /
-255 (4.55) / 271 (5.33); blk12_ep33_k12 363 (7.43) / 248 (4.66) / 296 (5.95).
-Same as the 2048-cap tables within noise.
-
-### Sampled (T 1.0, top_p 0.95, top_k 64; 100 prompts per benchmark, 3 draws)
-
-| config | pooled tok_ratio | AIME (30x3) | GPQA (100x3) | LCB (100x3) | cap | e2e AIME/GPQA/LCB |
+| config | total tok | mean tok | cap | wall-clock s | dec tok/s | accept_len |
 |---|---|---|---|---|---|---|
-| assistant_k8 | 1.044 | 1.19 [0.92,1.57] | 0.95 [0.83,1.05] | 1.06 [0.98,1.13] | 1->1, 1->0, 0->0 | 0.34 / 0.30 / 0.32 |
-| conv_ep25_k8 | 0.982 | 0.97 [0.76,1.22] | 0.95 [0.85,1.03] | 1.03 [0.93,1.13] | 1->0, 1->0, 0->0 | 0.21 / 0.27 / 0.26 |
-| blk12_ep33_k12 | 1.059 | 1.35 [1.11,1.64] | 0.94 [0.81,1.06] | 1.00 [0.94,1.07] | 1->1, 1->0, 0->0 | 0.28 / 0.26 / 0.23 |
+| baseline (no draft) | 47,200 | 1,573 | 0 | 756 | 62.5 | – |
+| assistant_k8 (Google MTP) | 43,309 | 1,444 | 0 | 169 | 258.8 | 5.68 |
+| conv_ep25_k8 (DSpark+conv) | 38,594 | 1,286 | 0 | 114 | 343.1 | 6.11 |
+| blk12_ep33_k12 (DSpark+conv) | 60,787 | 2,026 | 1 | 169 | 363.3 | 7.43 |
 
-Noise floor: the baseline's own three draws differ in total AIME tokens by
-1.26x (46.0k / 55.3k / 44.0k) and GPQA by 1.22x; LCB by 1.07x. Decode
-speedups under sampling: assistant 3.2-3.5x, conv k8 3.5-4.6x, blk12 k12
-3.7-4.8x (acceptance drops ~0.5 vs greedy, as expected).
+GPQA-Diamond, 198 prompts:
+
+| config | total tok | mean tok | cap | wall-clock s | dec tok/s | accept_len |
+|---|---|---|---|---|---|---|
+| baseline | 159,369 | 805 | 1 | 2,531 | 63.1 | – |
+| assistant_k8 | 177,714 | 898 | 2 | 750 | 239.7 | 5.35 |
+| conv_ep25_k8 | 164,975 | 833 | 1 | 656 | 254.7 | 4.55 |
+| blk12_ep33_k12 | 161,804 | 817 | 1 | 660 | 248.3 | 4.66 |
+
+LiveCodeBench, 1,055 prompts:
+
+| config | total tok | mean tok | cap | wall-clock s | dec tok/s | accept_len |
+|---|---|---|---|---|---|---|
+| baseline | 1,212,945 | 1,150 | 7 | 19,043 | 63.8 | – |
+| assistant_k8 | 1,285,835 | 1,219 | 8 | 5,457 | 238.2 | 5.39 |
+| conv_ep25_k8 | 1,286,868 | 1,220 | 7 | 4,810 | 270.6 | 5.33 |
+| blk12_ep33_k12 | 1,277,000 | 1,210 | 10 | 4,367 | 296.1 | 5.95 |
+
+Per-prompt view on LCB (paired by prompt id): replies more than 1.5x the
+baseline's length: 4.5% / 5.4% / 5.1% of prompts (assistant / conv / blk12);
+replies shorter than 2/3 of the baseline's: 3.0% / 3.3% / 4.1%. Median
+per-prompt ratio 1.00 everywhere (most replies are token-identical).
+
+### Sampled (T 1.0, top_p 0.95, top_k 64; 100 prompts per benchmark x 3 draws)
+
+AIME, 30 prompts x 3 draws = 90 replies:
+
+| config | total tok | mean tok | cap | wall-clock s | dec tok/s | accept_len |
+|---|---|---|---|---|---|---|
+| baseline | 145,202 | 1,613 | 1 | 2,321 | 62.7 | – |
+| assistant_k8 | 172,315 | 1,915 | 1 | 782 | 221.7 | 5.19 |
+| conv_ep25_k8 | 140,543 | 1,562 | 0 | 492 | 288.1 | 5.48 |
+| blk12_ep33_k12 | 196,456 | 2,183 | 1 | 652 | 303.1 | 6.21 |
+
+GPQA, 100 prompts x 3 = 300 replies:
+
+| config | total tok | mean tok | cap | wall-clock s | dec tok/s | accept_len |
+|---|---|---|---|---|---|---|
+| baseline | 247,512 | 825 | 1 | 3,940 | 62.9 | – |
+| assistant_k8 | 234,995 | 783 | 0 | 1,168 | 203.5 | 4.63 |
+| conv_ep25_k8 | 234,369 | 781 | 0 | 1,075 | 220.5 | 4.02 |
+| blk12_ep33_k12 | 232,651 | 776 | 0 | 1,019 | 231.0 | 4.26 |
+
+LCB, 100 prompts x 3 = 300 replies:
+
+| config | total tok | mean tok | cap | wall-clock s | dec tok/s | accept_len |
+|---|---|---|---|---|---|---|
+| baseline | 240,642 | 802 | 0 | 3,748 | 64.4 | – |
+| assistant_k8 | 254,030 | 847 | 0 | 1,204 | 214.0 | 4.88 |
+| conv_ep25_k8 | 247,201 | 824 | 0 | 956 | 263.0 | 4.97 |
+| blk12_ep33_k12 | 241,362 | 804 | 0 | 848 | 289.7 | 5.50 |
+
+Noise floor for the sampled AIME numbers: the baseline's own three draws
+total 46.0k / 55.3k / 44.0k tokens, i.e. the same model varies by 25% from
+draw to draw on 30 prompts; GPQA 93.6k / 77.0k / 76.9k; LCB 80.5k / 82.9k /
+77.2k. blk12's three AIME draws: 53.9k / 62.0k / 80.5k (one draw carries
+the excess).
+
+Bootstrap 95% CIs on the total-token ratio vs baseline (resampling prompts),
+for the record: greedy LCB 0.99–1.14 / 1.00–1.13 / 0.98–1.13 (assistant /
+conv / blk12); sampled AIME 0.92–1.57 / 0.76–1.22 / 1.11–1.64; sampled GPQA
+0.83–1.05 / 0.85–1.03 / 0.81–1.06; sampled LCB 0.98–1.13 / 0.93–1.13 /
+0.94–1.07.
 
 ### Reading
 
 1. **No systematic lengthening from the DSpark / diffusion-style drafts.**
-   Under sampling, the production-like case, conv k8 is 0.98 pooled, and GPQA
-   is *shorter* for all three drafts (0.94-0.95). The only cell with a CI
-   above 1 is blk12 on AIME (1.35), 30 prompts where the baseline's own
-   draw-to-draw spread is 1.26x and one draw of blk12 (80k vs 54k / 62k
-   tokens) carries the excess; LCB for the same draft is 1.00. Google's
-   autoregressive MTP draft shows the same pattern (AIME 1.19, GPQA 0.95,
-   LCB 1.06), so nothing here separates block drafts from AR drafts.
-2. **Greedy shows a small common shift, +5-6% pooled, for all three drafts
-   alike,** carried by LCB (+5-6%, CIs touching 1.0) where the share of
-   replies >1.5x the baseline exceeds the <0.67x share by 1-2 points
-   (16-20 prompts of 1055). Since the AR assistant draft shows it identically,
-   it is a property of vLLM's speculative path vs single-token decode
-   (batch-shape numerics; see the literature section), not of the draft
-   architecture. Where the two paths diverge, either can be the one that runs
-   away: AIME id 80 goes 1,730 -> 16,384 under blk12 k12, AIME id 70 goes
-   8,669 -> 1,391 under both k8 drafts.
-3. **End-to-end wall-clock is 3-6.6x lower in every cell** (e2e_ratio
-   0.15-0.34), i.e. the decode speedup survives the length drift almost
-   intact: pooled e2e speedup ~ decode speedup / 1.05. The colleague's
-   "same end-to-end time" is not reproduced on this target with these
-   drafts in vLLM.
+   Under sampling, the production-like case, conv k8 writes 140.5k AIME
+   tokens vs the baseline's 145.2k, 234.4k vs 247.5k on GPQA, 247.2k vs
+   240.6k on LCB: within the model's own draw-to-draw spread, and GPQA is
+   *shorter* for all three drafts (233-235k vs 248k). The one cell that
+   stands out is blk12 on AIME, 196k vs 145k, but that is 30 prompts where
+   the baseline itself swings 44k-55k between draws and one blk12 draw
+   (80k) carries the excess; the same draft on LCB writes 241k vs 241k.
+   Google's autoregressive MTP draft shows the same pattern (AIME 172k vs
+   145k, GPQA 235k vs 248k, LCB 254k vs 241k), so nothing here separates
+   block drafts from AR drafts.
+2. **Greedy shows a small common shift for all three drafts alike:** on LCB
+   the baseline writes 1.213M tokens, the drafts 1.277-1.287M (+5-6%), with
+   4.5-5.4% of prompts getting a reply >1.5x the baseline's and 3.0-4.1%
+   getting one <2/3 of it (a surplus of 16-20 prompts out of 1,055). Since
+   the AR assistant draft shows it identically, it is a property of vLLM's
+   speculative path vs single-token decode (batch-shape numerics; see the
+   literature section), not of the draft architecture. Where the two paths
+   diverge, either can be the one that runs away: AIME id 80 goes 1,730 ->
+   16,384 tokens under blk12 k12, AIME id 70 goes 8,669 -> 1,391 under both
+   k8 drafts.
+3. **End-to-end wall-clock drops 3-6.6x in every cell:** greedy LCB 19,043 s
+   baseline vs 5,457 / 4,810 / 4,367 s; sampled LCB 3,748 s vs 1,204 / 956 /
+   848 s; and so on for every benchmark. The decode speedup survives the
+   length drift almost intact. The colleague's "same end-to-end time" is not
+   reproduced on this target with these drafts in vLLM.
 4. **Cap hits at 16k are rare and balanced:** greedy LCB 7 baseline vs 7 / 8
-   / 10; sampled 0-1 everywhere. The 2048 cap of the old tables was cutting
-   10% of LCB replies, so those tables understated everyone's length equally
+   / 10; 0-1 everywhere else. The 2048 cap of the old tables was cutting 10%
+   of LCB replies, so those tables understated everyone's length equally
    but hid nothing draft-specific.
 
 Caveats: AIME has 30 prompts and is inconclusive on its own in every table;
