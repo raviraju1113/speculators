@@ -234,6 +234,35 @@ conv / blk12); sampled AIME 0.92–1.57 / 0.76–1.22 / 1.11–1.64; sampled GPQ
 0.83–1.05 / 0.85–1.03 / 0.81–1.06; sampled LCB 0.98–1.13 / 0.93–1.13 /
 0.94–1.07.
 
+### Per prompt: longer vs shorter than the baseline (sign test)
+
+Totals above are mostly higher for the drafts on GPQA and LCB under greedy.
+Per prompt the direction is a coin flip; the surplus comes from a few long
+tails, not from most replies getting longer:
+
+| set | config | bench | longer | shorter | identical | sign-test p | mean diff on differing prompts |
+|---|---|---|---|---|---|---|---|
+| greedy | assistant_k8 | GPQA | 78 | 71 | 49 | 0.62 | +123 tok |
+| greedy | conv_ep25_k8 | GPQA | 78 | 72 | 48 | 0.68 | +37 |
+| greedy | blk12_ep33_k12 | GPQA | 76 | 73 | 49 | 0.87 | +16 |
+| greedy | assistant_k8 | LCB | 331 | 333 | 391 | 0.97 | +110 |
+| greedy | conv_ep25_k8 | LCB | 332 | 331 | 392 | 1.00 | +111 |
+| greedy | blk12_ep33_k12 | LCB | 343 | 313 | 399 | 0.26 | +98 |
+| sampled | assistant_k8 | GPQA | 51 | 49 | 0 | 0.92 | −42 |
+| sampled | conv_ep25_k8 | GPQA | 50 | 49 | 1 | 1.00 | −44 |
+| sampled | blk12_ep33_k12 | GPQA | 49 | 51 | 0 | 0.92 | −50 |
+| sampled | assistant_k8 | LCB | 55 | 45 | 0 | 0.37 | +45 |
+| sampled | conv_ep25_k8 | LCB | 54 | 45 | 1 | 0.42 | +22 |
+| sampled | blk12_ep33_k12 | LCB | 52 | 48 | 0 | 0.76 | +2 |
+
+AIME (30 prompts) is 12/13, 11/14, 14/14 greedy and 15/15, 11/19, 19/11
+sampled. Median difference on differing prompts is 0 to ±5 tokens in every
+greedy cell: when the paths diverge they usually land within a few tokens of
+each other, and the +5-6% LCB total is carried by the right tail (replies
+that diverged into a much longer solution or a runaway). No cell reaches
+p < 0.05; the three drafts share one baseline and similar near-tie
+positions, so their agreement is not three independent replicates.
+
 ### Reading
 
 1. **No systematic lengthening from the DSpark / diffusion-style drafts.**
@@ -247,11 +276,12 @@ conv / blk12); sampled AIME 0.92–1.57 / 0.76–1.22 / 1.11–1.64; sampled GPQ
    Google's autoregressive MTP draft shows the same pattern (AIME 172k vs
    145k, GPQA 235k vs 248k, LCB 254k vs 241k), so nothing here separates
    block drafts from AR drafts.
-2. **Greedy shows a small common shift for all three drafts alike:** on LCB
-   the baseline writes 1.213M tokens, the drafts 1.277-1.287M (+5-6%), with
-   4.5-5.4% of prompts getting a reply >1.5x the baseline's and 3.0-4.1%
-   getting one <2/3 of it (a surplus of 16-20 prompts out of 1,055). Since
-   the AR assistant draft shows it identically, it is a property of vLLM's
+2. **Greedy shows a small common upward skew for all three drafts alike:**
+   on LCB the baseline writes 1.213M tokens, the drafts 1.277-1.287M (+5-6%),
+   and GPQA +1.5% to +11.5%; per prompt it is 50/50 longer vs shorter (sign
+   test p ≥ 0.26), the surplus sits in 4.5-5.4% of prompts whose reply grew
+   >1.5x vs 3.0-4.1% that shrank below 2/3. Since the AR assistant draft
+   shows it identically, it is a property of vLLM's
    speculative path vs single-token decode (batch-shape numerics; see the
    literature section), not of the draft architecture. Where the two paths
    diverge, either can be the one that runs away: AIME id 80 goes 1,730 ->
@@ -266,6 +296,13 @@ conv / blk12); sampled AIME 0.92–1.57 / 0.76–1.22 / 1.11–1.64; sampled GPQ
    / 10; 0-1 everywhere else. The 2048 cap of the old tables was cutting 10%
    of LCB replies, so those tables understated everyone's length equally
    but hid nothing draft-specific.
+
+Follow-up that would settle whether the greedy skew is the vLLM speculative
+path itself: run `method: ngram` (prompt-lookup drafting, no draft model, same
+verification kernels) and a second greedy baseline on the same prompts. If
+ngram shows the same +5% on LCB the draft is exonerated entirely; if the
+second baseline is not token-identical to the first, the comparison itself
+has noise of that size. Each is one B200 job (~2 h / ~6 h).
 
 Caveats: AIME has 30 prompts and is inconclusive on its own in every table;
 the sampled set used 100 prompts per benchmark (3 draws); one target
