@@ -470,6 +470,13 @@ class DFlashArgs(_Group):
         "to the accepted-slot forward KL. Only used for datasets carrying "
         "opd_anchor_mask (scripts/opd/rollouts_to_dataset.py).",
     )
+    opd_rej_kl: Literal["reverse", "forward"] = Field(
+        default="reverse",
+        description="Draft-OPD: divergence on the first rejected slot. 'reverse' = "
+        "KL(q||p) (paper); 'forward' = KL(p||q), an ablation with the same "
+        "magnitude as the accepted-slot term (reverse KL averaged 18 nats vs "
+        "0.08 on the sci16k pool and degraded rollout acceptance, 2026-10-28).",
+    )
     per_position_loss_weight: Literal["fixed-exp-decay", "dpace"] | None = Field(
         default=None,
         description="Per-position loss weight option for D-PACE support "

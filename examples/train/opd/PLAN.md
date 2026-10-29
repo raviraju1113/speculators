@@ -145,6 +145,76 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-10-28 **full run v2 finished: +22% paired rollout acceptance, monotone.**
+  Job 14101064 (`opd_full_blk12_sci16k_v2`, sc3-cp84, 8 x B200, 2h15m for
+  8 rounds; λ_rej 0.05 reverse KL, OOV rejected slots masked, LR 5e-5 cosine,
+  KEEP_FULL, STOP_ON_DROP never fired). Paired rollout accept_rate at k=12 on
+  the 16k pool, measured by the next round's rollout: ckpt 33 (seed) 0.2117 →
+  34 0.2264 → 35 0.2268 → 36 0.2318 → 37 0.2383 → 38 0.2456 → 39 0.2512 →
+  40 0.2573 (mean accepted/step 2.54 → 3.09, fully-accepted blocks 4.5% →
+  5.6%); ckpt 41 is the final one and has no rollout number. (The per-round
+  val metrics — accept_len 3.61 → 3.31, accepted-slot forward KL 0.15 → 0.24 —
+  are on a held-out slice of each round's own rollouts, so their composition
+  shifts with the draft; not comparable across rounds.)
+- 2026-10-28 **verdict: v2 fails the stage-5 bar — not adopted.** B200 eval
+  (`scripts/evaluate/experiments/gemma4-31b-dspark-opd-v2.yaml`, jobs
+  14149872 / 14149874, README §6.5): accept_len AIME / GPQA / LCB at k=12
+  seed 7.19 / 4.64 / 5.80 → ckpt 40 6.29 / 4.21 / 4.79 → ckpt 41 6.19 / 4.21 /
+  4.73 (−14 / −9 / −18%); at k=8 seed 6.15 / 4.30 / 5.21 → ckpt 41 5.47 / 4.01 /
+  4.45 (−11 / −7 / −15%), tok/s 340 / 239 / 282 → 304 / 225 / 243. One round
+  (ckpt 34, job 14192076) is already flat-to-negative: 7.17 / 4.56 / 5.74 vs
+  the seed's B200 k=12 7.20 / 4.58 / 5.79, tok/s 388 / 249 / 307 vs 395 / 254 /
+  313 — there is no stopping point at which OPD on this pool helps. The pool
+  gain is real and the benchmark loss is real: the draft learned the pool's
+  distribution (science MCQ + chat) and forgot math/code, and nothing in the
+  loop anchors it to SFT. Before any further OPD run: (a) a pool from the
+  benchmark domains (math / code prompts the SFT corpus never saw, or
+  nemo782k prompts themselves — the "seen prompt" objection only matters for
+  the accepted slots, the rejected-slot signal is new either way), (b) SFT
+  replay mixed into each round's dataset, (c) 1–2 rounds at most. Two
+  infra fixes from this eval: per-job server port in `sbatch_sc3_eval.sh`
+  (co-scheduled 1-GPU jobs shared 127.0.0.1:8434 — the second eval would
+  have scored the first job's draft) and the cache/flashinfer block from
+  `run_rounds.sh` moved into `sc3_eval_prelude.sh` (two servers JIT-building
+  the flashinfer sampler in the same $HOME dir at once: one died).
+- 2026-10-28 pilots (2 x 4k, paired seed baseline on round-1 prompts 0.2112;
+  round 0 reproduced the seed's 0.2149 in both): **A λ=0.05 reverse: round-1
+  0.2146 (+0.0034)**; B forward KL on the rejected slot: 0.2050 (−0.006,
+  worse — matches the paper's "mixed > all-forward"). A's val forward-KL on
+  accepted slots still drifts up (0.086 -> 0.14 -> 0.20), so the full run v2
+  (`opd_full_blk12_sci16k_v2`, λ=0.05, OOV mask, LR 5e-5, 8 x 16k, round-0
+  rollouts reused from v1) runs with STOP_ON_DROP: a round whose paired
+  acceptance falls >0.002 below the previous round ends the run.
+- 2026-10-28: **the paper's objective as implemented degrades the draft.**
+  Full run 13949602 (blk12 ep33, sci16k, k=12, LR 5e-5, λ=1, reverse KL on
+  the first rejected slot): rollout accept_rate 0.2117 (ckpt 33) -> 0.2090
+  (34) -> 0.1987 (35); val forward-KL on accepted slots 0.29 -> 0.49. Both
+  runs that night died on $HOME quota (vLLM usage stats, then flashinfer JIT);
+  all caches now live on scratch and the sampler JIT is off. Diagnostics
+  (`opd_diag_r0`, LR≈0): teacher alignment is correct — teacher argmax ==
+  drafted token on 99.7% of accepted slots and == bonus token on 98% of
+  in-vocab rejected slots (gate 3, now a logged metric) — but **28% of
+  first-rejected slots have a bonus token outside the 32k draft vocab** (36%
+  at slot 0; renormalized targets make reverse KL train toward a token the
+  target never produced), and the rejected term is **18 nats vs 0.08** for the
+  accepted term, i.e. the gradient is ~200:1 the rejected slot. Fixes: OOV
+  rejected slots dropped from the loss (`rej_valid`), `--opd-rej-kl
+  {reverse,forward}`. Pilots (2 x 4k prompts, paired baseline at ckpt 33 on
+  prompts 4000-7999 = 0.2112): A `opd_pilot_lam005` (λ=0.05, reverse),
+  B `opd_pilot_fwd` (λ=1, forward KL on the rejected slot). Resume bug fixed
+  (round r skipped when its checkpoint exists).
+- 2026-10-27: B300 smoke (sc3-c130, 1 GPU, k=12, blk12 ep33): env runs on
+  B300 unchanged; 40/40 GSM8K rollouts, invariant 100%, accept_rate 0.59.
+  Prompt pool: Nemotron-v2 stem is entirely inside nemo782k (354,974/355,000),
+  so the pool is `data/opd_prompts/sci16k.jsonl` = 12k OpenScienceReasoning-2
+  + 4k Nemotron-v2 chat, hash-disjoint from nemo782k (`build_opd_pool.py`).
+  Pilot 13936853 (8 B200, 2 x 1k, LR 5e-5): round-0 rollout accept_rate 0.2194
+  -> round-1 0.2192 (no damage, no movement in 24 steps; parity 0.996 at step 1,
+  rej-KL 15.4 -> 13.8). Fixes: data-parallel rollouts (8 servers), wandb
+  allow_val_change on the hparams setter. Test2 13944090 passed 2 rounds.
+  **Full run launched: job 13944091, sc3-cp84, `opd_full_blk12_sci16k`, 8 rounds
+  x 16k, LR 5e-5 cosine 2850 steps, wandb `opdfullblk12v1`.** Block-8 control
+  12398695 running on sc3-cp83 (moved into the reservation).
 - 2026-10-26: seed switched to block-12 ep33 (k=12); README §0 defines the
   cumulative recipe and the bar OPD has to clear to become its third stage.
 - 2026-10-21: Phase 1 done — gate 1 passed (smoke 12450272: 40/40 GSM8K

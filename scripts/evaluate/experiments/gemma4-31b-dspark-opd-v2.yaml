@@ -1,0 +1,86 @@
+# Draft-OPD full run v2 (opd_full_blk12_sci16k_v2, job 14101064, 8 rounds x 16k
+# on-policy prompts from data/opd_prompts/sci16k.jsonl, seed blk12 ep33, k=12,
+# lambda_rej 0.05 reverse KL with OOV rejected slots masked, LR 5e-5; wandb
+# opdfullblk12v2): paired rollout accept_rate at k=12 rose every round,
+# 0.2117 (seed) -> 0.2573 (ckpt 40); ckpt 41 is the final one (unmeasured by
+# rollouts). This is the README §0 stage-5 verdict run: OPD checkpoints vs the
+# seed on the standard benchmarks, SAME hardware (B200), at k=12 and k=8.
+# The blk12 ep33 numbers in results/gemma4-31b-dspark-conv-blk12-ep33 are A100
+# (accept_len only), so the seed is re-run here for tok/s.
+# !! conv checkpoints: need the vllm conv patch (eval env has it).
+#   ONLY=opd41_k12,opd41_k8,opd40_k12 CONFIG=gemma4-31b-dspark-opd-v2.yaml \
+#     sbatch --reservation sn50-hdi-0 examples/train/sbatch_sc3_eval.sh
+#   ONLY=blk12_ep33_k12,blk12_ep33_k8 CONFIG=gemma4-31b-dspark-opd-v2.yaml \
+#     sbatch --reservation sn50-hdi-0 examples/train/sbatch_sc3_eval.sh
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+# gpus unset -> inherit CUDA_VISIBLE_DEVICES (set by SLURM / the sbatch wrapper)
+
+server:
+  host: 127.0.0.1
+  port: 8434
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    # k=12 needs a larger scheduling budget (see conv-blk12-ep33.yaml).
+    - "--max-num-seqs"
+    - "32"
+    - "--max-num-batched-tokens"
+    - "16384"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0   # 0 = FULL datasets: aime 30 / gpqa 198 / lcb 1055 (~1.5h per experiment)
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-opd-v2
+
+experiments:
+  - name: opd41_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_full_blk12_sci16k_v2/checkpoints/41
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+
+  - name: opd41_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_full_blk12_sci16k_v2/checkpoints/41
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # last checkpoint with a paired rollout number (0.2573): calibrates rollout
+  # accept_rate against benchmark accept_len.
+  - name: opd40_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_full_blk12_sci16k_v2/checkpoints/40
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+
+  # one OPD round only (pool +7%, best held-out val accept_len of the run):
+  # does ANY amount of OPD help the benchmarks, or does it hurt from round 1?
+  - name: opd34_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_full_blk12_sci16k_v2/checkpoints/34
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+
+  - name: blk12_ep33_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 12
+    speculative_config:
+      method: dspark
+
+  - name: blk12_ep33_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/33
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark

@@ -1,0 +1,50 @@
+# Matched-exposure control for the block-12 warm start (README §4.1): conv ep25
+# + 8 more epochs at the recipe's block 8 / gamma 4 (job 12398695, wandb
+# convblk8ctrlv1, finished 2026-10-29 07:24; val accept_len 4.527 -> 4.806 for
+# epochs 26..33 vs conv ep25 4.779). Question: did the 8 extra epochs do anything
+# at k<=8, or did the block-12 run's "k<=8 unchanged" simply mean the draft had
+# converged? Compare with conv ep25 and blk12 ep33 at the same k (§6.1, §6.5).
+# !! conv checkpoint: needs the vllm conv patch (eval env has it).
+#   CONFIG=gemma4-31b-dspark-conv-blk8ctrl-ep33.yaml sbatch --reservation sn50-hdi-0 examples/train/sbatch_sc3_eval.sh
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+
+server:
+  host: 127.0.0.1
+  port: 8434
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--max-num-seqs"
+    - "32"
+    - "--max-num-batched-tokens"
+    - "16384"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-conv-blk8ctrl-ep33
+
+experiments:
+  - name: blk8ctrl_ep33_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk8ctrl/checkpoints/33
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  - name: blk8ctrl_ep33_k5
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk8ctrl/checkpoints/33
+    num_speculative_tokens: 5
+    speculative_config:
+      method: dspark

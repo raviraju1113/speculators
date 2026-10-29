@@ -144,6 +144,7 @@ class DSparkDraftModel(DFlashDraftModel):
             "dpace_alpha": dpace_alpha,
             # Draft-OPD (used only for batches carrying opd_anchor_mask).
             "opd_lambda_rej": kwargs.get("opd_lambda_rej", 1.0),
+            "opd_rej_kl": kwargs.get("opd_rej_kl", "reverse"),
         }
         return dict(shared), dict(shared)
 
@@ -164,6 +165,7 @@ class DSparkDraftModel(DFlashDraftModel):
         per_position_loss_weight: str = "fixed-exp-decay",
         dpace_alpha: float = 0.5,
         opd_lambda_rej: float = 1.0,
+        opd_rej_kl: str = "reverse",
         **kwargs,
     ):
         # Draft-OPD batch: anchors fixed by the rollout and, per anchor, how
@@ -240,6 +242,7 @@ class DSparkDraftModel(DFlashDraftModel):
         # the token now at position p+1, so the training-side argmax (same
         # weights, teacher-forced on the same previous tokens) must match it.
         opd_extra: dict[str, torch.Tensor] = {}
+        opd_rej_valid = None
         if opd_accepted_per_block is not None:
             with torch.no_grad():
                 seq_len_full = input_ids.shape[1]
@@ -252,13 +255,33 @@ class DSparkDraftModel(DFlashDraftModel):
                 else:
                     draft_tgt = next_tok
                 pred = logits.view(num_blocks, block, -1).argmax(dim=-1)
-                acc_mask, _ = opd_slot_masks(opd_accepted_per_block, block)
-                acc_mask = acc_mask & aligned_loss_mask.view(num_blocks, block).to(torch.bool)
-                match = (pred == draft_tgt.view(num_blocks, block)) & acc_mask
+                valid_b = aligned_loss_mask.view(num_blocks, block).to(torch.bool)
+                acc_mask, rej_mask = opd_slot_masks(opd_accepted_per_block, block)
+                acc_mask = acc_mask & valid_b
+                rej_mask = rej_mask & valid_b
+                draft_tgt_b = draft_tgt.view(num_blocks, block)
+                in_vocab = draft_tgt_b >= 0
+                match = (pred == draft_tgt_b) & acc_mask
+                # Teacher alignment (gate 3): at temperature 0 the target's
+                # argmax IS the verified token, so on accepted slots the teacher
+                # argmax must equal the drafted token, and on the first rejected
+                # slot it must equal the bonus token (when it is in-vocab). Both
+                # ~1.0, or the teacher is read from the wrong position.
+                tgt_pred = targets.view(num_blocks, block, -1).argmax(dim=-1)
+                rej_in = rej_mask & in_vocab
                 opd_extra = {
                     "opd_acc_argmax_match_sum": match.sum().to(torch.float32),
                     "opd_acc_argmax_match_total": acc_mask.sum().to(torch.float32).clamp_min(1.0),
+                    "opd_teacher_acc_match_sum": ((tgt_pred == draft_tgt_b) & acc_mask).sum().to(torch.float32),
+                    "opd_teacher_acc_match_total": acc_mask.sum().to(torch.float32).clamp_min(1.0),
+                    "opd_teacher_rej_match_sum": ((tgt_pred == draft_tgt_b) & rej_in).sum().to(torch.float32),
+                    "opd_teacher_rej_match_total": rej_in.sum().to(torch.float32).clamp_min(1.0),
+                    "opd_rej_oov_frac_sum": (rej_mask & ~in_vocab).sum().to(torch.float32),
+                    "opd_rej_oov_frac_total": rej_mask.sum().to(torch.float32).clamp_min(1.0),
                 }
+                # Rejected slots whose true next token the draft cannot emit are
+                # not trained (see opd_loss); accepted slots are always in-vocab.
+                opd_rej_valid = in_vocab
 
         loss, metrics = compute_metrics(
             logits,
@@ -275,6 +298,8 @@ class DSparkDraftModel(DFlashDraftModel):
             sample_from_anchor=self.config.sample_from_anchor,
             opd_accepted=opd_accepted_per_block,
             opd_lambda_rej=opd_lambda_rej,
+            opd_rej_valid=opd_rej_valid,
+            opd_rej_kl=opd_rej_kl,
         )
         metrics.update(opd_extra)
         return None, loss, metrics

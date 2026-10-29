@@ -523,7 +523,8 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "${LAUNCHER[@]}" \
     --on-missing generate \
     --on-generate "$ON_GENERATE" \
     --dflash-decay-gamma "${DECAY_GAMMA:-4.0}" \
-    --opd-lambda-rej "${OPD_LAMBDA_REJ:-1.0}"
+    --opd-lambda-rej "${OPD_LAMBDA_REJ:-1.0}" \
+    --opd-rej-kl "${OPD_REJ_KL:-reverse}"
     # DECAY_GAMMA: per-position loss weight exp(-(k-1)/gamma); 4.0 = DeepSpec's
     # value and every run so far. The block-12 continuation uses 12 so the new
     # tail slots actually train (sbatch_sc3_conv_continue.sh).

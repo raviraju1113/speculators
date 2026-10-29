@@ -31,8 +31,8 @@ eval (§6.1) at matched k, with no loss elsewhere.
 | **1. Data** (§1) | nemo782k: 782k conversations, Gemma-4-31B-it responses, kimi-mtp + Nemotron STEM/math/code | the only SFT corpus used; GPQA is where it is thinnest (science 12%) | fixed |
 | **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
 | **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
-| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 +7…+16% tok/s over k=8 on the same A100 | **works** → blk12 ep33 at k=12 (B200 tok/s and the block-8 control still unconfirmed) |
-| **5. Draft-OPD** (§8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss) | pipeline built and gated; no gain shown yet (paper LR hurt, stable LR moved nothing in a 1k-prompt pilot) | **in progress** — becomes stage 5 of the recipe only if the full run beats blk12 ep33 at k=12 on §6.1 with no loss at k=8 |
+| **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 over k=8: +7…+16% tok/s on A100, +6…+16% on B200 (395 / 254 / 313 tok/s on AIME / GPQA / LCB, §6.5) | **works** → blk12 ep33 at k=12 (block-8 control: val +0.03 after 8 epochs, i.e. the draft had converged at block 8; benchmark eval job 14280765) |
+| **5. Draft-OPD** (§6.5, §8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted** (2026-10-28) — fails the bar below; next try needs a benchmark-domain pool and/or SFT replay |
 
 **Current working recipe** = stages 1–4: train recipe B for 26 epochs on
 nemo782k, warm-start 8 more epochs at block 12 / γ 12, serve
@@ -42,10 +42,13 @@ run on top of exactly this checkpoint (`opd/run_rounds.sh` defaults: seed
 blk12 ep33, k = block = γ = 12).
 
 Tried and not kept: the DFlash2 selector/KL loss (§4, parity and simplicity
-over an untested gain); OPD at the paper's LR 3e-4 (destroyed the draft) and
+over an untested gain); OPD at the paper's LR 3e-4 (destroyed the draft),
 OPD with fully-accepted blocks dropped (worse: they carry the anchoring
-signal); a from-scratch block-12 run (5.5 days for an answer the warm start
-gave in 2).
+signal), OPD with the paper's full-weight reverse KL on the rejected slot
+(acceptance fell every round: 28% of those slots point at a token outside
+the 32k draft vocab and the term is ~200× the accepted one), and forward KL
+on the rejected slot (worse than reverse at the same weight); a from-scratch
+block-12 run (5.5 days for an answer the warm start gave in 2).
 
 ---
 
@@ -220,8 +223,8 @@ than a from-scratch block-12 run (5.5 days) to get an answer in under 2.
 | schedule | linear, `SCHED_TOTAL=50600` (= 38,700 × 34/26, the budget of the whole 34-epoch trajectory): a warm restart with no new warmup: the resumed scheduler re-opened the LR at 1.6e-4 AdamW / 2.0e-3 Muon (the 6e-4 peak scaled by the budget left in the longer schedule) and decayed it linearly to 1.9e-5 / 1.9e-4 at the end of epoch 33 — not to 0, because both schedules are sized ~3% above the real step count (26 ep = 37.5k steps, not 38.7k), so the zero lies ~1.5k steps past the last step; the scratch and conv runs ended at the same floor | same |
 | everything else | recipe B unchanged: nemo782k, ACCUM 18 × 4 ranks, `MAX_ANCHORS 512`, quarter-epoch saves | same |
 | wrapper | `sbatch_sc3_conv_continue.sh` (8×B200, 4 HS engines + 4 ranks) | same |
-| run | sc3-cp99, job 12398694, 2026-10-21 → 23, 1 d 15 h (~4.8 h/epoch), wandb `convblk12v1` | queued (job 12398695), blocked by the B200 reservation since 2026-10-22 |
-| val accept_len (12-slot blocks) | 5.15, 5.24, 5.29, 5.34, 5.35, 5.47, 5.49, **5.55** for epochs 26…33 | – |
+| run | sc3-cp99, job 12398694, 2026-10-21 → 23, 1 d 15 h (~4.8 h/epoch), wandb `convblk12v1` | sc3-cp83, job 12398695, 2026-10-27 → 29 07:24, 1 d 15 h, wandb `convblk8ctrlv1` |
+| val accept_len | 12-slot blocks: 5.15, 5.24, 5.29, 5.34, 5.35, 5.47, 5.49, **5.55** for epochs 26…33 | 8-slot blocks: 4.53, 4.57, 4.60, 4.64, 4.66, 4.72, 4.77, **4.81** for epochs 26…33 (conv ep25: 4.78 — the re-opened LR costs 0.25 at epoch 26 and the anneal wins it back, net **+0.03**) |
 
 Why γ=12: the per-slot loss weight is `exp(−(k−1)/γ)`; at γ=4 the new slots
 9–12 would get weights 0.14…0.06 and barely train, so the block-12 run uses
@@ -252,7 +255,7 @@ Outputs under `/sms-scratch/mengmengj/output/` (lax01) or
 | `..._nemo782k_fullattn1` | nemo782k | 26 (WSD) | A + full-attn layer {0} | `fullattn1nemo` | `checkpoints/25`, val 4.50; `25_yarn_full` = YaRN serve config | same verdict; YaRN rescue experiment |
 | `..._nemo782k_conv` | nemo782k | 26 | **B** | `nemoconv782k_v2` | `checkpoints/25`, val **4.779** | **current best** |
 | `..._conv_blk12` | nemo782k, continued from conv ep25 | 26 → 33 | B, block 12, γ 12 | `convblk12v1` | `checkpoints/33`, val 5.55 (12 slots) | block-size ablation (eval in flight) |
-| `..._conv_blk8ctrl` | same continuation at block 8 | 26 → 33 | B | `convblk8ctrlv1` | pending (B200 reservation) | matched-exposure control |
+| `..._conv_blk8ctrl` | same continuation at block 8 | 26 → 33 | B | `convblk8ctrlv1` | `checkpoints/33` (= `checkpoint_best`), val 4.806 (conv ep25: 4.779) | matched-exposure control; B200 eval at k=8/5 job 14280765 |
 
 Checkpoints are 13 GB (weights + optimizer); old epoch dirs are pruned by
 hand. `checkpoints/<n>/config.json` + `model.safetensors` are what vLLM needs.
@@ -384,6 +387,40 @@ superseded by 6.2), `lcr_sweep_{spec,base}` (older 4-bucket AA-LCR truncation
 sweep of scratch: 3.93 / 3.78 / 3.94 / 4.04 at 16k/32k/64k/~106k),
 `conv_verify_*` (conv serving-patch gate).
 
+### 6.5 Draft-OPD v2 vs its seed blk12 ep33 (B200, TP=1, same flags; `results/gemma4-31b-dspark-opd-v2`)
+
+Verdict run for §0 stage 5 (2026-10-28, jobs 14149872 / 14149874 / 14192076).
+OPD ckpt 41 = seed + 8 rounds × 16k on-policy prompts (`sci16k`); ckpt 40 =
+7 rounds (the last one with a paired pool number, 0.2573 vs seed 0.2117);
+ckpt 34 = 1 round. accept_len is hardware-invariant (blk12 ep33 k=8: A100
+6.159 / 4.302 / 5.192 vs B200 6.150 / 4.297 / 5.207), so the seed's k=12
+accept_len at k=12 reproduces its A100 run (§6.3b: 7.19 / 4.64 / 5.80).
+
+| draft | k | AIME acc_len | GPQA | LCB | AIME tok/s | GPQA | LCB |
+|---|---|---|---|---|---|---|---|
+| blk12 ep33 (seed) | 12 | **7.20** | **4.58** | **5.79** | **394.9** | **253.9** | **312.5** |
+| OPD ckpt 40 | 12 | 6.29 | 4.21 | 4.79 | 343.1 | 232.3 | 257.4 |
+| OPD ckpt 41 | 12 | 6.19 | 4.21 | 4.73 | 337.9 | 231.2 | 255.1 |
+| OPD ckpt 34 (1 round) | 12 | 7.17 | 4.56 | 5.74 | 388.1 | 248.7 | 306.9 |
+| blk12 ep33 (seed) | 8 | **6.15** | **4.30** | **5.21** | **340.1** | **238.7** | **281.9** |
+| OPD ckpt 41 | 8 | 5.47 | 4.01 | 4.45 | 303.5 | 224.7 | 243.1 |
+
+OPD moved the pool and the benchmarks in opposite directions: +22% paired
+acceptance on the 16k science/chat pool, −14% / −9% / −18% accept_len on
+AIME / GPQA / LCB at k=12 and −11% / −7% / −15% at k=8. The loss accumulates
+with rounds: one round (ckpt 34, +7% on the pool) is already −0.5% / −0.4% /
+−0.8% accept_len and −2% tok/s, i.e. no gain to be had at any stopping point;
+ckpt 40 → 41 is still falling.
+**Side result: block 12 on B200** — the seed at k=12 vs its own k=8 gives
++16% / +6% / +11% tok/s (394.9 / 253.9 / 312.5 vs 340.1 / 238.7 / 281.9),
+closing the §0 stage-4 question. The pool (75% OpenScienceReasoning-2
+multiple choice, 25% Nemotron chat) is far from the benchmarks' math and
+code, and nothing in the round loop anchors the draft to its SFT distribution,
+so the on-policy objective is a domain shift rather than a refinement. The
+OPD rollouts did not change what the target generates: total completion
+tokens per benchmark are within +3% / 0% / +1% of the seed's (temperature 0,
+exact verification; see the sanity check in §8).
+
 ## 7. Running things
 
 ### Machines
@@ -446,15 +483,28 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
 
 - Block-12 vs block-8 continuation (§4, §6.3b): k=3/5/8 == conv ep25; k=12
   gives +7…+16% tok/s over k=8 on A100 (accept_len 7.19 / 4.64 / 5.80).
-  Still open: B200 tok/s and the block-8 control (pending B200 access — as of
-  2026-10-25 every `sc3-cp` node is reserved for `sn50-hdi-0` or draining).
+  B200 confirmed 2026-10-28 (§6.5): k=12 395 / 254 / 313 tok/s vs k=8
+  340 / 239 / 282. Block-8 control finished 2026-10-29 (val 4.78 → 4.81 over
+  8 epochs: converged); its k=8/k=5 benchmark eval is job 14280765
+  (`results/gemma4-31b-dspark-conv-blk8ctrl-ep33`) — expect == conv ep25.
 - **Draft-OPD** on-policy post-training (branch `mengmengj/draft-opd`,
   `opd/PLAN.md`, skill `draft-opd`): pipeline done and gated (rollout logger,
   replay-free data path, acceptance-aware loss, round loop); first recipe
   destabilized the draft at the paper's LR, stable at 2e-5. Seed is now
   **block-12 ep33 at k=12** (`run_rounds.sh` defaults, 2026-10-26); the full
   run (`opd/sbatch_sc3_opd_full.sh`) waits for B200 access and a
-  science-weighted prompt pool. Bar to clear: §0 stage 5.
+  science-weighted prompt pool. **Full run launched 2026-10-27** (job
+  13944091, `opd_full_blk12_sci16k`, 8 rounds × 16k prompts from
+  `data/opd_prompts/sci16k.jsonl` = OpenScienceReasoning-2 + Nemotron-v2 chat,
+  disjoint from nemo782k; Nemotron-v2 stem turned out to be entirely inside
+  nemo782k). That run (λ_rej=1) lost acceptance every round; **v2**
+  (λ_rej 0.05, out-of-vocab rejected slots masked, job 14101064, 2026-10-28)
+  gained every round on the pool (paired rollout accept_rate at k=12 0.2117 →
+  0.2573 over 8 rounds, ckpt 33 → 40; final ckpt 41) **and lost on every
+  benchmark** (§6.5: accept_len −9…−18% at k=12). Verdict: not adopted as
+  stage 5. Open: does one round (ckpt 34, eval job 14192076) already hurt;
+  a pool drawn from the benchmark domains (math/code) or SFT replay mixed
+  into each round, before any further OPD runs.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 - **Response-length / end-to-end check** (does a DSpark draft make the
   target's replies longer?) — done 2026-10-29: no draft-specific effect.
