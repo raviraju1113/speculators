@@ -105,9 +105,13 @@ if [ "$NODE_ID" -le 1 ]; then
         -- "${ARGS[@]}" > "$RUN_DIR/vllm_node${NODE_ID}.log" 2>&1 &
     children+=($!)
     echo "vLLM node-rank $NODE_ID pid ${children[0]} (log vllm_node${NODE_ID}.log)"
-    # Stay up until the trainer finishes (or vLLM dies).
-    while kill -0 "${children[0]}" 2>/dev/null && [ ! -e "$RUN_DIR/TRAIN_DONE" ]; do sleep 20; done
+    # Stay up until the trainer finishes, this vLLM dies, or the other verifier
+    # node's vLLM dies (the surviving PP stage would otherwise hang forever).
+    while kill -0 "${children[0]}" 2>/dev/null && [ ! -e "$RUN_DIR/TRAIN_DONE" ] \
+          && [ ! -e "$RUN_DIR/VLLM_DIED" ]; do sleep 20; done
     [ -e "$RUN_DIR/TRAIN_DONE" ] && { echo "trainer done; stopping vLLM"; exit 0; }
+    [ -e "$RUN_DIR/VLLM_DIED" ] && kill -0 "${children[0]}" 2>/dev/null \
+        && { echo "!! the other verifier node died; stopping"; exit 1; }
     echo "!! vLLM exited; tail:"; tail -60 "$RUN_DIR/vllm_node${NODE_ID}.log"
     touch "$RUN_DIR/VLLM_DIED"
     exit 1
@@ -120,7 +124,7 @@ echo "mooncake_master pid ${children[0]}"
 
 echo "waiting for the verifier at $HEAD_IP:$VLLM_PORT (1.5 TB load, expect 10-25 min)"
 for i in $(seq 1 240); do
-    [ -e "$RUN_DIR/VLLM_DIED" ] && { echo "!! a verifier node died"; exit 1; }
+    [ -e "$RUN_DIR/VLLM_DIED" ] && { echo "!! a verifier node died"; touch "$RUN_DIR/TRAIN_DONE"; exit 1; }
     if curl -sf "http://$HEAD_IP:$VLLM_PORT/v1/models" >/dev/null 2>&1 &&
        curl -sf "http://$HEAD_IP:$VLLM_PORT/v1/completions" -H 'Content-Type: application/json' \
             -d '{"model":"'"$MODEL"'","prompt":"1+1=","max_tokens":1}' >/dev/null 2>&1; then
