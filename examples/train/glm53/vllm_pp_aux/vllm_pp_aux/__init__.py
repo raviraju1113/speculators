@@ -13,7 +13,9 @@ non-last PP rank, twice over:
 
 The patch sets the aux layers on every rank for ``extract_hidden_states`` and
 ships upstream aux states as extra ``aux_hidden_states_<i>`` tensors, so the
-last rank returns the same ordered list it would without PP.
+last rank returns the same ordered list it would without PP. It also lets the
+ExtractHiddenStatesModel draft config pass ``verify_with_parallel_config``,
+which rejects PP > 1 for any architecture without ``SupportsPP``.
 
 Active only with VLLM_PP_AUX_PATCH=1 and only for vLLM 0.26.0 (the forward
 below is a copy of that version's ``DeepseekV2Model.forward``).
@@ -177,6 +179,25 @@ def _patch_runner() -> None:
     gmr.GPUModelRunner._setup_eagle3_aux_hidden_state_outputs = setup
 
 
+def _patch_registry() -> None:
+    # The draft config inherits the target's PP size, and ExtractHiddenStatesModel
+    # does not declare SupportsPP, so config validation rejects PP > 1. The
+    # runner builds the whole drafter on the last PP rank regardless, so the
+    # check does not apply to it.
+    from vllm.model_executor.models.registry import ModelRegistry
+
+    cls = type(ModelRegistry)
+    orig = cls.is_pp_supported_model
+
+    def is_pp_supported_model(self, architectures, model_config) -> bool:
+        archs = [architectures] if isinstance(architectures, str) else architectures
+        if "ExtractHiddenStatesModel" in archs:
+            return True
+        return orig(self, architectures, model_config)
+
+    cls.is_pp_supported_model = is_pp_supported_model
+
+
 def register() -> None:
     if os.environ.get("VLLM_PP_AUX_PATCH") != "1":
         return
@@ -187,5 +208,6 @@ def register() -> None:
             f"vllm_pp_aux copies vLLM 0.26.0's DeepseekV2Model.forward; "
             f"got vLLM {vllm.__version__}"
         )
+    _patch_registry()
     _patch_model()
     _patch_runner()
