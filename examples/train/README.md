@@ -711,6 +711,31 @@ Single-node projection from here: ~753k rows left at ~1,500 rows/h ≈ 21 days
 (≈ Nov 20). Option under discussion: GLM-5.3 bf16 (1.5 TB) does not fit one
 8×180 GB B200 node, so B200 replicas need node pairs (TP 8 × PP 2 over Ray,
 not yet built); a pair has ~1.1 TB for KV and should beat one B300 node here.
+**B200 pairs (2026-10-30, user approved 6 nodes = 3 pairs for shard B):**
+launcher `examples/train/glm53/sbatch_regen_glm53_b200pair.sh` (TP 8 × PP 2 over
+Ray). Sizing: 386k shard-B prompts at ~2,000 rows/h/pair → 3 pairs ≈ 2.7 days.
+Shard B is pre-split into `prompts_nemo782k_shardB{1,2,3}.jsonl` (130,402 each);
+`nemo782k_regen_glm53_shardB1.jsonl` is seeded with the 5,143 rows already done
+(all in B1's range). Launch one pair per sub-shard:
+```
+for i in 1 2 3; do INPUT_JSONL=$PWD/data/glm53/prompts_nemo782k_shardB$i.jsonl \
+  OUTFILE=$PWD/data/glm53/nemo782k_regen_glm53_shardB$i.jsonl JOBNAME=glm53_pair_B$i \
+  bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh; done
+```
+Smoke-test history (300 prompts), each attempt fixed one thing: (1) in-job
+`srun` to the peer fails ("fwd_tree_thread: can't find address for host",
+compute-node Slurm table) → head and worker are separate jobs with a rendezvous
+file + `--dependency=after:worker`; (2) Ray temp dir under `$SLURM_TMPDIR`
+exceeded the 107-byte AF_UNIX socket limit → `/tmp/ray_<jobid>`; (3) vLLM
+started its own local 8-GPU Ray → `export RAY_ADDRESS`; (4) PP stages picked KV
+block sizes 32 (FLASHINFER_MLA_SPARSE) vs 64 (DEEPSEEK_V32_INDEXER) → "No common
+block size" → `--block-size 64`; (5) shared NFS Triton cache → "Stale file
+handle" during warm-up, engine hung → compile caches on node-local disk, warmed
+by rsync from `$CACHE_BASE`. Attempt 4 reached KV allocation: 75 GiB free per
+GPU, **GPU KV cache size 1,595,776 tokens** for the pair (B300 node: 749k).
+Attempt 6 (jobs 14669010 worker / 14669014 head) is queued: all 32 B200 nodes
+were taken by other users within a minute of our test nodes being released
+(kimi prefill benchmarks, lg_eval, ravir's 3-node `glm53_dflash2` training).
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
