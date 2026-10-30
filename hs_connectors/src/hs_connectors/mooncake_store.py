@@ -10,23 +10,42 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
 logger = logging.getLogger(__name__)
 
 
+def _env_bytes(name: str, default: int) -> int:
+    """Byte count from env var ``name`` (plain int, or with a K/M/G/T suffix)."""
+    raw = os.environ.get(name, "").strip().upper().removesuffix("B")
+    if not raw:
+        return default
+    scale = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}.get(raw[-1], 1)
+    return int(float(raw[:-1] if scale > 1 else raw) * scale)
+
+
 @dataclass
 class MooncakeStoreConfig:
-    """Connection settings, passed straight to ``MooncakeDistributedStore.setup``."""
+    """Connection settings, passed straight to ``MooncakeDistributedStore.setup``.
+
+    The segment sizes default from HS_MOONCAKE_GLOBAL_SEGMENT_SIZE and
+    HS_MOONCAKE_LOCAL_BUFFER_SIZE (e.g. "64G"): one GLM-5.3 sample at 16k tokens
+    with 6 captured layers is ~1.2 GB, so the 4 GB default evicts under load.
+    """
 
     local_hostname: str = "localhost"
     metadata_server: str = "P2PHANDSHAKE"
     master_server_address: str = "127.0.0.1:50051"
-    global_segment_size: int = 4 * 1024 * 1024 * 1024
-    local_buffer_size: int = 2 * 1024 * 1024 * 1024
+    global_segment_size: int = field(
+        default_factory=lambda: _env_bytes("HS_MOONCAKE_GLOBAL_SEGMENT_SIZE", 4 << 30)
+    )
+    local_buffer_size: int = field(
+        default_factory=lambda: _env_bytes("HS_MOONCAKE_LOCAL_BUFFER_SIZE", 2 << 30)
+    )
     protocol: str = "tcp"
     device_name: str = ""
     num_writer_threads: int = 16
