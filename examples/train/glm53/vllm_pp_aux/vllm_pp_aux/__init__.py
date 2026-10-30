@@ -210,6 +210,55 @@ def _patch_registry() -> None:
     cls.is_pp_supported_model = is_pp_supported_model
 
 
+def _patch_page_size_unification() -> None:
+    # GLM-5.3 (DSA) has three KV page sizes at block 64: MLA latent
+    # 576 x 2 B = 73,728 B, the fp8 indexer 132 B = 8,448 B (= 2^8 * 3 * 11),
+    # and the hidden-states cache 6 x 6144 x 2 B = 4.7 MB. vLLM unifies pages by
+    # growing smaller layers' blocks, which needs every page to divide the
+    # largest; the indexer's factor 11 never divides a power-of-two block of
+    # hidden states, so engine init fails (smoke3). Resize only the
+    # hidden-states block so its page is the smallest common multiple of the
+    # other pages (11 tokens here -> MLA blocks of 704, indexer blocks of 6144,
+    # both multiples of the 64-token kernel block). Its CacheOnlyAttention
+    # backend indexes by slot, so any block size works.
+    import math
+    from dataclasses import replace
+
+    from vllm.logger import init_logger
+    from vllm.v1.core import kv_cache_utils as kcu
+    from vllm.v1.kv_cache_interface import HiddenStateCacheSpec
+
+    logger = init_logger(__name__)
+    orig = kcu.unify_kv_cache_spec_page_size
+
+    def unify(kv_cache_spec):
+        hs = {n: s for n, s in kv_cache_spec.items() if isinstance(s, HiddenStateCacheSpec)}
+        others = [s.page_size_bytes for n, s in kv_cache_spec.items() if n not in hs]
+        if hs and others:
+            lcm = math.lcm(*others)
+            new = {}
+            for name, spec in hs.items():
+                per_token = spec.page_size_bytes // spec.block_size
+                block = lcm // math.gcd(lcm, per_token)
+                while block * per_token < max(others):
+                    block *= 2
+                if block != spec.block_size:
+                    new[name] = replace(spec, block_size=block)
+            if new:
+                logger.info(
+                    "[vllm_pp_aux] hidden-states cache block %s -> %s tokens "
+                    "(page %s B) to unify with pages %s",
+                    next(iter(hs.values())).block_size,
+                    next(iter(new.values())).block_size,
+                    next(iter(new.values())).page_size_bytes,
+                    sorted(set(others)),
+                )
+                kv_cache_spec = {**kv_cache_spec, **new}
+        return orig(kv_cache_spec)
+
+    kcu.unify_kv_cache_spec_page_size = unify
+
+
 def register() -> None:
     if os.environ.get("VLLM_PP_AUX_PATCH") != "1":
         return
@@ -221,5 +270,6 @@ def register() -> None:
             f"got vLLM {vllm.__version__}"
         )
     _patch_registry()
+    _patch_page_size_unification()
     _patch_model()
     _patch_runner()
