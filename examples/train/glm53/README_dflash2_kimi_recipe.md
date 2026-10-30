@@ -54,3 +54,29 @@ spans two nodes. sc3-cp nodes talk over `brcm0` 100 GbE sockets only (IB off):
   `IntermediateTensors`.
 - Fallback: the official fp8 checkpoint (`mengmengj/glm-5.3`, 756 GB) fits TP8 on one
   node with the stock path, at the cost of fp8 instead of bf16 target numerics.
+
+## Making TP8 x PP2 extraction work on vLLM 0.26 (2026-10-30)
+
+Launcher: `run_glm53_dflash2_3node.sh` (one script, role per node), full run via
+`sbatch_glm53_dflash2_3node.sh`. Node 0/1 = vLLM TP8 x PP2, node 2 =
+`mooncake_master` + 8-rank trainer; hidden states cross nodes through Mooncake (tcp
+over brcm0). The `vllm_pp_aux` general plugin (`examples/train/glm53/vllm_pp_aux`,
+installed in the env, active only with `VLLM_PP_AUX_PATCH=1`, pinned to vLLM 0.26.0)
+plus driver/connector fixes, each found by a smoke run:
+
+| run | symptom | fix |
+|---|---|---|
+| smoke1 | `Pipeline parallelism is not supported for this model` at config time | plugin: `ExtractHiddenStatesModel` passes the PP check (the drafter lives on the last rank anyway) |
+| (design) | aux layers on stage 0 never captured nor sent | plugin: set aux layers on every rank; ship them as extra `IntermediateTensors` keys; receive buffer pre-allocates them |
+| smoke2 | stage-0 `AttributeError: ... no attribute 'drafter'` in profile_run | plugin: drop the runner's `speculative_config` on non-last ranks (they only capture) |
+| (design) | Mooncake connector asserts one cache layer on stage 0 | connector: non-last PP ranks skip `register_kv_caches` and never write |
+| smoke3-5 | KV page sizes 73,728 / 8,448 B cannot be unified | root cause found in debug10: unset block size makes stage 0 pick 64 (DSA indexer) and stage 1 pick 32 (FlashInfer MLA-sparse). Driver pins `--block-size 64`; plugin builds the uniform-type per-layer KV group explicitly (stock `MLAAttentionSpec.merge` would fold the 73,728 B/token hidden-states layer into an MLA-sized page) |
+| smoke5 | `[Errno 116] Stale file handle` in Triton warmup | JIT caches on node-local NVMe |
+| smoke6 | failed fetches leaked Mooncake space -> evictions | `data.py` deletes a sample whose validation failed |
+| smoke7 / debug8 | ~1% NaN samples; load probe: 30% of rows decode to garbage under 128 concurrent requests (clean one at a time) | caused by an interim lcm block-size workaround (704/6144/11-token blocks); replaced by the pinned 64-token layout above |
+
+Gate after the fix (debug11, real weights, 512 random rows, 128 in flight): 0 NaN,
+lm_head top-1 agreement with the gemma next token p1 0.44 / p5 0.58 / p50 0.75; the 4
+rows below 0.3 (68-243 tokens) score the same fetched alone, i.e. genuine. KV capacity
+504,768 tokens (29x concurrency at 17k). `probe_hidden_states.py --verifier` runs as a
+gate before every training launch; `--concurrency N` is the load test.
