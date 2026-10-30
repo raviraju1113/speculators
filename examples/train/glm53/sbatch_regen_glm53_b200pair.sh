@@ -5,18 +5,21 @@
 #
 # Why a pair: GLM-5.3 bf16 is ~1.5 TB of weights and a B200 node has
 # 8 x 183 GB = 1.46 TB, so one node cannot hold the model. Two nodes hold it with
-# ~1.1 TB left for KV cache (vs ~0.6 TB on one B300 node), and this job is
-# KV-bound, so a pair should beat a single B300 node.
+# ~1.2 TB left for KV cache (1.6M tokens measured, vs 0.75M on one B300 node),
+# and this job is KV-bound, so a pair should beat a single B300 node.
 #
 # Why two single-node jobs instead of one 2-node job: srun inside a multi-node
 # allocation fails here with "fwd_tree_thread: can't find address for host
 # sc3-cpNN, check slurm.conf" (the compute nodes' Slurm node table cannot reach
-# peers), so the worker is its own pinned job that joins the head's Ray address
-# directly over the network. The head job scancels the worker when it exits.
+# peers). So head and worker are separate jobs that find each other through a
+# rendezvous file on NFS: the head writes its Ray address to $ADDR_FILE, the
+# worker polls for it. The head is submitted with --dependency=after:<worker>
+# so it starts only once the worker is running; each side waits at most
+# JOIN_WAIT_MIN for the other, then gives up and frees its node.
 #
 # Submit from a login node (every env var of run_regen_glm53.sh is honoured):
-#   NODES=sc3-cp79,sc3-cp84 INPUT_JSONL=... OUTFILE=... bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
-#   (NODES omitted -> the first two idle B200 nodes of the reservation)
+#   INPUT_JSONL=... OUTFILE=... bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
+#   NODES=sc3-cp79,sc3-cp84 ...   # pin the two nodes instead of letting Slurm pick
 #   LIMIT=300 TIME=2:00:00 OUTFILE=$PWD/data/glm53/smoke_b200pair.jsonl bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 set -euo pipefail
 
@@ -35,6 +38,7 @@ PP="${PP:-2}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 EXPERT_PARALLEL="${EXPERT_PARALLEL:-1}"
+BLOCK_SIZE="${BLOCK_SIZE:-64}"
 PORT="${PORT:-8000}"
 RAY_PORT="${RAY_PORT:-6379}"
 LOG_DIR="${LOG_DIR:-$(dirname "$OUTFILE")/logs}"
@@ -42,9 +46,9 @@ CONDA_ENV="${CONDA_ENV:-dspark}"
 CONDA_BASE="${CONDA_BASE:-/import/snvm-sc-scratch1/mengmengj/miniconda3}"
 CONDA_ENVS_DIR="${CONDA_ENVS_DIR:-/import/ml-sc-scratch1/mengmengj/condaenvs}"
 CACHE_BASE="${CACHE_BASE:-/import/ml-sc-scratch1/mengmengj/cache}"
-JOIN_WAIT_MIN="${JOIN_WAIT_MIN:-45}"      # how long head/worker wait for each other
+JOIN_WAIT_MIN="${JOIN_WAIT_MIN:-60}"      # how long head/worker wait for each other
 export REPO MODEL INPUT_JSONL OUTFILE REASONING_EFFORT TEMPERATURE TOP_P MAX_TOKENS MAX_MODEL_LEN \
-       CONCURRENCY TP PP KV_CACHE_DTYPE GPU_MEM_UTIL EXPERT_PARALLEL PORT RAY_PORT LOG_DIR \
+       CONCURRENCY TP PP KV_CACHE_DTYPE GPU_MEM_UTIL EXPERT_PARALLEL BLOCK_SIZE PORT RAY_PORT LOG_DIR \
        CONDA_ENV CONDA_BASE CONDA_ENVS_DIR CACHE_BASE JOIN_WAIT_MIN
 [ -n "${LIMIT:-}" ] && export LIMIT
 
@@ -56,36 +60,27 @@ if [ -z "${ROLE:-}" ]; then
     mkdir -p "$LOG_DIR"
     JOBNAME="${JOBNAME:-glm53_regen_pair}"
     TIME="${TIME:-5-00:00:00}"
-    RESERVATION="${RESERVATION:-sn50-hdi-0}"
-    PARTITION="${PARTITION:-gpuonly}"
-    GPUTYPE="${GPUTYPE:-b200m180}"
-    if [ -z "${NODES:-}" ]; then
-        # idle B200 nodes of the reservation = reservation nodes minus busy ones
-        BUSY=$(squeue -h -t R,CG,PD -o '%N' | grep -v '^$' | xargs -r -n1 scontrol show hostnames | sort -u)
-        RESV=$(scontrol show hostnames "$(scontrol show reservation "$RESERVATION" | grep -oE 'Nodes=[^ ]+' | cut -d= -f2)")
-        IDLE=$(comm -23 <(echo "$RESV" | sort) <(echo "$BUSY") | grep -F -x -f <(sinfo -N -h -o '%N %G' | grep "$GPUTYPE" | awk '{print $1}') || true)
-        NODES=$(echo "$IDLE" | head -n "$PP" | paste -sd,)
-    fi
-    IFS=, read -r -a NODE_ARR <<< "$NODES"
-    [ "${#NODE_ARR[@]}" -eq "$PP" ] || { echo "need $PP nodes, got '${NODES}'" >&2; exit 1; }
-    HEAD_NODE="${NODE_ARR[0]}"
-    HEAD_IP=$(getent hosts "$HEAD_NODE" | awk '{print $1}' | head -1)
-    [ -n "$HEAD_IP" ] || { echo "cannot resolve $HEAD_NODE" >&2; exit 1; }
     PAIR_TAG="${JOBNAME}_$(date +%m%d_%H%M%S)"
-    COMMON=(--partition="$PARTITION" --reservation="$RESERVATION" --nodes=1 --ntasks=1
-            --gres="gpu:${GPUTYPE}:8" --cpus-per-task="${CPU:-64}" --mem="${MEM:-500G}" --exclusive --time="$TIME")
-    echo "[submit] pair $PAIR_TAG: head=$HEAD_NODE ($HEAD_IP) workers=${NODE_ARR[*]:1}"
+    ADDR_FILE="$LOG_DIR/ray_head_${PAIR_TAG}.addr"
+    COMMON=(--partition="${PARTITION:-gpuonly}" --reservation="${RESERVATION:-sn50-hdi-0}" --nodes=1 --ntasks=1
+            --gres="gpu:${GPUTYPE:-b200m180}:8" --cpus-per-task="${CPU:-64}" --mem="${MEM:-500G}" --exclusive --time="$TIME")
+    NODE_ARR=()
+    [ -n "${NODES:-}" ] && IFS=, read -r -a NODE_ARR <<< "$NODES"
+    [ "${#NODE_ARR[@]}" -eq 0 ] || [ "${#NODE_ARR[@]}" -eq "$PP" ] || { echo "NODES must list $PP nodes" >&2; exit 1; }
+    echo "[submit] pair $PAIR_TAG: $PP nodes${NODES:+ pinned to $NODES}, rendezvous $ADDR_FILE"
     [ -n "${DRY_RUN:-}" ] && { printf '[dry-run] sbatch '; printf '%q ' "${COMMON[@]}"; echo "... $SELF"; exit 0; }
     WORKER_JOBIDS=""
-    for w in "${NODE_ARR[@]:1}"; do
-        jid=$(ROLE=worker HEAD_IP="$HEAD_IP" PAIR_TAG="$PAIR_TAG" sbatch --parsable --export=ALL "${COMMON[@]}" \
-              --job-name="${JOBNAME}_w" --nodelist="$w" --output="$LOG_DIR/${JOBNAME}_worker_%j.out" "$SELF")
-        echo "[submit] worker $w -> job $jid"
+    for i in $(seq 1 $((PP - 1))); do
+        PIN=(); [ "${#NODE_ARR[@]}" -gt 0 ] && PIN=(--nodelist="${NODE_ARR[$i]}")
+        jid=$(ROLE=worker PAIR_TAG="$PAIR_TAG" ADDR_FILE="$ADDR_FILE" sbatch --parsable --export=ALL "${COMMON[@]}" "${PIN[@]}" \
+              --job-name="${JOBNAME}_w" --output="$LOG_DIR/${JOBNAME}_worker_%j.out" "$SELF")
+        echo "[submit] worker -> job $jid"
         WORKER_JOBIDS="${WORKER_JOBIDS:+$WORKER_JOBIDS,}$jid"
     done
-    jid=$(ROLE=head HEAD_IP="$HEAD_IP" PAIR_TAG="$PAIR_TAG" WORKER_JOBIDS="$WORKER_JOBIDS" sbatch --parsable --export=ALL "${COMMON[@]}" \
-          --job-name="$JOBNAME" --nodelist="$HEAD_NODE" --output="$LOG_DIR/${JOBNAME}_head_%j.out" "$SELF")
-    echo "[submit] head $HEAD_NODE -> job $jid (cancels workers $WORKER_JOBIDS on exit)"
+    PIN=(); [ "${#NODE_ARR[@]}" -gt 0 ] && PIN=(--nodelist="${NODE_ARR[0]}")
+    jid=$(ROLE=head PAIR_TAG="$PAIR_TAG" ADDR_FILE="$ADDR_FILE" WORKER_JOBIDS="$WORKER_JOBIDS" sbatch --parsable --export=ALL "${COMMON[@]}" "${PIN[@]}" \
+          --dependency="after:${WORKER_JOBIDS//,/:}" --job-name="$JOBNAME" --output="$LOG_DIR/${JOBNAME}_head_%j.out" "$SELF")
+    echo "[submit] head -> job $jid (starts after worker(s) $WORKER_JOBIDS start; cancels them on exit)"
     exit 0
 fi
 
@@ -94,56 +89,74 @@ fi
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENVS_DIR/$CONDA_ENV" 2>/dev/null || conda activate "$CONDA_ENV"
 export PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 VLLM_NO_USAGE_STATS=1 RAY_DISABLE_USAGE_STATS=1
-export FLASHINFER_WORKSPACE_BASE="$CACHE_BASE"
-export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$CACHE_BASE/vllm}"
-export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$CACHE_BASE/triton}"
-export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$CACHE_BASE/inductor}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$CACHE_BASE/xdg}"
 export TMPDIR="${SLURM_TMPDIR:-/tmp}"
-mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$XDG_CACHE_HOME" "$CACHE_BASE/.cache" "$LOG_DIR"
+# JIT/compile caches live on NODE-LOCAL disk, warmed from the shared NFS cache.
+# Sharing $CACHE_BASE/triton between 16 workers on two nodes (plus the B300
+# server) gave "OSError: [Errno 116] Stale file handle" on .cubin files during
+# warm-up and hung the engine; NFS is now read-only for these.
+LOCAL_CACHE="${SLURM_TMPDIR:-/tmp}/cache_${SLURM_JOB_ID}"
+mkdir -p "$LOCAL_CACHE" "$LOG_DIR"
+for d in triton inductor vllm .cache/flashinfer; do
+    [ -d "$CACHE_BASE/$d" ] || continue
+    mkdir -p "$LOCAL_CACHE/$d"
+    rsync -a --ignore-errors "$CACHE_BASE/$d/" "$LOCAL_CACHE/$d/" 2>/dev/null || true
+done
+export FLASHINFER_WORKSPACE_BASE="$LOCAL_CACHE"
+export VLLM_CACHE_ROOT="$LOCAL_CACHE/vllm"
+export TRITON_CACHE_DIR="$LOCAL_CACHE/triton"
+export TORCHINDUCTOR_CACHE_DIR="$LOCAL_CACHE/inductor"
+export XDG_CACHE_HOME="$LOCAL_CACHE/xdg"
+mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$XDG_CACHE_HOME"
 # This node's hostname IP and the interface carrying it: Ray, Gloo and NCCL's
 # bootstrap socket bind there; NCCL payload goes over the mlx5 HCAs.
 NODE_IP=$(getent hosts "$(hostname -s)" | awk '{print $1}' | head -1)
 [ -n "$NODE_IP" ] || NODE_IP=$(hostname -I | awk '{print $1}')
 NODE_IF=$(ip -o -4 addr show | awk -v ip="$NODE_IP/" 'index($4, ip)==1 {print $2; exit}')
 export NODE_IP NODE_IF VLLM_HOST_IP="$NODE_IP" NCCL_SOCKET_IFNAME="$NODE_IF" GLOO_SOCKET_IFNAME="$NODE_IF"
-RAY_ADDR="$HEAD_IP:$RAY_PORT"
 RAY_TMP="/tmp/ray_${SLURM_JOB_ID}"   # short: Ray AF_UNIX socket paths are capped at 107 bytes
 mkdir -p "$RAY_TMP"
-echo "[$ROLE $(hostname -s)] job $SLURM_JOB_ID pair=$PAIR_TAG ip=$NODE_IP if=$NODE_IF ray=$RAY_ADDR tp=$TP pp=$PP ep=$EXPERT_PARALLEL"
+echo "[$ROLE $(hostname -s)] job $SLURM_JOB_ID pair=$PAIR_TAG ip=$NODE_IP if=$NODE_IF tp=$TP pp=$PP ep=$EXPERT_PARALLEL caches=$LOCAL_CACHE ($(du -sh "$LOCAL_CACHE" | cut -f1))"
 
 if [ "$ROLE" = "worker" ]; then
-    # Join the head's Ray cluster; retry until the head job is up (it may be
-    # scheduled a little later). --block keeps the raylet alive until the head
-    # disappears or this job is cancelled by the head's cleanup.
+    # Wait for the head's address, join its Ray cluster, stay alive while it runs.
     for _ in $(seq 1 $((JOIN_WAIT_MIN * 6))); do
+        [ -s "$ADDR_FILE" ] && break
+        sleep 10
+    done
+    [ -s "$ADDR_FILE" ] || { echo "[worker] no head address in $ADDR_FILE after $JOIN_WAIT_MIN min, giving up"; exit 1; }
+    RAY_ADDR=$(cat "$ADDR_FILE")
+    echo "[worker] head at $RAY_ADDR"
+    for _ in $(seq 1 30); do
         if ray start --address="$RAY_ADDR" --num-gpus="$TP" --num-cpus="${SLURM_CPUS_PER_TASK:-32}" \
                --node-ip-address="$NODE_IP" --temp-dir="$RAY_TMP" > "$LOG_DIR/ray_worker_${SLURM_JOB_ID}.log" 2>&1; then
             echo "[worker] joined $RAY_ADDR"
             trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
-            # stay alive while the raylet runs
             while ray status --address "$RAY_ADDR" > /dev/null 2>&1; do sleep 30; done
             echo "[worker] head gone, exiting"; exit 0
         fi
         sleep 10
     done
-    echo "[worker] could not join $RAY_ADDR within $JOIN_WAIT_MIN min"; tail -20 "$LOG_DIR/ray_worker_${SLURM_JOB_ID}.log"; exit 1
+    echo "[worker] could not join $RAY_ADDR"; tail -20 "$LOG_DIR/ray_worker_${SLURM_JOB_ID}.log"; exit 1
 fi
 
 # ---- head ----
-echo "[regen] model=$MODEL effort=$REASONING_EFFORT temp=$TEMPERATURE top_p=$TOP_P max_tokens=$MAX_TOKENS max_model_len=$MAX_MODEL_LEN kv=$KV_CACHE_DTYPE concurrency=$CONCURRENCY"
+RAY_ADDR="$NODE_IP:$RAY_PORT"
+echo "[regen] model=$MODEL effort=$REASONING_EFFORT temp=$TEMPERATURE top_p=$TOP_P max_tokens=$MAX_TOKENS max_model_len=$MAX_MODEL_LEN kv=$KV_CACHE_DTYPE block=$BLOCK_SIZE concurrency=$CONCURRENCY"
 echo "[regen] $INPUT_JSONL -> $OUTFILE"
 cleanup() {
     echo "[regen] cleanup: stopping server and ray, cancelling workers ${WORKER_JOBIDS:-}"
     [ -n "${SERVER_PID:-}" ] && { kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; }
     ray stop --force > /dev/null 2>&1 || true
+    rm -f "$ADDR_FILE"
+    # shellcheck disable=SC2086
     [ -n "${WORKER_JOBIDS:-}" ] && scancel ${WORKER_JOBIDS//,/ } 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 ray start --head --node-ip-address="$NODE_IP" --port="$RAY_PORT" --num-gpus="$TP" \
     --num-cpus="${SLURM_CPUS_PER_TASK:-32}" --temp-dir="$RAY_TMP" --disable-usage-stats > "$LOG_DIR/ray_head_${SLURM_JOB_ID}.log" 2>&1
+echo "$RAY_ADDR" > "$ADDR_FILE"
 WANT_GPUS=$((TP * PP))
-echo "[regen] ray head up; waiting up to $JOIN_WAIT_MIN min for $WANT_GPUS GPUs"
+echo "[regen] ray head up at $RAY_ADDR; waiting up to $JOIN_WAIT_MIN min for $WANT_GPUS GPUs"
 HAVE=0
 for _ in $(seq 1 $((JOIN_WAIT_MIN * 6))); do
     HAVE=$(ray status --address "$RAY_ADDR" 2>/dev/null | grep -oE '[0-9.]+/[0-9.]+ GPU' | awk -F/ '{print int($2)}' || echo 0)
@@ -152,11 +165,16 @@ for _ in $(seq 1 $((JOIN_WAIT_MIN * 6))); do
 done
 [ "${HAVE:-0}" -ge "$WANT_GPUS" ] || { echo "[regen] ray has only ${HAVE:-0}/$WANT_GPUS GPUs:"; ray status --address "$RAY_ADDR" || true; exit 1; }
 echo "[regen] ray up with $HAVE GPUs"
+export RAY_ADDRESS="$RAY_ADDR"   # without this vLLM starts its own local Ray (8 GPUs) instead of joining the pair
 
+# --block-size 64: with PP the two stages auto-picked different KV block sizes
+# (FLASHINFER_MLA_SPARSE -> 32 on stage 1, DEEPSEEK_V32_INDEXER -> 64 on stage 0)
+# and the engine died with "No common block size for 32"; 64 is what the
+# single-node B300 server ends up with, so force it.
 SERVE=(vllm serve "$MODEL" --host 127.0.0.1 --port "$PORT" --api-key ""
     --tensor-parallel-size "$TP" --pipeline-parallel-size "$PP" --distributed-executor-backend ray
     --max-model-len "$MAX_MODEL_LEN" --max-num-seqs "$CONCURRENCY" --gpu-memory-utilization "$GPU_MEM_UTIL"
-    --kv-cache-dtype "$KV_CACHE_DTYPE" --served-model-name glm-5.3 --trust-remote-code)
+    --kv-cache-dtype "$KV_CACHE_DTYPE" --block-size "$BLOCK_SIZE" --served-model-name glm-5.3 --trust-remote-code)
 [ "$EXPERT_PARALLEL" = "1" ] && SERVE+=(--enable-expert-parallel)
 EXTRA_BODY=$(printf '{"temperature": %s, "top_p": %s, "chat_template_kwargs": {"reasoning_effort": "%s", "clear_thinking": true}}' \
     "$TEMPERATURE" "$TOP_P" "$REASONING_EFFORT")
