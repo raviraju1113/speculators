@@ -680,6 +680,18 @@ OUTFILE, since rows ≤ 16k tokens are distributed identically and the 16–32k
 rows already written are simply extra valid samples (their `metadata.truncated`
 is false). Rows truncated at 32k (930 so far) are dropped at tokenization like
 any other truncated row.
+**Two nodes (2026-10-30, manager approved):** the pool is split by line into
+`prompts_nemo782k_shardA.jsonl` (first 391,207 rows) and `_shardB.jsonl`
+(remaining 391,206). Job 14556362 was cancelled at 19,271 rows; shard A runs as
+**14564206** on sc3-c130 writing the original `nemo782k_regen_glm53.jsonl`
+(resumes past the done rows, which all lie in shard A since the pool is
+processed in order), shard B as **14564207** on sc3-c131 writing
+`nemo782k_regen_glm53_shardB.jsonl` from empty. Same env on both
+(`MAX_TOKENS=16384 MAX_MODEL_LEN=32768`, effort max, 1.0/0.95, EP, bf16 KV,
+256 concurrent, 14-day limit). The resume key is the prompt `id`, so a
+resubmit of either shard continues it. When both finish:
+`cat nemo782k_regen_glm53.jsonl nemo782k_regen_glm53_shardB.jsonl > nemo782k_regen_glm53_all.jsonl`
+and point `prepare_glm53_data.sh` at that. Expected 5–9 days.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
