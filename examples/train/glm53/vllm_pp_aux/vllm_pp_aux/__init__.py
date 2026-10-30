@@ -22,6 +22,7 @@ below is a copy of that version's ``DeepseekV2Model.forward``).
 """
 
 import os
+import sys
 from itertools import islice
 
 _AUX_KEY = "aux_hidden_states_{}"
@@ -230,7 +231,6 @@ def _patch_kv_cache_grouping() -> None:
     # special case), and the CacheOnlyAttention cache indexes by slot.
     from dataclasses import replace
 
-    from vllm.logger import init_logger
     from vllm.v1.core import kv_cache_utils as kcu
     from vllm.v1.kv_cache_interface import (
         AttentionSpec,
@@ -238,14 +238,17 @@ def _patch_kv_cache_grouping() -> None:
         UniformTypeKVCacheSpecs,
     )
 
-    logger = init_logger(__name__)
     orig = kcu.get_kv_cache_groups
 
     def get_kv_cache_groups(vllm_config, kv_cache_spec):
         hs = {n: s for n, s in kv_cache_spec.items() if isinstance(s, HiddenStateCacheSpec)}
         rest = {n: s for n, s in kv_cache_spec.items() if n not in hs}
-        logger.info("[vllm_pp_aux] KV specs: %s", sorted({repr(s) for s in kv_cache_spec.values()}))
         blocks = {s.block_size for s in rest.values()}
+        # vLLM's logging config does not route this module's INFO; print instead.
+        print(f"[vllm_pp_aux] KV specs: {len(hs)} hidden-states, {len(rest)} other, "
+              f"other blocks {sorted(blocks)}, types "
+              f"{sorted({type(s).__name__ for s in kv_cache_spec.values()})}; distinct "
+              f"{sorted({repr(s) for s in kv_cache_spec.values()})}", file=sys.stderr, flush=True)
         if hs and rest and len(blocks) == 1 and all(
             type(s).__name__ == "MLAAttentionSpec" for s in rest.values()
         ):
@@ -253,10 +256,9 @@ def _patch_kv_cache_grouping() -> None:
             specs = {**rest, **{n: replace(s, block_size=block) for n, s in hs.items()}}
             assert all(isinstance(s, AttentionSpec) for s in specs.values())
             uniform = UniformTypeKVCacheSpecs(block_size=block, kv_cache_specs=specs)
-            logger.info(
-                "[vllm_pp_aux] one uniform-type KV group, %d-token blocks, per-layer pages %s",
-                block, sorted({s.page_size_bytes for s in specs.values()}),
-            )
+            print(f"[vllm_pp_aux] one uniform-type KV group, {block}-token blocks, per-layer "
+                  f"pages {sorted({s.page_size_bytes for s in specs.values()})}",
+                  file=sys.stderr, flush=True)
             return kcu._get_kv_cache_groups_uniform_type(uniform)
         return orig(vllm_config, kv_cache_spec)
 
