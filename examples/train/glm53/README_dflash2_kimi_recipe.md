@@ -14,7 +14,7 @@ W&B: <https://forge.coreweave.com/wandb/ravi-raju0594-personal/glm53_dflash2>
 | verifier (bf16, 282 shards, 1.51 TB) | `/import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-bf16` (reuse; `roshant/GLM-5.3-BF16` on scratch5 is a second full copy -- do not download a third) |
 | source corpus | `/import/ml-sc-scratch1/mengmengj/datasets/kimi_nemotron_782k` (`messages` column, gemma answers) |
 | conversations JSONL | `/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/data/gemma782k_offpolicy.jsonl` (782,413 rows, 90,097 multi-turn) |
-| GLM-tokenized dataset | `/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/data/gemma782k_glm53_s16k` (`prepare_offpolicy_gemma.sh`) |
+| GLM-tokenized dataset | `/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/data/gemma782k_glm53_s16k` (`prepare_offpolicy_gemma.sh`, job 14555062, 12 min): 782,413 rows, 775.7M tokens, mean 991 / p50 641 / p99 4,826, 0.02% at the 16k cap; ~6.2k packed steps/epoch at ~126 conv/step |
 | draft config | `examples/train/glm53/glm53_dflash2_draft_config.json` |
 | env | `/import/ml-sc-scratch1/ravir/envs/glm53_dflash2` = `dspark_sc3_train` (vLLM 0.26.0, torch 2.11 cu130, FIPS-fixed opencv) + `mooncake-transfer-engine 0.3.13.post1` |
 
