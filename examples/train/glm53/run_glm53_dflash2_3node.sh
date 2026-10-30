@@ -42,7 +42,9 @@ echo "=== node $NODE_ID $(hostname -s) $(date '+%F %T') job ${SLURM_JOB_ID:-} ==
 source "$VENV/bin/activate"
 export PYTHONPATH="$REPO/src:$REPO/hs_connectors/src"
 export PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 VLLM_NO_USAGE_STATS=1
-CACHE="$WORK/cache"
+# Node-local NVMe, not NFS: 16 workers compiling Triton kernels into one NFS
+# cache dir hit "[Errno 116] Stale file handle" in warmup (smoke5).
+CACHE="${NODE_CACHE:-/tmp/${USER}_glm53_cache}"
 export FLASHINFER_WORKSPACE_BASE="$CACHE" VLLM_CACHE_ROOT="$CACHE/vllm" \
        TRITON_CACHE_DIR="$CACHE/triton" TORCHINDUCTOR_CACHE_DIR="$CACHE/inductor" \
        XDG_CACHE_HOME="$CACHE/xdg" TMPDIR="${SLURM_TMPDIR:-/tmp}"
