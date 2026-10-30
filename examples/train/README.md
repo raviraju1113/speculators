@@ -692,6 +692,25 @@ processed in order), shard B as **14564207** on sc3-c131 writing
 resubmit of either shard continues it. When both finish:
 `cat nemo782k_regen_glm53.jsonl nemo782k_regen_glm53_shardB.jsonl > nemo782k_regen_glm53_all.jsonl`
 and point `prepare_glm53_data.sh` at that. Expected 5–9 days.
+**Shard B paused 2026-10-30 14:00:** sc3-c131 was needed for HDI work, so job
+14564207 was cancelled with shard B at 5,118 rows (shard A at 24,316, still
+running on sc3-c130 as 14564206). Measured rate with the 16k cap: ~1,500
+rows/h per node (KV-bound sawtooth, 60–250 requests running, ~2k gen tok/s).
+Nothing is lost on a node change: rows are appended as they finish and the
+client skips ids already in the outfile, so only the in-flight replies (~30–60
+min of one node) are redone. Resume shard B on any free node with the same
+command, e.g. after shard A finishes on c130 or when c131 is shared again:
+```
+REASONING_EFFORT=max TEMPERATURE=1.0 TOP_P=0.95 MAX_TOKENS=16384 MAX_MODEL_LEN=32768 \
+EXPERT_PARALLEL=1 KV_CACHE_DTYPE=auto CONCURRENCY=256 TIME=14-00:00:00 \
+INPUT_JSONL=$PWD/data/glm53/prompts_nemo782k_shardB.jsonl \
+OUTFILE=$PWD/data/glm53/nemo782k_regen_glm53_shardB.jsonl \
+NODE=sc3-c131 JOBNAME=glm53_regen_shardB bash examples/train/glm53/sngpu_regen_glm53_sc3-c130.sh
+```
+Single-node projection from here: ~753k rows left at ~1,500 rows/h ≈ 21 days
+(≈ Nov 20). Option under discussion: GLM-5.3 bf16 (1.5 TB) does not fit one
+8×180 GB B200 node, so B200 replicas need node pairs (TP 8 × PP 2 over Ray,
+not yet built); a pair has ~1.1 TB for KV and should beat one B300 node here.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
