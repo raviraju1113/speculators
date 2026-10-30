@@ -4,6 +4,10 @@
 #   REPO=/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/code_<sha> \
 #     sbatch -w sc3-cp81,sc3-cp82,sc3-cp108 examples/train/glm53/sbatch_glm53_dflash2_3node.sh
 #
+# CAVEAT: srun here fans out from the first node; sc3-cp81 has a stale local
+# slurm.conf and cannot reach some nodes (jobs 14626017, 14630799). If the first
+# node is not known-good, use launch_glm53_dflash2_salloc.sh instead.
+#
 # Node order = role (run_glm53_dflash2_3node.sh): the first two nodes serve the
 # verifier, the third trains. Resume: resubmit as-is; train.py picks up the newest
 # checkpoint under SAVE_PATH and wandb continues the same run id.
