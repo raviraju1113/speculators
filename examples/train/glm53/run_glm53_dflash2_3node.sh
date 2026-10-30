@@ -140,9 +140,13 @@ for i in $(seq 1 240); do
 done
 
 export MOONCAKE_LOCAL_HOSTNAME="$MY_IP"
-# Trainer-side clients (one per dataloader worker) only read: small segments;
-# the local buffer must hold one whole sample.
-export HS_MOONCAKE_GLOBAL_SEGMENT_SIZE="${TRAIN_MC_SEGMENT:-1G}" HS_MOONCAKE_LOCAL_BUFFER_SIZE="${TRAIN_MC_BUFFER:-2G}"
+# Trainer-side clients (one per dataloader worker) only read: mount NO segment,
+# so every sample lands in the writer's local segment on the verifier. With 1 GB
+# reader segments, Mooncake placed puts on reader clients that had exited (the
+# probe, recycled workers) -> "Connection refused"/TRANSFER_FAIL on the writer,
+# reader timeouts and "tensor evicted" (~5% of samples lost, first full run).
+# The local buffer must hold one whole sample.
+export HS_MOONCAKE_GLOBAL_SEGMENT_SIZE="${TRAIN_MC_SEGMENT:-0}" HS_MOONCAKE_LOCAL_BUFFER_SIZE="${TRAIN_MC_BUFFER:-2G}"
 
 if [ "${VERIFIER_ONLY:-0}" = 1 ]; then
     # Debug mode: keep the verifier + mooncake_master up for manual probes;
