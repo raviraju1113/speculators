@@ -174,7 +174,19 @@ def _patch_runner() -> None:
             layers = self._get_eagle3_aux_layers_from_config()
             assert layers, "extract_hidden_states needs explicit aux layer ids"
             self.get_model().set_aux_hidden_state_layers(tuple(layers))
-            logger.info("[vllm_pp_aux] non-last PP rank captures aux layers %s", layers)
+            # Non-last ranks build no drafter, yet _dummy_run,
+            # _build_attention_metadata, initialize_kv_cache and
+            # _check_and_update_cudagraph_mode all touch self.drafter whenever
+            # the runner has a speculative_config (smoke2: AttributeError in
+            # profile_run). Capturing aux layers is all spec decode needs from
+            # these ranks, so drop it from the runner; vllm_config keeps it for
+            # the KV connector and scheduler. Safe for prefill-only
+            # (max_tokens=1) traffic, which never schedules spec tokens.
+            self.speculative_config = None
+            logger.info(
+                "[vllm_pp_aux] non-last PP rank captures aux layers %s; "
+                "runner spec decode disabled on this rank", layers,
+            )
 
     gmr.GPUModelRunner._setup_eagle3_aux_hidden_state_outputs = setup
 

@@ -15,6 +15,7 @@
 #   REPO      frozen code snapshot (required; never the live worktree)
 #   RUN_DIR   per-run dir for logs / IP handshake (required, fresh per launch)
 #   SMOKE=1   probe hidden states, then train MAX_STEPS (default 30) and exit
+#   VLLM_EXTRA_ARGS  extra `vllm serve` flags for both verifier nodes
 set -uo pipefail
 
 : "${REPO:?set REPO to a frozen code snapshot}"
@@ -94,6 +95,9 @@ if [ "$NODE_ID" -le 1 ]; then
           --max-num-seqs 256 --gpu-memory-utilization 0.90
           --no-enable-prefix-caching --enforce-eager)
     [ "$NODE_ID" = 1 ] && ARGS+=(--headless)
+    # e.g. VLLM_EXTRA_ARGS="--load-format dummy": structural smoke without the 10 min load
+    # shellcheck disable=SC2206
+    ARGS+=(${VLLM_EXTRA_ARGS:-})
     cd "$REPO"
     setsid python scripts/launch_vllm.py "$MODEL" \
         --hidden-states-backend mooncake --mooncake-master "$TRAIN_IP:$MC_PORT" \
