@@ -140,9 +140,14 @@ export MOONCAKE_LOCAL_HOSTNAME="$MY_IP"
 # the local buffer must hold one whole sample.
 export HS_MOONCAKE_GLOBAL_SEGMENT_SIZE="${TRAIN_MC_SEGMENT:-1G}" HS_MOONCAKE_LOCAL_BUFFER_SIZE="${TRAIN_MC_BUFFER:-2G}"
 
+# Real weights: also require the captured last layer to decode (norm + lm_head)
+# to the next token; dummy weights can only be checked for shape/finiteness.
+PROBE_ARGS=()
+[[ "${VLLM_EXTRA_ARGS:-}" == *dummy* ]] || PROBE_ARGS+=(--verifier "$MODEL")
 python "$REPO/examples/train/glm53/probe_hidden_states.py" --data-path "$DATA_PATH" \
     --vllm-endpoint "http://$HEAD_IP:$VLLM_PORT/v1" --mooncake-master "$TRAIN_IP:$MC_PORT" \
-    --num-layers 6 --hidden-size 6144 || { echo "!! hidden-state probe failed"; touch "$RUN_DIR/TRAIN_DONE"; exit 4; }
+    --num-layers 6 --hidden-size 6144 "${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"}" \
+    || { echo "!! hidden-state probe failed"; touch "$RUN_DIR/TRAIN_DONE"; exit 4; }
 
 # All 8 trainer ranks are on this node: NCCL on loopback (see dspark_online_gemma4_31b.sh).
 export NCCL_NET_PLUGIN=none NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=lo GLOO_SOCKET_IFNAME=lo

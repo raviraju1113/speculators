@@ -10,6 +10,11 @@ n_layers = len(target_layer_ids) + 1 (launch_vllm appends the last layer), no
 NaN/inf, and no all-zero layer block (an unfilled receive buffer). Per-layer
 RMS should grow with depth.
 
+With --verifier (real weights only), also decode the captured last layer
+(pre-norm) through the verifier's final RMSNorm + lm_head and require its
+top-1 to match the next token on at least --min-agree of the loss-masked
+positions: misplaced cache slots or misordered PP stages drop this to ~0.
+
     python examples/train/glm53/probe_hidden_states.py --data-path DS \
         --vllm-endpoint http://HEAD:8000/v1 --mooncake-master TRAIN:50051 \
         --num-layers 6 --hidden-size 6144
@@ -28,6 +33,35 @@ from speculators.data_generation.vllm_client import generate_hidden_states
 from speculators.train.data import build_client_item
 
 
+def _load_head(verifier: str) -> dict:
+    """Final RMSNorm weight + lm_head of the verifier, read straight from its shards."""
+    import json
+    from pathlib import Path
+
+    from safetensors import safe_open
+
+    cfg = json.loads((Path(verifier) / "config.json").read_text())
+    index = json.loads((Path(verifier) / "model.safetensors.index.json").read_text())["weight_map"]
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    out = {"eps": cfg.get("rms_norm_eps", 1e-5)}
+    for key, name in (("norm", "model.norm.weight"), ("lm_head", "lm_head.weight")):
+        with safe_open(str(Path(verifier) / index[name]), framework="pt") as f:
+            out[key] = f.get_tensor(name).to(dev, torch.float32)
+    return out
+
+
+def _top1_agreement(head: dict, h_last: torch.Tensor, input_ids, loss_mask) -> float:
+    """Fraction of loss-masked positions whose verifier top-1 is the next token."""
+    h = h_last.to(head["norm"].device, torch.float32)
+    h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + head["eps"]) * head["norm"]
+    pred = (h @ head["lm_head"].T).argmax(-1)
+    ids = torch.as_tensor(input_ids, device=pred.device)
+    mask = torch.as_tensor(loss_mask, device=pred.device).bool()
+    # position t predicts token t+1; score positions whose next token is trained on
+    sel = mask[1:]
+    return (pred[:-1][sel] == ids[1:][sel]).float().mean().item()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-path", required=True)
@@ -36,7 +70,10 @@ def main() -> int:
     ap.add_argument("--num-layers", type=int, default=6)
     ap.add_argument("--hidden-size", type=int, default=6144)
     ap.add_argument("--rows", type=int, nargs="+", default=[0, 1, 2, 160])
+    ap.add_argument("--verifier", default=None, help="checkpoint dir for the lm_head agreement check")
+    ap.add_argument("--min-agree", type=float, default=0.3)
     args = ap.parse_args()
+    head = _load_head(args.verifier) if args.verifier else None
 
     ns = argparse.Namespace(
         mooncake_master=args.mooncake_master,
@@ -63,10 +100,15 @@ def main() -> int:
         zero = [i for i, r in enumerate(rms) if r == 0.0]
         finite = bool(torch.isfinite(h.float()).all())
         good = tuple(h.reshape(h.shape[0], -1).shape) == want and not zero and finite
+        agree_msg = ""
+        if head is not None and good:
+            agree = _top1_agreement(head, blocks[:, -1], item["input_ids"], item["loss_mask"])
+            agree_msg = f" lm_head top-1 agreement={agree:.3f}"
+            good &= agree >= args.min_agree
         ok &= good
         print(f"row {row}: T={T} hidden_states {tuple(h.shape)} {h.dtype} want {want} "
-              f"finite={finite} zero_layers={zero} rms/layer={[round(r, 3) for r in rms]} "
-              f"-> {'OK' if good else 'FAIL'}", flush=True)
+              f"finite={finite} zero_layers={zero} rms/layer={[round(r, 3) for r in rms]}"
+              f"{agree_msg} -> {'OK' if good else 'FAIL'}", flush=True)
         transfer.delete(handle)
     print("PROBE", "PASSED" if ok else "FAILED", flush=True)
     return 0 if ok else 1

@@ -280,6 +280,7 @@ class ArrowDataset(BaseDataset):
         dataset_item = self.data[index]
         client_item = build_client_item(dataset_item)
 
+        handle = None
         try:
             handle = generate_hidden_states(
                 self.client,  # type:ignore[arg-type]
@@ -306,6 +307,14 @@ class ArrowDataset(BaseDataset):
                 f"Failed to load/cache hidden states for sample {index}: {e}",
                 stacklevel=1,
             )
+            # A sample that was generated but failed validation (e.g. NaN) must
+            # still be released, or it leaks in the store (Mooncake then evicts
+            # live samples once its segment fills).
+            if handle is not None and self.on_generate == "delete":
+                try:
+                    self.transfer.delete(handle)
+                except Exception:  # noqa: BLE001, S110
+                    pass
             return None
 
         return loaded_hs
