@@ -140,6 +140,14 @@ export MOONCAKE_LOCAL_HOSTNAME="$MY_IP"
 # the local buffer must hold one whole sample.
 export HS_MOONCAKE_GLOBAL_SEGMENT_SIZE="${TRAIN_MC_SEGMENT:-1G}" HS_MOONCAKE_LOCAL_BUFFER_SIZE="${TRAIN_MC_BUFFER:-2G}"
 
+if [ "${VERIFIER_ONLY:-0}" = 1 ]; then
+    # Debug mode: keep the verifier + mooncake_master up for manual probes;
+    # `touch $RUN_DIR/TRAIN_DONE` tears all three nodes down.
+    echo "VERIFIER READY (VERIFIER_ONLY): head=$HEAD_IP master=$TRAIN_IP:$MC_PORT"
+    while [ ! -e "$RUN_DIR/TRAIN_DONE" ] && [ ! -e "$RUN_DIR/VLLM_DIED" ]; do sleep 20; done
+    exit 0
+fi
+
 # Real weights: also require the captured last layer to decode (norm + lm_head)
 # to the next token; dummy weights can only be checked for shape/finiteness.
 PROBE_ARGS=()

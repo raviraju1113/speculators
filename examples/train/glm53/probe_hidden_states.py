@@ -62,6 +62,63 @@ def _top1_agreement(head: dict, h_last: torch.Tensor, input_ids, loss_mask) -> f
     return (pred[:-1][sel] == ids[1:][sel]).float().mean().item()
 
 
+def _load_test(args, head) -> int:
+    """Fetch many rows concurrently, as training does, and report per-row health.
+
+    For every row: NaN layers / token span if any, else lm_head agreement. A
+    load-dependent bug shows up as NaN rows or as a low-agreement tail that
+    the same rows do not have when re-fetched one at a time (--rows).
+    """
+    import random
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    ds = load_from_disk(args.data_path)
+    rows = random.Random(0).sample(range(len(ds)), args.random_rows)
+    ns = argparse.Namespace(mooncake_master=args.mooncake_master,
+                            mooncake_metadata_server="P2PHANDSHAKE", mooncake_protocol="tcp")
+    local = threading.local()
+    head_lock = threading.Lock()
+
+    def fetch(row):
+        if not hasattr(local, "client"):
+            local.transfer = MooncakeBackend.from_train_args(ns, args.data_path)
+            local.transfer.setup()
+            local.client = openai.OpenAI(base_url=args.vllm_endpoint, api_key="EMPTY", max_retries=0)
+            local.model = local.client.models.list().data[0].id
+        item = ds[row]
+        handle = generate_hidden_states(local.client, local.model, build_client_item(item), timeout=1800)
+        hs = local.transfer.get_generated(handle)
+        local.transfer.delete(handle)
+        h = hs["hidden_states"].float().reshape(-1, args.num_layers, args.hidden_size)
+        bad = ~torch.isfinite(h)
+        if bad.any():
+            tok = bad.any(dim=(1, 2)).nonzero().flatten()
+            return row, len(h), "NAN", (bad.any(dim=(0, 2)).nonzero().flatten().tolist(),
+                                        int(tok.min()), int(tok.max()), int(tok.numel()))
+        if head is None:
+            return row, len(h), "OK", None
+        with head_lock:
+            agree = _top1_agreement(head, h[:, -1], item["input_ids"], item["loss_mask"])
+        return row, len(h), "OK", agree
+
+    with ThreadPoolExecutor(args.concurrency) as pool:
+        results = list(pool.map(fetch, rows))
+    nan = [r for r in results if r[2] == "NAN"]
+    for row, T, _, (layers, t0, t1, n) in nan:
+        print(f"NaN row {row}: T={T} layers={layers} tokens {t0}..{t1} ({n} tokens)", flush=True)
+    agrees = sorted(r[3] for r in results if r[2] == "OK" and r[3] is not None)
+    if agrees:
+        q = lambda p: agrees[min(len(agrees) - 1, int(p * len(agrees)))]  # noqa: E731
+        low = [r for r in results if r[2] == "OK" and r[3] is not None and r[3] < args.min_agree]
+        print(f"agreement over {len(agrees)} rows: p1={q(0.01):.3f} p5={q(0.05):.3f} "
+              f"p50={q(0.5):.3f}; rows below {args.min_agree}: "
+              f"{[(r[0], r[1], round(r[3], 3)) for r in low][:20]}", flush=True)
+    print(f"LOAD TEST rows={len(results)} nan={len(nan)} "
+          f"low_agree={sum(1 for a in agrees if a < args.min_agree)}", flush=True)
+    return 0 if not nan else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-path", required=True)
@@ -72,8 +129,13 @@ def main() -> int:
     ap.add_argument("--rows", type=int, nargs="+", default=[0, 1, 2, 160])
     ap.add_argument("--verifier", default=None, help="checkpoint dir for the lm_head agreement check")
     ap.add_argument("--min-agree", type=float, default=0.3)
+    ap.add_argument("--concurrency", type=int, default=0,
+                    help="load test: fetch --random-rows rows with this many requests in flight")
+    ap.add_argument("--random-rows", type=int, default=512)
     args = ap.parse_args()
     head = _load_head(args.verifier) if args.verifier else None
+    if args.concurrency:
+        return _load_test(args, head)
 
     ns = argparse.Namespace(
         mooncake_master=args.mooncake_master,
