@@ -22,7 +22,10 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
     SupportsHMA,
 )
-from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+from vllm.distributed.parallel_state import (
+    get_pp_group,
+    get_tensor_model_parallel_rank,
+)
 from vllm.logger import init_logger
 from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -185,6 +188,11 @@ class MooncakeHiddenStatesConnector(KVConnectorBase_V1, SupportsHMA):
         pass
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        if not get_pp_group().is_last_rank:
+            # The hidden-states cache layer lives with the drafter on the last
+            # PP rank; earlier stages hold none and never write.
+            self._is_tp_rank_zero = False
+            return
         self._is_tp_rank_zero = get_tensor_model_parallel_rank() == 0
 
         from vllm.model_executor.models.extract_hidden_states import (  # noqa: PLC0415

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-pp-aux"
+version = "0.1.0"
+description = "vLLM 0.26 plugin: carry extract_hidden_states aux layers across PP stages"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+vllm_pp_aux = "vllm_pp_aux:register"
+
+[tool.setuptools]
+packages = ["vllm_pp_aux"]
