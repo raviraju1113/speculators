@@ -662,6 +662,24 @@ and the client `--resume`s past them. If the job dies or times out, resubmit the
 same command: it resumes. To halve the wall time, split the remaining prompts
 into a second shard and run it on sc3-c131 (idle in the same reservation) with
 its own `INPUT_JSONL`/`OUTFILE`/`NODE`, then concatenate.
+**After 20 h (2026-10-30):** 18.8k rows done at ~860 rows/h → 37 days projected,
+not 14. The server was KV-bound, not compute-bound: bf16 KV pool at 100%,
+only 70–100 of 256 requests running (median 73), ~2k gen tok/s, because the
+20–32k-token max-effort replies each pin a large slice of the pool. Reply
+lengths matched the probe (median 1,485, mean 5,233, 5% capped, 9.8% > 16k).
+41 errors, all over-window prompts.
+**Decided 2026-10-30 (user): cap replies at 16,384** (`MAX_TOKENS=16384`,
+`MAX_MODEL_LEN=32768`; the prompt-length threshold for rejection is unchanged at
+16,384). The capped 5% were producing 31% of tokens and holding the KV pool,
+and `prepare_glm53_data.sh` drops them anyway; the price is dropping 9.8% of
+prompts instead of 5% and losing the 16–32k replies. Remaining ≈ 3.1B tokens
+≈ 11–18 days on one node (2.0–3.4k tok/s), 5–9 on two. Job 14321602 was
+cancelled at 19,043 rows and resubmitted as **14556362** on the same outfile:
+the cap change is the one setting change that does not require an empty
+OUTFILE, since rows ≤ 16k tokens are distributed identically and the 16–32k
+rows already written are simply extra valid samples (their `metadata.truncated`
+is false). Rows truncated at 32k (930 so far) are dropped at tokenization like
+any other truncated row.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
