@@ -210,46 +210,57 @@ def _patch_registry() -> None:
     cls.is_pp_supported_model = is_pp_supported_model
 
 
-def _patch_page_size_unification() -> None:
-    # Without an extract layer, GLM-5.3's MLA latent pages (576 x 2 B x 64 =
-    # 73,728 B) and fp8 DSA indexer pages (132 B x 64 = 8,448 B = 2^8 * 3 * 11)
-    # share one UniformTypeKVCacheSpecs group. Adding the HiddenStateCacheSpec
-    # layer breaks that uniform-type check, so get_kv_cache_groups falls to the
-    # hybrid path, which grows smaller pages until each divides the largest --
-    # impossible here because of the indexer's factor 11 (smoke3, smoke4).
-    # Grow every page to the lcm instead: MLA blocks 64 -> 704 and indexer
-    # blocks 64 -> 6144 tokens, both multiples of the 64-token kernel block.
-    # get_kv_cache_groups then aligns the hidden-states group to that page
-    # itself (811,008 B / 73,728 B per token = 11-token blocks, no padding).
-    import math
+def _patch_kv_cache_grouping() -> None:
+    # Without an extract layer, GLM-5.3's MLA latent cache (576 x bf16) and fp8
+    # DSA indexer cache (132 B) form one UniformTypeKVCacheSpecs group of
+    # 64-token blocks with a tensor per layer -- the layout every DSA kernel is
+    # tested on. The HiddenStateCacheSpec layer knocks the spec set off that
+    # path (is_uniform_type needs a single block size), and the hybrid fallback
+    # cannot unify the 73,728 / 8,448 B pages (smoke3, smoke4). An earlier fix
+    # grew both to their lcm (704- / 6144-token blocks); that served correct
+    # hidden states one request at a time but ~30% of rows decoded to garbage
+    # under concurrency (debug8 load probe), consistent with kernel-block
+    # remapping colliding across requests. Instead build one
+    # UniformTypeKVCacheSpecs group of the shared 64-token block with every
+    # layer's own spec, hidden-states layer included. Built explicitly: the
+    # stock is_kv_cache_spec_uniform check runs MLAAttentionSpec.merge, which
+    # ignores head_size/dtype and would fold the 73,728 B/token hidden-states
+    # layer into an MLA-sized page. A uniform-type group allocates one tensor
+    # per layer sized by that layer's own page (get_kv_cache_config_from_groups
+    # special case), and the CacheOnlyAttention cache indexes by slot.
     from dataclasses import replace
 
     from vllm.logger import init_logger
     from vllm.v1.core import kv_cache_utils as kcu
-    from vllm.v1.kv_cache_interface import AttentionSpec
+    from vllm.v1.kv_cache_interface import (
+        AttentionSpec,
+        HiddenStateCacheSpec,
+        UniformTypeKVCacheSpecs,
+    )
 
     logger = init_logger(__name__)
-    orig = kcu.unify_kv_cache_spec_page_size
+    orig = kcu.get_kv_cache_groups
 
-    def unify(kv_cache_spec):
-        pages = {s.page_size_bytes for s in kv_cache_spec.values()}
-        if len(pages) > 1 and any(max(pages) % p for p in pages) and all(
-            isinstance(s, AttentionSpec) for s in kv_cache_spec.values()
+    def get_kv_cache_groups(vllm_config, kv_cache_spec):
+        hs = {n: s for n, s in kv_cache_spec.items() if isinstance(s, HiddenStateCacheSpec)}
+        rest = {n: s for n, s in kv_cache_spec.items() if n not in hs}
+        logger.info("[vllm_pp_aux] KV specs: %s", sorted({repr(s) for s in kv_cache_spec.values()}))
+        blocks = {s.block_size for s in rest.values()}
+        if hs and rest and len(blocks) == 1 and all(
+            type(s).__name__ == "MLAAttentionSpec" for s in rest.values()
         ):
-            lcm = math.lcm(*pages)
-            kv_cache_spec = {
-                name: replace(spec, block_size=spec.block_size * (lcm // spec.page_size_bytes))
-                for name, spec in kv_cache_spec.items()
-            }
+            block = blocks.pop()
+            specs = {**rest, **{n: replace(s, block_size=block) for n, s in hs.items()}}
+            assert all(isinstance(s, AttentionSpec) for s in specs.values())
+            uniform = UniformTypeKVCacheSpecs(block_size=block, kv_cache_specs=specs)
             logger.info(
-                "[vllm_pp_aux] unified KV pages %s -> %s B; block sizes %s; specs %s",
-                sorted(pages), lcm,
-                sorted({s.block_size for s in kv_cache_spec.values()}),
-                sorted({repr(s) for s in kv_cache_spec.values()}),
+                "[vllm_pp_aux] one uniform-type KV group, %d-token blocks, per-layer pages %s",
+                block, sorted({s.page_size_bytes for s in specs.values()}),
             )
-        return orig(kv_cache_spec)
+            return kcu._get_kv_cache_groups_uniform_type(uniform)
+        return orig(vllm_config, kv_cache_spec)
 
-    kcu.unify_kv_cache_spec_page_size = unify
+    kcu.get_kv_cache_groups = get_kv_cache_groups
 
 
 def register() -> None:
@@ -263,6 +274,6 @@ def register() -> None:
             f"got vLLM {vllm.__version__}"
         )
     _patch_registry()
-    _patch_page_size_unification()
+    _patch_kv_cache_grouping()
     _patch_model()
     _patch_runner()
