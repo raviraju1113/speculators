@@ -95,6 +95,10 @@ if [ "$NODE_ID" -le 1 ]; then
           --host 0.0.0.0 --port "$VLLM_PORT"
           --max-model-len $((SEQ_LEN + 1024)) --max-num-batched-tokens 32768
           --max-num-seqs 256 --gpu-memory-utilization 0.90
+          # Pin it: unset, each worker takes its first attention layer's
+          # preference -- 64 on stage 0 (DSA indexer) but 32 on stage 1
+          # (FlashInfer MLA-sparse), and the mixed specs cannot be grouped.
+          --block-size 64
           --no-enable-prefix-caching --enforce-eager)
     [ "$NODE_ID" = 1 ] && ARGS+=(--headless)
     # e.g. VLLM_EXTRA_ARGS="--load-format dummy": structural smoke without the 10 min load
