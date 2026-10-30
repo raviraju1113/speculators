@@ -211,49 +211,42 @@ def _patch_registry() -> None:
 
 
 def _patch_page_size_unification() -> None:
-    # GLM-5.3 (DSA) has three KV page sizes at block 64: MLA latent
-    # 576 x 2 B = 73,728 B, the fp8 indexer 132 B = 8,448 B (= 2^8 * 3 * 11),
-    # and the hidden-states cache 6 x 6144 x 2 B = 4.7 MB. vLLM unifies pages by
-    # growing smaller layers' blocks, which needs every page to divide the
-    # largest; the indexer's factor 11 never divides a power-of-two block of
-    # hidden states, so engine init fails (smoke3). Resize only the
-    # hidden-states block so its page is the smallest common multiple of the
-    # other pages (11 tokens here -> MLA blocks of 704, indexer blocks of 6144,
-    # both multiples of the 64-token kernel block). Its CacheOnlyAttention
-    # backend indexes by slot, so any block size works.
+    # Without an extract layer, GLM-5.3's MLA latent pages (576 x 2 B x 64 =
+    # 73,728 B) and fp8 DSA indexer pages (132 B x 64 = 8,448 B = 2^8 * 3 * 11)
+    # share one UniformTypeKVCacheSpecs group. Adding the HiddenStateCacheSpec
+    # layer breaks that uniform-type check, so get_kv_cache_groups falls to the
+    # hybrid path, which grows smaller pages until each divides the largest --
+    # impossible here because of the indexer's factor 11 (smoke3, smoke4).
+    # Grow every page to the lcm instead: MLA blocks 64 -> 704 and indexer
+    # blocks 64 -> 6144 tokens, both multiples of the 64-token kernel block.
+    # get_kv_cache_groups then aligns the hidden-states group to that page
+    # itself (811,008 B / 73,728 B per token = 11-token blocks, no padding).
     import math
     from dataclasses import replace
 
     from vllm.logger import init_logger
     from vllm.v1.core import kv_cache_utils as kcu
-    from vllm.v1.kv_cache_interface import HiddenStateCacheSpec
+    from vllm.v1.kv_cache_interface import AttentionSpec
 
     logger = init_logger(__name__)
     orig = kcu.unify_kv_cache_spec_page_size
 
     def unify(kv_cache_spec):
-        hs = {n: s for n, s in kv_cache_spec.items() if isinstance(s, HiddenStateCacheSpec)}
-        others = [s.page_size_bytes for n, s in kv_cache_spec.items() if n not in hs]
-        if hs and others:
-            lcm = math.lcm(*others)
-            new = {}
-            for name, spec in hs.items():
-                per_token = spec.page_size_bytes // spec.block_size
-                block = lcm // math.gcd(lcm, per_token)
-                while block * per_token < max(others):
-                    block *= 2
-                if block != spec.block_size:
-                    new[name] = replace(spec, block_size=block)
-            if new:
-                logger.info(
-                    "[vllm_pp_aux] hidden-states cache block %s -> %s tokens "
-                    "(page %s B) to unify with pages %s",
-                    next(iter(hs.values())).block_size,
-                    next(iter(new.values())).block_size,
-                    next(iter(new.values())).page_size_bytes,
-                    sorted(set(others)),
-                )
-                kv_cache_spec = {**kv_cache_spec, **new}
+        pages = {s.page_size_bytes for s in kv_cache_spec.values()}
+        if len(pages) > 1 and any(max(pages) % p for p in pages) and all(
+            isinstance(s, AttentionSpec) for s in kv_cache_spec.values()
+        ):
+            lcm = math.lcm(*pages)
+            kv_cache_spec = {
+                name: replace(spec, block_size=spec.block_size * (lcm // spec.page_size_bytes))
+                for name, spec in kv_cache_spec.items()
+            }
+            logger.info(
+                "[vllm_pp_aux] unified KV pages %s -> %s B; block sizes %s; specs %s",
+                sorted(pages), lcm,
+                sorted({s.block_size for s in kv_cache_spec.values()}),
+                sorted({repr(s) for s in kv_cache_spec.values()}),
+            )
         return orig(kv_cache_spec)
 
     kcu.unify_kv_cache_spec_page_size = unify
