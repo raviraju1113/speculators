@@ -798,6 +798,16 @@ reaches them. Expect the merged set to lose ~25–35% of rows to `metadata.trunc
 truncated ids with a 32k cap on the B200 pairs after the main pass (needs `MAX_MODEL_LEN`
 ≥ 48k; ~2× the per-row cost), (c) accept the smaller set. Decision pending.
 
+*Recommendation (2026-10-31): (a), keep truncated rows.* Every token in a truncated reply is
+genuine on-distribution target output, and training chunks to `SEQ_LENGTH` (8k/16k) anyway, so a
+16k-truncated reply is indistinguishable from a complete longer one after chunking. Dropping
+them would remove 25–35% of rows concentrated in the long-reasoning regime where speculative
+decoding matters most, and discard >50% of the generated tokens. What truncated rows lack is
+only the think→answer transition and final answer; the complete 65–90% of rows cover that.
+Consistent with the DSpark length-check eval (no draft-specific length effect). If adopted, flip
+the `metadata.truncated` filter in `prepare_glm53_data.sh`; option (b) only if the trained
+draft shows a gap on long-reasoning benchmarks.
+
 Reporting: a 2-hourly session cron appends `A=<rows> B=<rows>` to the scratchpad
 `glm53_progress.log`; it did not fire overnight 10-30→10-31 (session idle), hence the gap.
 
