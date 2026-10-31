@@ -737,11 +737,6 @@ Attempt 6 (jobs 14669010 worker / 14669014 head) is queued: all 32 B200 nodes
 were taken by other users within a minute of our test nodes being released
 (kimi prefill benchmarks, lg_eval, ravir's 3-node `glm53_dflash2` training).
 
-## Historical
-`archive/` — cluster-era launchers, completed one-off eval wrappers,
-pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
-`dflash_*`, `peagle_*`, `mtp_*`, `dspark_qwen3_0_6b_*`) are upstream's,
-untouched.
 
 **B200 pair smoke test PASSED (2026-10-30 16:24–17:00, jobs 14669010 worker sc3-cp79 + 14669014 head sc3-cp84).**
 Node-local rsync-warmed caches fixed the NFS stale-handle hang. Server came up in ~14 min
@@ -764,3 +759,50 @@ the worker waits up to 180 min for a head. Resume on a restart is automatic (`--
 Final merge once all shards are done:
 `cat nemo782k_regen_glm53.jsonl nemo782k_regen_glm53_shardB{1,2,3}.jsonl > nemo782k_regen_glm53_all.jsonl`
 (the original `nemo782k_regen_glm53_shardB.jsonl` is already contained in B1).
+
+### 9.x Status 2026-10-31 13:00 — all four streams running
+
+| stream | nodes | rows done | rate | projected finish |
+|---|---|---|---|---|
+| Shard A (job 14564206) | sc3-c130 (8×B300) | 58,615 / 391,207 | ~1,500 rows/h | ~Nov 9 |
+| Shard B1 (14703400/01) | sc3-cp79 + cp90 | 24,348 / 130,402 | ~1,085 rows/h | |
+| Shard B2 (14703402/03) | sc3-cp84 + cp80 | 19,163 / 130,402 | ~1,085 rows/h | |
+| Shard B3 (14703404/05) | sc3-cp86 + cp83 | 19,035 / 130,402 | ~1,075 rows/h | |
+| Shard B total | 6×B200 | 62,546 / 391,206 | ~3,240 rows/h | ~Nov 4 |
+| Combined | | 121,161 / 782,413 | | shard A is the long pole |
+
+The pairs got nodes ~25 min after submission (servers up 19:02–19:16 on 10-30). Server-side:
+B1 pair 2,260 tok/s, 116 running, KV 99.5% (KV-bound on long replies); B2/B3 pairs ~3,950 tok/s,
+256 running, KV 60–72% (capped by `CONCURRENCY=256` / `--max-num-seqs 256`, so there is headroom
+if concurrency is raised to ~384; not done, would need a restart — resume makes that lossless).
+Over-window prompt errors: A 308 unique (0.5%), B1 325 (1.7%); all are
+"maximum context length" rejections of prompts > 16k tokens, retried on restart, never resolvable.
+
+**Truncation observation (important for final yield).** Same settings everywhere
+(verified `max_tokens=16384` in both launchers' `[regen] model=` lines), but the share of
+replies hitting the 16k cap differs a lot by part of the dataset:
+
+| output | id groups covered so far | truncated at 16k | approx reply tokens p50 / p90 |
+|---|---|---|---|
+| shard A (`nemo782k_regen_glm53.jsonl`) | `00000` | 8.3% | 1,865 / 13,800 |
+| shard B1 | `00006` | 31.5% | 3,330 / 12,900 |
+| shard B2 | `00008`–`00009` | 39.2% | — |
+
+`prompts_nemo782k.jsonl` is ordered by source group (`id = nemo782k:<group>:<idx>`, groups
+`00000`–`00012`, ~60k prompts each); shard A = groups 0–6a, shard B = 6b–12. Groups ≥ 6
+produce roughly 2× longer max-effort replies, so shard A's truncation rate will climb as it
+reaches them. Expect the merged set to lose ~25–35% of rows to `metadata.truncated` when
+`prepare_glm53_data.sh` drops them (vs. the ~8% the first 60k rows suggest), i.e. roughly
+500–580k usable rows rather than ~720k. Options if that is too few: (a) keep truncated rows
+(DFlash2 trains on the prefix; the reply just lacks a closing answer), (b) re-run only the
+truncated ids with a 32k cap on the B200 pairs after the main pass (needs `MAX_MODEL_LEN`
+≥ 48k; ~2× the per-row cost), (c) accept the smaller set. Decision pending.
+
+Reporting: a 2-hourly session cron appends `A=<rows> B=<rows>` to the scratchpad
+`glm53_progress.log`; it did not fire overnight 10-30→10-31 (session idle), hence the gap.
+
+## Historical
+`archive/` — cluster-era launchers, completed one-off eval wrappers,
+pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
+`dflash_*`, `peagle_*`, `mtp_*`, `dspark_qwen3_0_6b_*`) are upstream's,
+untouched.
