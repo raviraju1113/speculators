@@ -742,3 +742,25 @@ were taken by other users within a minute of our test nodes being released
 pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
 `dflash_*`, `peagle_*`, `mtp_*`, `dspark_qwen3_0_6b_*`) are upstream's,
 untouched.
+
+**B200 pair smoke test PASSED (2026-10-30 16:24–17:00, jobs 14669010 worker sc3-cp79 + 14669014 head sc3-cp84).**
+Node-local rsync-warmed caches fixed the NFS stale-handle hang. Server came up in ~14 min
+(1.5 TB over 2 nodes), `GPU KV cache size: 1,595,776 tokens` (2.1× the B300 node's 749k).
+300 prompts → 294 rows, 6 errors (all over-window prompts, same class as on B300), 49 truncated at 16k.
+Peak server throughput 4,091 tok/s at 231 running with KV only 9% used, i.e. the pair is
+compute-bound, not KV-bound (B300 node: ~1,900 tok/s, KV 99%). Client average over the short
+run was 1,252 tok/s because of ramp-up/tail; expect ≥2,000 rows/h/pair at steady state.
+
+**Shard B launched on 3 B200 pairs (2026-10-30 18:38, `JOIN_WAIT_MIN=180 TIME=5-00:00:00`):**
+
+| sub-shard | input | output | worker job | head job |
+|---|---|---|---|---|
+| B1 (seeded with 5,143 done rows) | `prompts_nemo782k_shardB1.jsonl` | `nemo782k_regen_glm53_shardB1.jsonl` | 14703400 | 14703401 |
+| B2 | `prompts_nemo782k_shardB2.jsonl` | `nemo782k_regen_glm53_shardB2.jsonl` | 14703402 | 14703403 |
+| B3 | `prompts_nemo782k_shardB3.jsonl` | `nemo782k_regen_glm53_shardB3.jsonl` | 14703404 | 14703405 |
+
+All 32 B200 nodes were busy at submit time, so the jobs queue; each head waits for its worker and
+the worker waits up to 180 min for a head. Resume on a restart is automatic (`--resume`).
+Final merge once all shards are done:
+`cat nemo782k_regen_glm53.jsonl nemo782k_regen_glm53_shardB{1,2,3}.jsonl > nemo782k_regen_glm53_all.jsonl`
+(the original `nemo782k_regen_glm53_shardB.jsonl` is already contained in B1).
