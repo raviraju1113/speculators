@@ -1092,6 +1092,35 @@ natively-trained sliding-window drafter serves cleanly on the same vLLM
 build/topology. Does not pinpoint RadixArk's root cause, but narrows
 where to keep looking if that investigation resumes.
 
+**Correction (2026-10-20/21) — the above does *not* hold at longer
+context or on reruns; superseded by a root-caused finding.** A separate
+session's single-node B300 testing (`sc3-c130`) found CSplash
+intermittently **collapses** too — AL dropping from a clean ~3.0 to
+~1.3-1.5, reproducible on an immediate rerun of the identical config on
+the same warm server (not a per-boot or temperature-dependent effect).
+Root cause, confirmed by source inspection:
+`CSplashSpeculator(DFlashSpeculator)` only overrides the
+CandidateSelector-specific sampling methods
+(`load_draft_model`/`_sample_logits`/`_sample_sequential_selector`/`_generate_draft`)
+— **the shared context-KV preparation/eviction logic is untouched**,
+i.e. CSplash runs through the exact code path this investigation already
+flagged as having a block-allocation-timing bug in RadixArk's retrofit.
+The single clean AgentX run reported above just didn't happen to trigger
+the race; it's latent, not absent. The collapse is sharply
+context-length-correlated (healthy ≈3.0-3.6 for 2K-10K-token requests;
+every bucket ≥30K tokens collapses to ≈1.3-1.6, with per-position
+acceptance near zero at *every* draft position, not just late ones, once
+triggered) — real long-context CSplash AgentX numbers are **bimodal**,
+not a single stable value. A "widen-retention" patch (widening the
+sliding-window KV-retention margin before eviction) eliminates the
+collapse but introduces a ~8x throughput regression (28-30 tok/s vs. the
+healthy ~170-220 tok/s baseline) for a cause not yet understood either —
+tried at two margin sizes (2048, 256), same penalty both times. **Not
+resolved** — flagged as the key open risk before broader CSplash rollout
+at long context. Full writeup: the live webpage (§13,
+`https://snvm-web.sambanovasystems.com/ml/experiments/kimi_k3_acceptance.html`),
+not yet mirrored into this repo's docs beyond this note.
+
 ### CSplash 25-benchmark live-serving validation vs. offline reference (2026-10-14)
 
 Ran this project's own real-text acceptance harness

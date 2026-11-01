@@ -270,11 +270,34 @@ measures), 1800s/cell, `users=1`, `max_context=256000`:
 | RadixArk DSpark (block=3, best RadixArk config) | full | 179.2 | 2.349 |
 | RadixArk DSpark sliding2048 (block=7, known-broken) | sliding 2048 | 82.2 | 1.295 |
 
-CSplash beats every RadixArk configuration tested, and its own
-sliding-window attention does not reproduce the collapse the
-sliding-window retrofit shows.
+CSplash beats every RadixArk configuration tested. (An earlier version of
+this runbook additionally claimed CSplash's own sliding-window attention
+never reproduces the retrofit's collapse — **that claim was wrong**, see
+the gotcha below; it was true of this one clean run, not true in general.)
 
 ## 6. Gotchas
+
+- **CSplash intermittently collapses too — it shares RadixArk's
+  vulnerable KV-eviction code path, not a separate implementation.**
+  `CSplashSpeculator(DFlashSpeculator)` only overrides the
+  CandidateSelector-specific sampling methods
+  (`load_draft_model`/`_sample_logits`/`_sample_sequential_selector`/`_generate_draft`)
+  — the shared context-KV preparation/eviction logic is untouched, so
+  CSplash runs through the exact sliding-window KV-cache code path this
+  project separately found has a block-allocation-timing race. Confirmed
+  reproducible on single-node B300: a clean run scored AL≈3.0, an
+  immediate rerun on the same warm server (no restart) collapsed to
+  AL≈1.6 — not temperature-dependent, not a per-boot issue. The collapse
+  is sharply context-length-correlated: short requests (2K-10K tokens)
+  stay healthy, every bucket ≥30K tokens collapses to AL≈1.3-1.6 with
+  near-zero acceptance at *every* draft position once triggered. Real
+  long-context CSplash AgentX numbers are **bimodal** (healthy ≈3.0-3.6
+  or collapsed ≈1.3-1.6), not one stable value. A KV-retention-margin
+  widening patch eliminates the collapse but costs ~8x throughput (28-30
+  vs. ~170-220 tok/s) for a reason not yet understood — **unresolved**,
+  flagged as the key open risk before broader rollout at long context.
+  Full writeup: the live webpage, §13
+  (`https://snvm-web.sambanovasystems.com/ml/experiments/kimi_k3_acceptance.html`).
 
 - **SLURM/scheduler wall-clock limits.** A default `--time=24:00:00`
   (or your scheduler's default) has silently killed a live server
