@@ -811,6 +811,27 @@ draft shows a gap on long-reasoning benchmarks.
 Reporting: a 2-hourly session cron appends `A=<rows> B=<rows>` to the scratchpad
 `glm53_progress.log`; it did not fire overnight 10-30→10-31 (session idle), hence the gap.
 
+### 9.y 20% snapshot handed to the DFlash2 training side (2026-10-31 22:30)
+
+Frozen copy of the four live output files at the 20% mark, for off-policy draft training to start
+while generation continues:
+
+`/import/ml-sc-scratch1/mengmengj/speculators/data/glm53/nemo782k_regen_glm53_snap20pct_20261031.jsonl`
+
+| | |
+|---|---|
+| rows | 164,553 (21.0% of 782,413), all unique ids, 3.6 GB |
+| composition | shard A 72,557 (id group `00000`–`00001`) + B1 34,143 + B2 28,986 + B3 28,691 (groups `00006`–`00012`) |
+| truncated at 16k (`metadata.truncated`) | 40,670 (24.7%) — see truncation note above; recommendation is to keep them |
+| format | one JSON per line: `id`, `conversations` (ShareGPT `from`/`value`; GLM-5.3 replies stored raw as `reasoning</think>answer`, no reasoning parser), `metadata` (`usage`, `finish_reasons`, `truncated`, `latency_s`, …) |
+| generation settings | GLM-5.3 bf16, effort max, T 1.0, top-p 0.95, max_tokens 16,384, max_model_len 32,768, bf16 KV |
+
+To turn it into the training dataset dir: `INPUT=<snapshot> SEQ_LENGTH=8192 bash examples/train/glm53/prepare_glm53_data.sh`
+(default `OUTPUT=/import/ml-sc-scratch1/mengmengj/datasets/glm53_nemotron_782k`; it currently *drops* truncated rows,
+flip that filter if the keep-truncated recommendation is adopted). The live files keep growing;
+the snapshot does not. Later snapshots will follow the same naming (`snap<pct>pct_<date>`), and the
+final merge is `nemo782k_regen_glm53_all.jsonl`.
+
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
 pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
