@@ -1,0 +1,75 @@
+# GLM-5.3 (bf16, 1.5 TB) native-MTP acceptance baseline on a B200 pair (TP8 x PP2 over Ray).
+#
+# Run on sc3 through the pair launcher (brings up Ray on 2 nodes, then this runner):
+#   cd /import/ml-sc-scratch1/mengmengj/speculators
+#   EVAL_CONFIG=glm53-mtp-eval.yaml JOBNAME=glm53_mtp_eval TIME=1-00:00:00 EXCLUDE_NODES=sc3-cp80 \
+#     bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
+#   ONLY=baseline,mtp_k4 EVAL_CONFIG=... bash ...        # subset
+#
+# Settings mirror the DFlash2 data generation (examples/train/README.md §9) because
+# that is the regime the draft is trained for and will be served in: bf16 weights
+# and KV, reasoning effort max, T=1.0 / top-p 0.95. One greedy experiment is kept
+# for comparability with the GLM-5.2 table (glm52-eval.yaml, greedy, k=5).
+# k = 2 and 4 per the serving team's operating points; GLM-5.3 has a single MTP
+# layer (num_nextn_predict_layers=1) which vLLM applies recursively for any k.
+# max_tokens 4096 = the suite convention; max-effort replies run far longer, so
+# acceptance here is over the first 4k tokens of the reply.
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-bf16
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 32768
+  health_timeout: 3600            # 1.5 TB over two nodes: ~15 min load + warmup
+  # Same flags as the regen server on a pair (sbatch_regen_glm53_b200pair.sh).
+  extra_args:
+    - --pipeline-parallel-size
+    - "2"
+    - --distributed-executor-backend
+    - ray
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 50                 # per benchmark, seed 42 (same draw as glm52-eval)
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: ./results/glm53-mtp-eval
+
+experiments:
+  # First entry = baseline (no speculation) — the speedup denominator.
+  - name: baseline
+
+  - name: mtp_k2
+    speculative_config: {method: mtp, num_speculative_tokens: 2}
+
+  - name: mtp_k4
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
+
+  # Greedy comparability point (suite convention; GLM-5.2 numbers are greedy).
+  - name: mtp_k4_greedy
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
+    eval: {temperature: 0.0, top_p: 1.0}

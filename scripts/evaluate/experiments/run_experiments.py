@@ -257,6 +257,13 @@ def build_eval_command(
         ):
             if evalcfg.get(key) is not None:
                 cmd += [flag, str(evalcfg[key])]
+        # Arbitrary request fields (reasoning effort / thinking switches via
+        # chat_template_kwargs, ...): a dict in the YAML or a JSON string.
+        extra_body = evalcfg.get("extra_body")
+        if extra_body:
+            if not isinstance(extra_body, str):
+                extra_body = json.dumps(extra_body)
+            cmd += ["--extra-body", extra_body]
     return cmd
 
 

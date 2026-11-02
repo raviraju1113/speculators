@@ -21,6 +21,7 @@
 #   INPUT_JSONL=... OUTFILE=... bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 #   NODES=sc3-cp79,sc3-cp84 ...   # pin the two nodes instead of letting Slurm pick
 #   EXCLUDE_NODES=sc3-cp80 ...     # never place head or worker on these nodes
+#   EVAL_CONFIG=glm53-mtp-eval.yaml JOBNAME=glm53_mtp_eval TIME=1-00:00:00 bash ...   # eval mode (see below)
 #   LIMIT=300 TIME=2:00:00 OUTFILE=$PWD/data/glm53/smoke_b200pair.jsonl bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 set -euo pipefail
 
@@ -52,6 +53,11 @@ export REPO MODEL INPUT_JSONL OUTFILE REASONING_EFFORT TEMPERATURE TOP_P MAX_TOK
        CONCURRENCY TP PP KV_CACHE_DTYPE GPU_MEM_UTIL EXPERT_PARALLEL BLOCK_SIZE PORT RAY_PORT LOG_DIR \
        CONDA_ENV CONDA_BASE CONDA_ENVS_DIR CACHE_BASE JOIN_WAIT_MIN
 [ -n "${LIMIT:-}" ] && export LIMIT
+# EVAL_CONFIG=<yaml[,yaml]> (relative to scripts/evaluate/experiments): instead of the
+# regen client, run run_experiments.py on the pair (it launches vllm serve itself; the
+# yaml's extra_args must carry the PP2/ray/block-size flags). ONLY= narrows experiments.
+[ -n "${EVAL_CONFIG:-}" ] && export EVAL_CONFIG
+[ -n "${ONLY:-}" ] && export ONLY
 
 case "$REASONING_EFFORT" in low|high|max) ;; *) echo "REASONING_EFFORT must be low|high|max" >&2; exit 2;; esac
 SELF="$REPO/examples/train/glm53/sbatch_regen_glm53_b200pair.sh"
@@ -169,6 +175,21 @@ done
 [ "${HAVE:-0}" -ge "$WANT_GPUS" ] || { echo "[regen] ray has only ${HAVE:-0}/$WANT_GPUS GPUs:"; ray status --address "$RAY_ADDR" || true; exit 1; }
 echo "[regen] ray up with $HAVE GPUs"
 export RAY_ADDRESS="$RAY_ADDR"   # without this vLLM starts its own local Ray (8 GPUs) instead of joining the pair
+
+if [ -n "${EVAL_CONFIG:-}" ]; then
+    echo "[eval] run_experiments.py on the pair: configs=$EVAL_CONFIG only=${ONLY:-all} (RAY_ADDRESS=$RAY_ADDRESS)"
+    cd "$REPO/scripts/evaluate/experiments"
+    ONLY_ARGS=(); [ -n "${ONLY:-}" ] && ONLY_ARGS=(--only "$ONLY")
+    RC=0
+    for cfg in ${EVAL_CONFIG//,/ }; do
+        EVAL_LOG="$LOG_DIR/eval_pair_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID}.log"
+        echo "[eval] $cfg -> $EVAL_LOG"
+        python run_experiments.py --config "$cfg" --port "$PORT" "${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"}" 2>&1 | tee -a "$EVAL_LOG"
+        RC=${PIPESTATUS[0]}
+    done
+    echo "[eval] done rc=$RC"
+    exit "$RC"
+fi
 
 # --block-size 64: with PP the two stages auto-picked different KV block sizes
 # (FLASHINFER_MLA_SPARSE -> 32 on stage 1, DEEPSEEK_V32_INDEXER -> 64 on stage 0)

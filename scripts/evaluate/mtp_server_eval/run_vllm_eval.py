@@ -262,6 +262,14 @@ def main():
         help="per-request sampling seed (seed + repeat index); unset = nondeterministic",
     )
     ap.add_argument(
+        "--extra-body",
+        type=json.loads,
+        default=None,
+        help="JSON merged into every chat request, e.g. "
+        "'{\"chat_template_kwargs\": {\"reasoning_effort\": \"max\"}}' (vLLM "
+        "reasoning effort / thinking switches). Explicit --top-p/--top-k win over it.",
+    )
+    ap.add_argument(
         "--repeats",
         type=int,
         default=1,
@@ -280,7 +288,8 @@ def main():
     print(
         f"server={args.base_url}  model={model}  spec_decoding={'on' if spec_on else 'off/unknown'}  "
         f"max_tokens={args.max_tokens}  temperature={args.temperature}  "
-        f"top_p={args.top_p}  top_k={args.top_k}  seed={args.seed}  repeats={args.repeats}"
+        f"top_p={args.top_p}  top_k={args.top_k}  seed={args.seed}  repeats={args.repeats}  "
+        f"extra_body={json.dumps(args.extra_body) if args.extra_body else None}"
     )
     if not spec_on:
         print(
@@ -315,7 +324,10 @@ def main():
         ttfts = []
         for rep in range(args.repeats):
             for s in samples:
-                sampling = {"top_p": args.top_p, "top_k": args.top_k}
+                sampling = dict(args.extra_body or {})
+                for key, val in (("top_p", args.top_p), ("top_k", args.top_k)):
+                    if val is not None:
+                        sampling[key] = val
                 if args.seed is not None:
                     sampling["seed"] = args.seed + rep
                 try:
