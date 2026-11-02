@@ -1003,6 +1003,16 @@ built to re-test cross-node TP16 on a B200 pair; if that works, bf16 pairs becom
 full suite. New-env gotcha: apply the FIPS OpenSSL swap (build script step 5) or `vllm serve`
 aborts with rc=-6 on sc3-cp nodes.
 
+**Cross-node verdict (2026-11-02 15:50, Gemma-4-31B-it smoke on vLLM 0.33, 3-min CPU-group
+timeout, `smoke-gemma4-{tp16,pp2}-v033.yaml`):** TP8×PP2 across a B200 pair **works** (server
+healthy, eval ran, KV 1.68M tokens); **TP16 across the pair fails** in `RayWorkerProc.initialize_worker`
+exactly like GLM-5.3 on 0.28/0.33, while a plain two-process torch Gloo all-gather between the same
+two nodes passes in ~1 s. So cross-node *tensor* parallelism is what vLLM's Ray executor cannot do
+here; pipeline parallelism is fine. Consequences: the native-MTP baseline can run on PP2 pairs with
+vLLM 0.33 (its GLM-5.3 MTP goes through the DeepSeek-V3.2 MTP class, which has `SupportsPP`);
+DFlash2 still needs a single node (aux hidden states). c131 freed early (chenw's job ended), so
+job 15171937 (bf16, single node, both baselines) started 14:48 — results ~midnight.
+
 Tooling added for this (commit 0dd70a6): `run_vllm_eval.py --extra-body` /
 yaml `eval.extra_body` (passes `chat_template_kwargs.reasoning_effort` on every request);
 pair launcher `EVAL_CONFIG=`/`ONLY=` mode.
