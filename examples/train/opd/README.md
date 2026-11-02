@@ -146,6 +146,14 @@ taken and GLM regen has priority — never touched), chained: arm **c**
 rows/round) job 15197038, then arm **b** `opd_paper16k` (OPD, no replay) job
 15204707.
 
+*Moved off c127 (15:40):* arm c round 0 finished on c127 (checkpoints/34, pool acceptance
+0.441 at k=12); per request the chain now runs on the B200 pool inside `sn50-hdi-0`
+(the preset needs `--reservation`, added with `scontrol update`): arm **c** job 15215073 on
+sc3-cp88 (resumed at round 1, same run dir), then **a** 15215074, then **b** 15215075
+(`afterany` chain). Note: a second copy of arm c (15214442, submitted 15:37, pinned to c127)
+started the moment the original was cancelled and was cancelled again — two jobs on one run
+dir would corrupt `rounds/r1`; it had not produced rollouts yet.
+
 *Arm b1, an accident worth keeping (15:05):* the first arm-b job ran with the
 paper's **λ_rej = 1** — the preset never set it and the driver default is 1.0
 (v2 had passed 0.05 explicitly; `run_rounds.sh` now defaults to 0.05). One
