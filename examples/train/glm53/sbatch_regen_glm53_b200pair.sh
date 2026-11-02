@@ -74,13 +74,15 @@ if [ -z "${ROLE:-}" ]; then
             --gres="gpu:${GPUTYPE:-b200m180}:8" --cpus-per-task="${CPU:-64}" --mem="${MEM:-500G}" --exclusive --time="$TIME")
     # EXCLUDE_NODES=sc3-cp80,... keeps known-bad nodes (e.g. NVLink faults) out of both jobs
     [ -n "${EXCLUDE_NODES:-}" ] && COMMON+=(--exclude="$EXCLUDE_NODES")
+    NNODES=$(( TP * PP / GPUS_PER_NODE ))
+    [ "$NNODES" -ge 1 ] || { echo "TP*PP must be >= GPUS_PER_NODE" >&2; exit 2; }
     NODE_ARR=()
     [ -n "${NODES:-}" ] && IFS=, read -r -a NODE_ARR <<< "$NODES"
-    [ "${#NODE_ARR[@]}" -eq 0 ] || [ "${#NODE_ARR[@]}" -eq "$PP" ] || { echo "NODES must list $PP nodes" >&2; exit 1; }
-    echo "[submit] pair $PAIR_TAG: $PP nodes${NODES:+ pinned to $NODES}, rendezvous $ADDR_FILE"
+    [ "${#NODE_ARR[@]}" -eq 0 ] || [ "${#NODE_ARR[@]}" -eq "$NNODES" ] || { echo "NODES must list $NNODES nodes" >&2; exit 1; }
+    echo "[submit] pair $PAIR_TAG: $NNODES nodes (TP=$TP PP=$PP)${NODES:+ pinned to $NODES}, rendezvous $ADDR_FILE"
     [ -n "${DRY_RUN:-}" ] && { printf '[dry-run] sbatch '; printf '%q ' "${COMMON[@]}"; echo "... $SELF"; exit 0; }
     WORKER_JOBIDS=""
-    for i in $(seq 1 $((PP - 1))); do
+    for i in $(seq 1 $((NNODES-1))); do
         PIN=(); [ "${#NODE_ARR[@]}" -gt 0 ] && PIN=(--nodelist="${NODE_ARR[$i]}")
         jid=$(ROLE=worker PAIR_TAG="$PAIR_TAG" ADDR_FILE="$ADDR_FILE" sbatch --parsable --export=ALL "${COMMON[@]}" "${PIN[@]}" \
               --job-name="${JOBNAME}_w" --output="$LOG_DIR/${JOBNAME}_worker_%j.out" "$SELF")
