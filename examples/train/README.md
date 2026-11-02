@@ -867,6 +867,36 @@ Lessons / changes:
 - Operational: check `squeue` for the expected 7 jobs whenever looking at progress; a pair that
   vanished early with a `Done: ok=<small> errors=<huge>` line in its head `.out` is this failure mode.
 
+### 9.w GLM-5.3 native-MTP baseline (GPU, vLLM) — launched 2026-11-02 09:33
+
+Purpose: the acceptance-length baseline the DFlash2 draft is measured against, and a
+GLM-5.3 counterpart to Chen's GLM-5.2 native-MTP table (`glm52-eval.yaml`, greedy k=5:
+AIME 4.54 / GPQA 3.33 / LCB 3.90 accept_len). The SambaCloud GLM-5.3 endpoint
+(`api.sambanova.ai`, model `GLM-5.3`, ~70 TPS at release) only exposes throughput
+fields in `usage`, not acceptance, so acceptance has to come from vLLM `/metrics`.
+
+| | |
+|---|---|
+| config | `scripts/evaluate/experiments/glm53-mtp-eval.yaml` |
+| hardware | B200 pair, TP8×PP2 over Ray (same launcher as regen, `EVAL_CONFIG=` mode); bf16 weights + KV |
+| job | worker 15113815 / head 15113816 (`glm53_mtp_eval`, 16 h, `EXCLUDE_NODES=sc3-cp80`) |
+| benchmarks | aime (30), gpqa (50 of 198), livecodebench (50 of 1055); seed 42, same draw as glm52-eval |
+| sampling | effort **max**, T 1.0, top-p 0.95 (= data-gen / serving regime), max_tokens 4096 |
+| experiments | `baseline`, `mtp_k2`, `mtp_k4` (serving team's operating points), `mtp_k4_greedy` (suite convention, comparable to GLM-5.2) |
+| results | `scripts/evaluate/experiments/results/glm53-mtp-eval/<exp>/mtp_eval_summary.json`; log `data/glm53/logs/eval_pair_*_15113816.log` |
+
+Why k=2/4 only: GLM-5.3 has one MTP layer (`num_nextn_predict_layers=1`), which vLLM
+applies recursively for any k, so 3 and 5 are equally valid; 2 and 4 are the points the
+serving side asked for. k=3 is one extra ~1.5 h experiment entry if the curve is wanted.
+Why not greedy only: acceptance moves with temperature and reasoning depth, and the draft
+will be deployed at the sampling settings above, so that is the primary number; the greedy
+entry exists only for cross-model comparability. With `max_tokens 4096` and max effort
+most replies hit the cap, so acceptance is over the first 4k reply tokens.
+
+Tooling added: `run_vllm_eval.py --extra-body` / yaml `eval.extra_body` (passes
+`chat_template_kwargs.reasoning_effort`), pair launcher `EVAL_CONFIG=` mode. tok/s from
+this run is a PP2 pair series — compare only within the run.
+
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
 pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
