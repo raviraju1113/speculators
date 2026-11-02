@@ -140,11 +140,15 @@ built (16,000 = 972 GSM8K / 3,200 MATH / 6,828 AoPS / 5,000 CodeAlpaca after
 the nemo782k filter removed 87% of GSM8K-train and 57% of MATH-train). Two
 arms running, 2 rounds × 16k each, eval after every round:
 all three on sc3-c127 (8×H200, the one idle node in the reservation; every
-B200 is taken and GLM regen has priority — never touched): arm **a**
-`opd_paper16k_replay` (OPD + 8k replay rows/round) job 15182106, then arm
-**b** `opd_paper16k` (OPD, no replay) job 15190244, then arm **c**
-`opd_paper16k_assft` (ordinary loss on the same rollouts) job 15190245,
-chained. Evals on idle 4×A100 nodes (accept_len is hardware-invariant; sc-c96
+B200 is taken and GLM regen has priority — never touched), chained: arm
+**b** `opd_paper16k` (OPD, no replay) job 15190244 (running since 14:13),
+then arm **c** `opd_paper16k_assft` (ordinary loss on the same rollouts) job
+15190245, then arm **a** `opd_paper16k_replay` (OPD + 8k replay rows/round)
+job 15197038. Arm a's first attempt (15182106) hung at step 0: the replay term
+had a data-dependent branch, so ranks with/without replay blocks emitted
+different metric keys and the per-key `dist.reduce` desynced (NCCL watchdog
+timeout). Fixed branch-free (commit 384feb2); its round-0 rollouts are
+reused. Evals on idle 4×A100 nodes (accept_len is hardware-invariant; sc-c96
 is excluded: its driver, CUDA 12.7, is too old for the eval env). Results land
 in `results/gemma4-31b-dspark-opd-v3`.
 
