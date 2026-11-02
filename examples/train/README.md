@@ -1014,6 +1014,21 @@ vLLM 0.33 (its GLM-5.3 MTP goes through the DeepSeek-V3.2 MTP class, which has `
 DFlash2 still needs a single node (aux hidden states). c131 freed early (chenw's job ended), so
 job 15171937 (bf16, single node, both baselines) started 14:48 — results ~midnight.
 
+**First DFlash2 numbers (c131, 15:45–16:05, sampled regime) and why they are low.** After 8,807
+drafts at T 1.0 / top-p 0.95: accept_length **1.37**, accept_rate 0.05 (card: 4.2–6.0 greedy).
+Cause, from vLLM 0.28 `v1/sample/rejection_sampler.py`: DFlash/EAGLE-style proposers hand the
+sampler token ids only (`draft_probs=None`), and the kernel then sets `draft_prob = 1`, so a
+draft token is accepted with probability **p_target(draft token)** under the request's
+temperature/top-p. At T=1 on max-effort reasoning text that is the target's own confidence in the
+draft's argmax, which chains to ~1.4 accepted tokens per step; at T=0 it is 1 whenever the argmax
+matches. This is the real serving behaviour of the stack, not an eval artefact, so the sampled-regime
+numbers are the ones that predict speedup at the data-gen settings, and the greedy numbers are the
+ones comparable to the cards. Native MTP goes through the same rule unless its proposer supplies
+probabilities — `mtp_k4` vs `dflash2_k7` in the same run settles that. Job 15171937 was cancelled
+at 16:05 and resubmitted as **15220086** with the greedy anchors first
+(`dflash2_k7_greedy`, `mtp_k4_greedy`, then the sampled pairs, baseline, k-variants); the partial
+sampled DFlash2 results are kept in `results/glm53-short-v028-b300/dflash2_k7_partial_1st_attempt/`.
+
 Tooling added for this (commit 0dd70a6): `run_vllm_eval.py --extra-body` /
 yaml `eval.extra_body` (passes `chat_template_kwargs.reasoning_effort` on every request);
 pair launcher `EVAL_CONFIG=`/`ONLY=` mode.
