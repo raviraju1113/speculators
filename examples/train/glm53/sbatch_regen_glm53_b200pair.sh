@@ -90,9 +90,10 @@ if [ -z "${ROLE:-}" ]; then
         WORKER_JOBIDS="${WORKER_JOBIDS:+$WORKER_JOBIDS,}$jid"
     done
     PIN=(); [ "${#NODE_ARR[@]}" -gt 0 ] && PIN=(--nodelist="${NODE_ARR[0]}")
+    DEP=(); [ -n "$WORKER_JOBIDS" ] && DEP=(--dependency="after:${WORKER_JOBIDS//,/:}")   # single-node (NNODES=1): no workers, no dependency
     jid=$(ROLE=head PAIR_TAG="$PAIR_TAG" ADDR_FILE="$ADDR_FILE" WORKER_JOBIDS="$WORKER_JOBIDS" sbatch --parsable --export=ALL "${COMMON[@]}" "${PIN[@]}" \
-          --dependency="after:${WORKER_JOBIDS//,/:}" --job-name="$JOBNAME" --output="$LOG_DIR/${JOBNAME}_head_%j.out" "$SELF")
-    echo "[submit] head -> job $jid (starts after worker(s) $WORKER_JOBIDS start; cancels them on exit)"
+          "${DEP[@]+"${DEP[@]}"}" --job-name="$JOBNAME" --output="$LOG_DIR/${JOBNAME}_head_%j.out" "$SELF")
+    echo "[submit] head -> job $jid${WORKER_JOBIDS:+ (starts after worker(s) $WORKER_JOBIDS start; cancels them on exit)}"
     exit 0
 fi
 
