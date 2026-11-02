@@ -210,6 +210,11 @@ PY
   # per step (pilot 12492724); 2e-5 at ACCUM 4 was stable but moved nothing in
   # 91 steps. Default 5e-5 for the next run; scale with the effective batch.
   export WARMUP_RATIO="${WARMUP_RATIO:-0.05}" LR="${LR:-5e-5}" OPD_REPLAY_WEIGHT="${OPD_REPLAY_WEIGHT:-1.0}"
+  # lambda_rej 0.05 is the v2 recipe (README.md §3): the paper's 1.0 made the
+  # ~18-nat rejected term dominate and lost acceptance every round (v1 on
+  # sci16k; v3 arm b on paper16k, 0.441 -> 0.395 in one round, 2026-11-02 --
+  # the preset did not set it and the driver default is 1.0).
+  export OPD_LAMBDA_REJ="${OPD_LAMBDA_REJ:-0.05}" OPD_REJ_KL="${OPD_REJ_KL:-reverse}"
   export MAX_ANCHORS="${MAX_ANCHORS:-512}" CHECKPOINT_FREQ=1 SAVE_BEST=0 TRAIN_DATA_RATIO="${TRAIN_DATA_RATIO:-0.98}"
   export ON_GENERATE=delete VLLM_TP=1 VLLM_DP="${VLLM_DP:-1}" TRAIN_GPUS_N="${TRAIN_GPUS_N:-1}"
   export GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}" WANDB_MODE="${WANDB_MODE:-offline}" WANDB_PROJECT=gemma4-dspark-opd
