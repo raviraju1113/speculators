@@ -29,8 +29,14 @@ CONFIG="${CONFIG:-gemma4-31b-dspark-conv-ep25.yaml}"
 CFG="$REPO/scripts/evaluate/experiments/$CONFIG"
 [ -f "$CFG" ] || { echo "!! no such config: $CFG" >&2; exit 2; }
 
-# Gate every draft the config will serve.
-for d in $(python -c "import yaml,sys; [print(e['draft']) for e in yaml.safe_load(open(sys.argv[1]))['experiments'] if e.get('draft')]" "$CFG" | sort -u); do
+# Gate every draft the config will serve (only the ONLY= subset when set: a
+# multi-arm yaml lists checkpoints that do not exist yet).
+for d in $(ONLY="${ONLY:-}" python -c "
+import os, yaml, sys
+want = {x.strip() for x in os.environ['ONLY'].split(',') if x.strip()}
+for e in yaml.safe_load(open(sys.argv[1]))['experiments']:
+    if e.get('draft') and (not want or e['name'] in want):
+        print(e['draft'])" "$CFG" | sort -u); do
   [ -d "$d" ] || { echo "!! draft checkpoint missing: $d (training not finished?)" >&2; exit 3; }
   check_conv_servable "$d" || exit $?
 done
