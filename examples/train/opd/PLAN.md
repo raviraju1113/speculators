@@ -145,6 +145,24 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
 
 ## Log
 - 2026-10-21: branch created; skill + plan written; Path A chosen.
+- 2026-11-02 **track A (OPD retry) built**, see README.md §6 for the plan. (a)
+  Pool from the paper's domains: `build_opd_pool.py --gsm8k/--math/--numina
+  (aops_forum)/--codealpaca --mix gsm8k=2000,math=5000,aops=4000,codealpaca=5000`
+  -> `data/opd_prompts/paper16k.jsonl`, hash-disjoint from nemo782k; NuminaMath's
+  amc_aime source never used (AIME is our eval). (b) SFT replay:
+  `rollouts_to_dataset.py --replay-dataset <nemo782k> --replay-rows N
+  --replay-anchor-stride 4` appends N SFT rows whose anchors carry
+  `opd_accepted = -2`; `compute_metrics` trains those blocks with the ordinary
+  DSpark loss (`--opd-replay-weight`, default 1) and the OPD terms skip them
+  (r < 0). 8k replay rows ~ 1.4M anchors vs ~1.8M OPD anchors per 16k round.
+  (c) `--as-sft`: the paper's training-data control (same rollouts and
+  anchors, ordinary loss). (d) `run_rounds.sh` reuses an existing
+  `rounds/r<r>/rollouts.jsonl` so ablation arms share round-0 rollouts.
+  Unit test `test_compute_metrics_replay_blocks_use_ordinary_loss`; converter
+  smoke-tested on 200 v2 rollouts + 100 replay rows (176 anchors/replay row).
+  Arms (2 rounds x 16k each, eval after each round, yaml
+  `gemma4-31b-dspark-opd-v3.yaml`): a `opd_paper16k_replay` (OPD + 8k replay),
+  b `opd_paper16k` (OPD, no replay), c `opd_paper16k_assft` (control).
 - 2026-10-28 **full run v2 finished: +22% paired rollout acceptance, monotone.**
   Job 14101064 (`opd_full_blk12_sci16k_v2`, sc3-cp84, 8 x B200, 2h15m for
   8 rounds; λ_rej 0.05 reverse KL, OOV rejected slots masked, LR 5e-5 cosine,
