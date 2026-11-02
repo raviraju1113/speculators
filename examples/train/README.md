@@ -867,35 +867,84 @@ Lessons / changes:
 - Operational: check `squeue` for the expected 7 jobs whenever looking at progress; a pair that
   vanished early with a `Done: ok=<small> errors=<huge>` line in its head `.out` is this failure mode.
 
-### 9.w GLM-5.3 native-MTP baseline (GPU, vLLM) — launched 2026-11-02 09:33
+### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
-Purpose: the acceptance-length baseline the DFlash2 draft is measured against, and a
-GLM-5.3 counterpart to Chen's GLM-5.2 native-MTP table (`glm52-eval.yaml`, greedy k=5:
-AIME 4.54 / GPQA 3.33 / LCB 3.90 accept_len). The SambaCloud GLM-5.3 endpoint
-(`api.sambanova.ai`, model `GLM-5.3`, ~70 TPS at release) only exposes throughput
-fields in `usage`, not acceptance, so acceptance has to come from vLLM `/metrics`.
+**Goal.** Establish the number the DFlash2 draft must beat: GLM-5.3 served with its own
+built-in MTP head. Two baselines serve different purposes:
 
-| | |
-|---|---|
-| config | `scripts/evaluate/experiments/glm53-mtp-eval.yaml` |
-| hardware | B200 pair, TP8×PP2 over Ray (same launcher as regen, `EVAL_CONFIG=` mode); bf16 weights + KV |
-| job | worker 15113815 / head 15113816 (`glm53_mtp_eval`, 16 h, `EXCLUDE_NODES=sc3-cp80`) |
-| benchmarks | aime (30), gpqa (50 of 198), livecodebench (50 of 1055); seed 42, same draw as glm52-eval |
-| sampling | effort **max**, T 1.0, top-p 0.95 (= data-gen / serving regime), max_tokens 4096 |
-| experiments | `baseline`, `mtp_k2`, `mtp_k4` (serving team's operating points), `mtp_k4_greedy` (suite convention, comparable to GLM-5.2) |
-| results | `scripts/evaluate/experiments/results/glm53-mtp-eval/<exp>/mtp_eval_summary.json`; log `data/glm53/logs/eval_pair_*_15113816.log` |
+| baseline | what it measures | where | status |
+|---|---|---|---|
+| **GPU / vLLM native MTP** (this section) | acceptance length & rate per benchmark, plus relative tok/s vs no-spec | B200 pair, TP8×PP2, bf16 | **running**, jobs 15113815 (worker, sc3-cp85) / 15113816 (head, sc3-cp87) |
+| SambaCloud `GLM-5.3` API (`api.sambanova.ai`, ~70 TPS at release) | production throughput only: TPS after first token, TTFT. The API exposes no draft/acceptance counters | login node, needs an API key | not started (no key in the environment yet) |
 
-Why k=2/4 only: GLM-5.3 has one MTP layer (`num_nextn_predict_layers=1`), which vLLM
-applies recursively for any k, so 3 and 5 are equally valid; 2 and 4 are the points the
-serving side asked for. k=3 is one extra ~1.5 h experiment entry if the curve is wanted.
-Why not greedy only: acceptance moves with temperature and reasoning depth, and the draft
-will be deployed at the sampling settings above, so that is the primary number; the greedy
-entry exists only for cross-model comparability. With `max_tokens 4096` and max effort
-most replies hit the cap, so acceptance is over the first 4k reply tokens.
+The draft's acceptance is compared against the GPU row; the cloud row is the serving
+target. If the RDU deployment runs MTP, its acceptance can only be read from inside the
+RDU pipeline (Chen's `scripts/evaluate/rdu_mtp_eval/`, needs a GLM-5.3 PEF) — ask the
+serving team.
 
-Tooling added: `run_vllm_eval.py --extra-body` / yaml `eval.extra_body` (passes
-`chat_template_kwargs.reasoning_effort`), pair launcher `EVAL_CONFIG=` mode. tok/s from
-this run is a PP2 pair series — compare only within the run.
+**What is being run.** Config `scripts/evaluate/experiments/glm53-mtp-eval.yaml`,
+driven by `run_experiments.py` (one vLLM server launch per experiment, then the
+sequential acceptance eval reading `vllm:spec_decode_*` from `/metrics`).
+
+| benchmark | prompts | note |
+|---|---|---|
+| AIME | 30 (all) | math, long reasoning |
+| GPQA Diamond | 50 of 198 | science QA |
+| LiveCodeBench | 50 of 1,055 | code |
+
+Same files and seed-42 draw as Chen's GLM-5.2 run (`glm52-eval.yaml`), so the two
+models are directly comparable on the greedy row.
+
+| experiment | speculation | sampling | why |
+|---|---|---|---|
+| `baseline` | none | effort max, T 1.0, top-p 0.95 | speedup denominator |
+| `mtp_k2` | native MTP, k=2 | same | serving team's operating point |
+| `mtp_k4` | native MTP, k=4 | same | serving team's operating point |
+| `mtp_k4_greedy` | native MTP, k=4 | greedy (T 0) | suite convention; comparable to GLM-5.2 (greedy k=5: AIME 4.54 / GPQA 3.33 / LCB 3.90 accept_len) |
+
+Fixed for all: bf16 weights **and** bf16 KV cache (what serving uses; fp8 KV would
+inflate nothing but is not the deployed config), `max_model_len 32768`,
+`max_tokens 4096` (suite convention; max-effort replies mostly hit the cap, so acceptance
+is over the first 4k reply tokens), expert parallel on.
+
+**Why these settings.**
+- *k = 2 and 4 only.* GLM-5.3 ships one MTP layer (`num_nextn_predict_layers = 1`);
+  vLLM applies it recursively for any k, so 3 and 5 are equally valid. 2 and 4 are the
+  points the serving side asked for. k=3 (or 5) is one more experiment entry, ~1.5–2 h.
+- *Sampling matches data generation / serving* (effort max, T 1.0, top-p 0.95, bf16):
+  acceptance moves with temperature and with reasoning depth, and the draft is trained on
+  and deployed in that regime, so that is the primary number. The greedy entry exists only
+  for cross-model comparability.
+- *Hardware.* GLM-5.3 bf16 is 1.5 TB: one B300 node or a B200 pair. c130 is generating
+  shard A until ~Nov 9 and c131 is shared with HDI, so the eval runs on a B200 pair with
+  the regen launcher's `EVAL_CONFIG=` mode (Ray TP8×PP2). tok/s from a PP2 pair is a
+  separate series: compare speedups within this run, not absolute tok/s against the B300
+  node or the cloud.
+
+**Time.** Sequential (concurrency 1) by construction. 130 prompts × ~4k tokens per
+experiment; ~15 min model load + ~2–3 h for `baseline`, ~1.5–2 h for each MTP entry
+→ about 7–9 h total, i.e. done the evening of Nov 2 (wall limit 16 h).
+
+**Outputs.** `scripts/evaluate/experiments/results/glm53-mtp-eval/<experiment>/mtp_eval_summary.json`
+(per benchmark: `accept_length`, `accept_rate`, `decode_tok_s`, `e2e_tok_s`, `mean_ttft_s`,
+`n`), `server.log` next to it; runner log `data/glm53/logs/eval_pair_*_15113816.log`.
+Table: `python scripts/evaluate/experiments/tabulate_results.py --dir results/glm53-mtp-eval --baseline baseline`.
+
+**Follow-ups (not started).**
+1. Broad suite: Chen's 25-benchmark list (`gemma4-31b-full.yaml` on
+   `origin/feature/data-prep-and-eval-scripts`; 50 samples each, ~1,250 prompts). All data
+   files are on sc3 except `bfcl`. Same pair, ~1 day per sampling setting.
+2. Long context: AA-LCR bins 1k…112k (`sbatch_sc3_lcr_bins.sh` needs a GLM variant: no
+   draft dir, `method: mtp`, pair serving).
+3. Cloud TPS baseline on the same prompts once an API key is available
+   (`run_vllm_eval.py` needs an auth header + SambaNova `usage` fields; ~7 h at 70 TPS).
+   Re-run after the serving team's planned improvements.
+4. When the DFlash2 draft exists: add it as an experiment entry in the same yaml
+   (`draft: <ckpt>`, `method: dflash2`) and re-run — same prompts, same settings, same pair.
+
+Tooling added for this (commit 0dd70a6): `run_vllm_eval.py --extra-body` /
+yaml `eval.extra_body` (passes `chat_template_kwargs.reasoning_effort` on every request);
+pair launcher `EVAL_CONFIG=`/`ONLY=` mode.
 
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
