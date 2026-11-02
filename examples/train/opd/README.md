@@ -139,12 +139,13 @@ DFlash2 draft for GLM-5.3. Two tracks; **A first, B only on spare B200 nodes.**
 built (16,000 = 972 GSM8K / 3,200 MATH / 6,828 AoPS / 5,000 CodeAlpaca after
 the nemo782k filter removed 87% of GSM8K-train and 57% of MATH-train). Two
 arms running, 2 rounds × 16k each, eval after every round:
-all on sc3-c127 (8×H200, the one idle node in the reservation; every B200 is
-taken and GLM regen has priority — never touched), chained: arm **c**
-`opd_paper16k_assft` (ordinary loss on the same rollouts) job 15190245
-(running since 15:05), then arm **a** `opd_paper16k_replay` (OPD + 8k replay
-rows/round) job 15197038, then arm **b** `opd_paper16k` (OPD, no replay) job
-15204707.
+chained on one node (GLM regen has priority — never touched): arm **c**
+`opd_paper16k_assft` (ordinary loss on the same rollouts) job 15215073, then
+arm **a** `opd_paper16k_replay` (OPD + 8k replay rows/round) job 15215074,
+then arm **b** `opd_paper16k` (OPD, no replay) job 15215075. First attempts
+ran on the idle H200 sc3-c127 (round-0 rollouts + ckpt 34 of arm c done
+there); at 15:38 the chain was cancelled and resubmitted on the B200
+sc3-cp88 when it freed, where c resumed at round 1.
 
 *Moved off c127 (15:40):* arm c round 0 finished on c127 (checkpoints/34, pool acceptance
 0.441 at k=12); per request the chain now runs on the B200 pool inside `sn50-hdi-0`
