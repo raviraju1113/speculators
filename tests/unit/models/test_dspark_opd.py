@@ -120,3 +120,32 @@ def test_select_given_anchors_subsample_and_pad():
     assert valid.sum() == 4 and sorted(anchors[valid].tolist()) == [12, 20, 33, 40]
     anchors, valid = select_given_anchors(anchor_mask, loss_mask, num_anchors=2, block_size=block)
     assert valid.sum() == 2 and set(anchors[valid].tolist()) <= {12, 20, 33, 40}
+
+
+def test_compute_metrics_replay_blocks_use_ordinary_loss():
+    """opd_accepted == -2 marks SFT-replay blocks: excluded from the OPD terms,
+    trained with the ordinary DSpark loss, added with opd_replay_weight."""
+    from speculators.losses.eager import kl_div_loss
+
+    torch.manual_seed(0)
+    block, nb, v = 4, 3, 20
+    logits = torch.randn(1, nb * block, v)
+    targets = torch.softmax(torch.randn(1, nb * block, v), -1)
+    loss_mask = torch.ones(1, nb * block)
+    cfg = {"kl_div": (kl_div_loss, 1.0)}
+    common = dict(confidence_logits=None, loss_mask=loss_mask, block_size=block,
+                  loss_config=cfg, tv_loss_fn=tv_loss, opd_lambda_rej=0.05)
+    # block 0: OPD r=2, block 1: replay, block 2: OPD r=1
+    acc = torch.tensor([2, -2, 1])
+    l_mix, m_mix = compute_metrics(logits, targets, opd_accepted=acc, **common)
+    l_opd, m_opd = compute_metrics(logits, targets, opd_accepted=torch.tensor([2, -1, 1]), **common)
+    l_w0, _ = compute_metrics(logits, targets, opd_accepted=acc, opd_replay_weight=0.0, **common)
+    assert m_mix["opd_replay_blocks_sum"] == 1 and m_opd["opd_replay_blocks_sum"] == 0
+    assert torch.allclose(m_mix["opd_acc_loss_sum"], m_opd["opd_acc_loss_sum"])  # OPD terms untouched
+    assert m_mix["opd_replay_loss_sum"] > 0 and m_opd["opd_replay_loss_sum"] == 0
+    assert torch.allclose(l_w0, l_opd)  # weight 0: replay adds nothing
+    assert torch.allclose(l_mix, l_opd + m_mix["opd_replay_loss_sum"])
+    # replay-only sequence: pure ordinary loss, no OPD slots
+    l_rep, m_rep = compute_metrics(logits, targets, opd_accepted=torch.tensor([-2, -2, -2]), **common)
+    assert m_rep["opd_acc_slots_sum"] == 0 and m_rep["opd_rej_slots_sum"] == 0
+    assert torch.allclose(l_rep, m_rep["opd_replay_loss_sum"])
