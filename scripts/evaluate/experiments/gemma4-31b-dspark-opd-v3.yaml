@@ -52,6 +52,12 @@ experiments:
     draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_replay/checkpoints/35
     num_speculative_tokens: 8
     speculative_config: {method: dspark}
+  # b1: arm b's first attempt, lambda_rej = 1 by accident (the launcher did not
+  # set it): one round on the in-domain pool, pool acceptance 0.441 -> 0.395.
+  - name: b1_34_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_lam1/checkpoints/34
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
   - name: b34_k12
     draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k/checkpoints/34
     num_speculative_tokens: 12
