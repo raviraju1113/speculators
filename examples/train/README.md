@@ -515,9 +515,11 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   recipe rehearsal for a GLM-5.3 DFlash2 draft.** Track A first — OPD retry
   on blk12 ep33 with the paper's math/code pool + SFT replay, two rounds,
   eval after each — **running since 2026-11-02 13:30**: arm a (replay) job
-  15197038 (first attempt 15182106 hung on a metric-key mismatch between
-  ranks, fixed), arm b (no replay) 15190244 running, arm c (ordinary-loss
-  control) 15190245, chained b → c → a on H200 sc3-c127 (every B200 is taken; GLM regen has
+  15197038, arm b (no replay) 15204707, arm c (ordinary-loss control)
+  15190245 running, chained c → a → b on H200 sc3-c127. Arm b's first
+  attempt ran at the paper's λ_rej=1 by accident and lost 0.046 pool
+  acceptance in one round (kept as arm b1, eval running); the preset now
+  pins λ_rej 0.05 (every B200 is taken; GLM regen has
   priority). Seed on the paper pool: accept_rate 0.441 vs 0.212 on the old
   science/chat pool. Status and results in `opd/README.md` §6. Track B on spare B200s — a full DFlash2
   draft on Gemma as the dress rehearsal of the GLM model class. Order and
