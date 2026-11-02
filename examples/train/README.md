@@ -510,9 +510,13 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   gained every round on the pool (paired rollout accept_rate at k=12 0.2117 →
   0.2573 over 8 rounds, ckpt 33 → 40; final ckpt 41) **and lost on every
   benchmark** (§6.5: accept_len −9…−18% at k=12). Verdict: not adopted as
-  stage 5. One round (ckpt 34) is already flat-to-negative. Diagnosis and
-  the plan for a retry (math/code pool like the paper's, SFT replay, two
-  rounds with an eval after each): `opd/README.md`.
+  stage 5. One round (ckpt 34) is already flat-to-negative. Diagnosis in
+  `opd/README.md`. **Plan (2026-11-02): the Gemma line now serves as the
+  recipe rehearsal for a GLM-5.3 DFlash2 draft.** Track A first — OPD retry
+  on blk12 ep33 with the paper's math/code pool + SFT replay, two rounds,
+  eval after each (in progress). Track B on spare B200s — a full DFlash2
+  draft on Gemma as the dress rehearsal of the GLM model class. Order and
+  estimates: `opd/README.md` §6.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 
 ## Historical

@@ -127,21 +127,36 @@ touch the domain problem.
 | STOP_ON_DROP guard on paired pool acceptance | never fired — pool acceptance is the wrong early-stop signal for this failure | keep, but add a benchmark check |
 | 8 rounds before the first benchmark eval | the loss was visible after round 1; 7 rounds wasted | no → eval after every round |
 
-## 6. Next steps (none started)
+## 6. Plan and order (decided 2026-11-02)
 
-1. **Rebuild the pool from the paper's domains**: GSM8K train, MATH, a
-   competition-math set (AoPS / NuminaMath), CodeAlpaca, ~16k prompts.
-   `scripts/opd/build_opd_pool.py` already hash-filters against nemo782k, so
-   overlap with Nemotron math/code is handled; add readers for the new sources.
-2. **SFT replay**: each round's dataset gets 25–50% nemo782k rows with the
-   ordinary SFT loss, so the draft keeps what it had. Addresses the forgetting
-   share (the GPQA drop).
-3. **Two rounds, benchmark eval after each** (the three benchmarks at k=12
-   and k=8 on B200, ~1.5 h per experiment), not eight on faith. ≈ 1 day on
-   8 B200.
+The Gemma DSpark line now exists to produce a recipe that transfers to a SOTA
+DFlash2 draft for GLM-5.3. Two tracks; **A first, B only on spare B200 nodes.**
+
+**Track A — OPD retry on blk12 ep33 (in progress).** Settles the OPD recipe
+(pool domain, replay, rounds, λ_rej), which transfers to any draft class.
+
+1. **Pool from the paper's domains**: GSM8K train, MATH train, NuminaMath
+   AoPS, CodeAlpaca, 16k prompts in the paper's 2k/5k/4k/5k mix; AMC/AIME
+   sources excluded (our eval); hash-filtered against nemo782k by
+   `scripts/opd/build_opd_pool.py`. Sources downloaded to
+   `datasets/opd_pool_raw/{gsm8k,hendrycks_math,numina_cot,codealpaca}`.
+2. **SFT replay**: each round's dataset also carries nemo782k rows trained
+   with the ordinary DSpark loss (encoded as replay anchors, `opd_accepted =
+   -2`), so the draft keeps its SFT distribution. Addresses the forgetting
+   share of the drop (GPQA).
+3. **Two rounds, benchmark eval after each** (AIME/GPQA/LCB at k=12 and k=8
+   on B200), not eight on faith. ≈ 1 day on 8 B200.
 4. **The paper's own control**: continued SFT on the target's responses to
-   the same pool prompts, no OPD loss. If that also drops, the data is the
-   problem; if it holds and OPD drops, the objective is.
+   the same pool prompts, no OPD loss (`rollouts_to_dataset.py --as-sft`).
+   Separates "the data hurts" from "the objective hurts".
+
+**Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
+draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
+nothing we measured was on that class; a Gemma run is the cheap dress
+rehearsal. Train from scratch with the stage-4 schedule (block 8 → 12 warm
+start), compare with conv ep25 / blk12 ep33 at the same k, then port OPD.
+~12 days to an evaluated draft, ~17 with OPD, 8 B200. Needs a Gemma driver
+for the DFlash2 class and a vLLM serving path; both are reused for GLM.
 
 Bar to clear is unchanged (main README §0): beat blk12 ep33 at k=12 on
 AIME/GPQA/LCB with no loss at k=8. A realistic win is +0.3…+0.5 accept_len,
