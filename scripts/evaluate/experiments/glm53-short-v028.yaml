@@ -1,0 +1,77 @@
+# GLM-5.3 short set, second baseline: incoai's released DFlash2 draft vs native MTP,
+# both on vLLM 0.28 (DFlash2 needs >= 0.28; the first short run, glm53-mtp-eval.yaml,
+# was on vLLM 0.26). Same prompts, sampling and pair serving as glm53-mtp-eval.yaml.
+#
+#   CONDA_ENV=vllm028 EVAL_CONFIG=glm53-short-v028.yaml JOBNAME=glm53_short_v028 TIME=20:00:00 \
+#     EXCLUDE_NODES=sc3-cp80 bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
+#
+# Draft: incoai/GLM-5.3-DFlash2 (DFlash2DraftModel, 6 layers, hidden 6144, 2B params, block
+# size 8 -> 7 draft tokens/step, target layers [5,19,33,47,61,75] of 78; CC BY-NC-ND 4.0,
+# research/eval only). Card: GSM8K 5.94 vs MTP 5.12 accept_len, 2.2-3.4x vs AR at c=1 (SGLang).
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-bf16
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 32768
+  health_timeout: 3600
+  extra_args:
+    - --pipeline-parallel-size
+    - "2"
+    - --distributed-executor-backend
+    - ray
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: ./results/glm53-short-v028
+
+experiments:
+  # dflash2_k7 goes first so a DFlash2 serving problem shows up after one model load,
+  # not five hours in. Speedup tables: tabulate_results.py --baseline baseline.
+  - name: dflash2_k7                    # draft's native block (8 -> 7 drafts/step)
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+
+  - name: baseline                      # vLLM 0.28 denominator
+
+  - name: mtp_k4                        # cross-check against the 0.26 run
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
+
+  - name: dflash2_k4                    # same k as mtp_k4
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 4
+
+  - name: dflash2_k7_greedy             # comparability with the card's greedy numbers
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+    eval: {temperature: 0.0, top_p: 1.0}

@@ -1,0 +1,102 @@
+# GLM-5.3 full suite: Chen's 28-benchmark list (full-eval.yaml), both baselines
+# (native MTP, incoai DFlash2) on vLLM 0.28, data-gen/serving sampling.
+# 50 samples per benchmark (seed 42; Chen's RDU/GPU suite convention) -> ~1,330 prompts
+# per experiment. Sequential at ~4k tokens/reply: baseline ~18 h, MTP ~8 h, DFlash2 ~6 h
+# on one B200 pair -> run the experiments on separate pairs with ONLY=:
+#
+#   for e in baseline mtp_k2 mtp_k4 dflash2_k7; do
+#     ONLY=$e CONDA_ENV=vllm028 EVAL_CONFIG=glm53-full-eval.yaml JOBNAME=glm53_full_$e TIME=1-12:00:00 \
+#       EXCLUDE_NODES=sc3-cp80 bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
+#   done
+#   python scripts/evaluate/experiments/tabulate_results.py --dir results/glm53-full-eval --baseline baseline
+#
+# Data: all files under mtp_server_eval/data; aa-lcr (100 x ~95k-token prompts) and bfcl
+# copied from chenw's scratch 2026-11-02. The six SPEED-Bench categories humanities/math/
+# reasoning/roleplay/stem/summarization need NVIDIA's prepare.py + prepare_speedbench.py +
+# prepare_data.py (not yet materialised on sc3) — the evaluator skips a missing file.
+# max_model_len 131072 so aa-lcr fits (KV pool on a pair is 1.6M tokens).
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-bf16
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 131072
+  health_timeout: 3600
+  extra_args:
+    - --pipeline-parallel-size
+    - "2"
+    - --distributed-executor-backend
+    - ray
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks:
+    - gsm8k
+    - humaneval
+    - mbpp
+    - speed-coding
+    - speed-humanities
+    - speed-math
+    - speed-multilingual
+    - speed-rag
+    - speed-reasoning
+    - speed-roleplay
+    - speed-stem
+    - speed-summarization
+    - math500
+    - swe-bench-pro
+    - aa-lcr
+    - mt-bench
+    - speed-qa
+    - speed-writing
+    - aime26
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: ./results/glm53-full-eval
+
+experiments:
+  - name: baseline
+
+  - name: mtp_k2
+    speculative_config: {method: mtp, num_speculative_tokens: 2}
+
+  - name: mtp_k4
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
+
+  - name: dflash2_k7
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
