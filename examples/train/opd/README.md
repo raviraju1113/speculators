@@ -139,12 +139,23 @@ DFlash2 draft for GLM-5.3. Two tracks; **A first, B only on spare B200 nodes.**
 built (16,000 = 972 GSM8K / 3,200 MATH / 6,828 AoPS / 5,000 CodeAlpaca after
 the nemo782k filter removed 87% of GSM8K-train and 57% of MATH-train). Two
 arms running, 2 rounds × 16k each, eval after every round:
-all three on sc3-c127 (8×H200, the one idle node in the reservation; every
-B200 is taken and GLM regen has priority — never touched), chained: arm
-**b** `opd_paper16k` (OPD, no replay) job 15190244 (running since 14:13),
-then arm **c** `opd_paper16k_assft` (ordinary loss on the same rollouts) job
-15190245, then arm **a** `opd_paper16k_replay` (OPD + 8k replay rows/round)
-job 15197038. Arm a's first attempt (15182106) hung at step 0: the replay term
+all on sc3-c127 (8×H200, the one idle node in the reservation; every B200 is
+taken and GLM regen has priority — never touched), chained: arm **c**
+`opd_paper16k_assft` (ordinary loss on the same rollouts) job 15190245
+(running since 15:05), then arm **a** `opd_paper16k_replay` (OPD + 8k replay
+rows/round) job 15197038, then arm **b** `opd_paper16k` (OPD, no replay) job
+15204707.
+
+*Arm b1, an accident worth keeping (15:05):* the first arm-b job ran with the
+paper's **λ_rej = 1** — the preset never set it and the driver default is 1.0
+(v2 had passed 0.05 explicitly; `run_rounds.sh` now defaults to 0.05). One
+round on the in-domain pool took paired acceptance **0.441 → 0.395** and the
+guard stopped it. Same failure as v1 on sci16k (0.212 → 0.209 → 0.199), now
+on a pool where the seed is strong: the rejected term (~19 nats vs 0.05 for
+the accepted one, 13% of first-rejected slots out of vocab here vs 28% on
+sci16k) dominates at λ=1 whatever the pool. Its ckpt 34 is being evaluated as
+`b1_34_k12` (run dir `opd_paper16k_lam1`) to see what λ=1 does to the
+benchmarks in one round. Arm a's first attempt (15182106) hung at step 0: the replay term
 had a data-dependent branch, so ranks with/without replay blocks emitted
 different metric keys and the per-key `dist.reduce` desynced (NCCL watchdog
 timeout). Fixed branch-free (commit 384feb2); its round-0 rollouts are
