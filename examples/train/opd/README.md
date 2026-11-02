@@ -172,6 +172,16 @@ reused. Evals on idle 4×A100 nodes (accept_len is hardware-invariant; sc-c96
 is excluded: its driver, CUDA 12.7, is too old for the eval env). Results land
 in `results/gemma4-31b-dspark-opd-v3`.
 
+*Paired pool acceptance at k=12 (same 16k prompts, measured by the next
+round's rollout; seed 0.4413 / 5.30 accepted per step):*
+
+| arm | after round 0 (ckpt 34) | after round 1 (ckpt 35) |
+|---|---|---|
+| b1: OPD, λ_rej = 1 (accident) | 0.3952 / 4.74 — guard stopped it | – |
+| c: ordinary loss on the rollouts | **0.4691 / 5.63** (+6.3%) | pending |
+| a: OPD λ 0.05 + replay | pending | pending |
+| b: OPD λ 0.05, no replay | pending | pending |
+
 *Round 0 (seed blk12 ep33 on the paper pool, k=12):* accept_rate **0.4413**,
 5.30 accepted/step, 19% of blocks fully accepted — vs 0.2117 / 2.54 on the
 science/chat pool. The seed is already twice as good on math/code prompts,
