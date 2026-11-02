@@ -1,0 +1,70 @@
+# Draft-OPD v3 (track A, opd/README.md §6): seed blk12 ep33, k=12, the paper's
+# math/code pool (data/opd_prompts/paper16k.jsonl: 2k GSM8K, 5k MATH, 4k AoPS,
+# 5k CodeAlpaca, hash-disjoint from nemo782k), 2 rounds x 16k, eval after each.
+# Three arms, same round-0 rollouts:
+#   a  opd_paper16k_replay  OPD loss (lambda_rej 0.05, OOV mask) + 8k nemo782k replay rows/round
+#   b  opd_paper16k         OPD loss, no replay (isolates the pool change)
+#   c  opd_paper16k_assft   ordinary loss on the same rollouts (the paper's training-data control)
+# Reference (B200, same flags): blk12 ep33 k=12 7.20 / 4.58 / 5.79 acc_len,
+# 395 / 254 / 313 tok/s; k=8 6.15 / 4.30 / 5.21, 340 / 239 / 282. OPD v2 (sci16k)
+# after 1 round: 7.17 / 4.56 / 5.74.
+#   ONLY=a34_k12,a35_k12,a35_k8 CONFIG=gemma4-31b-dspark-opd-v3.yaml sbatch --reservation sn50-hdi-0 examples/train/sbatch_sc3_eval.sh
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+
+server:
+  host: 127.0.0.1
+  port: 8434
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--max-num-seqs"
+    - "32"
+    - "--max-num-batched-tokens"
+    - "16384"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 0
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-opd-v3
+
+experiments:
+  - name: a34_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_replay/checkpoints/34
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: a35_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_replay/checkpoints/35
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: a35_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_replay/checkpoints/35
+    num_speculative_tokens: 8
+    speculative_config: {method: dspark}
+  - name: b34_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k/checkpoints/34
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: b35_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k/checkpoints/35
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: c34_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_assft/checkpoints/34
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: c35_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_assft/checkpoints/35
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}

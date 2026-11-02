@@ -105,6 +105,9 @@ for (( r=0; r<ROUNDS; r++ )); do
   # retrained round-1 data from checkpoint 35.)
   if [ -d "$CK/$(( SEED_EPOCH + r + 1 ))" ]; then echo "round $r: checkpoints/$(( SEED_EPOCH + r + 1 )) exists, round complete, skipping"; continue; fi
   if [ -f "$RDIR/dataset/state.json" ]; then echo "round $r: dataset exists, skipping rollout"; else
+  # Rollouts can be shared between arms of an ablation (same seed, same
+  # prompts): drop/copy rounds/r<r>/rollouts.jsonl in and only the dataset is rebuilt.
+  if [ -s "$RDIR/rollouts.jsonl" ]; then echo "round $r: rollouts.jsonl exists, skipping rollout (dataset rebuilt)"; else
   echo "=== round $r: rollout from checkpoints/$LAST $(date '+%T') ==="
   conda activate "$EVAL_ENV"
   PORT=$(( 21000 + (${SLURM_JOB_ID:-0} + r) % 9000 ))
@@ -156,6 +159,7 @@ for (( r=0; r<ROUNDS; r++ )); do
       --out "$RDIR/s$s/rollouts.jsonl" --draft-ckpt "$CK/$LAST" --round "$r" > "$RDIR/s$s/assemble.txt" || { echo "!! assemble failed for shard s$s"; tail -5 "$RDIR/s$s/assemble.txt"; exit 1; }
     cat "$RDIR/s$s/rollouts.jsonl" >> "$RDIR/rollouts.jsonl"
   done
+  fi
   python - "$RDIR/rollouts.jsonl" "$K" <<'PY' | tee "$RDIR/assemble.txt"
 import json, sys
 n = steps = acc = full = 0
