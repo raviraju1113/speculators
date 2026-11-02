@@ -20,6 +20,7 @@
 # Submit from a login node (every env var of run_regen_glm53.sh is honoured):
 #   INPUT_JSONL=... OUTFILE=... bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 #   NODES=sc3-cp79,sc3-cp84 ...   # pin the two nodes instead of letting Slurm pick
+#   EXCLUDE_NODES=sc3-cp80 ...     # never place head or worker on these nodes
 #   LIMIT=300 TIME=2:00:00 OUTFILE=$PWD/data/glm53/smoke_b200pair.jsonl bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 set -euo pipefail
 
@@ -64,6 +65,8 @@ if [ -z "${ROLE:-}" ]; then
     ADDR_FILE="$LOG_DIR/ray_head_${PAIR_TAG}.addr"
     COMMON=(--partition="${PARTITION:-gpuonly}" --reservation="${RESERVATION:-sn50-hdi-0}" --nodes=1 --ntasks=1
             --gres="gpu:${GPUTYPE:-b200m180}:8" --cpus-per-task="${CPU:-64}" --mem="${MEM:-500G}" --exclusive --time="$TIME")
+    # EXCLUDE_NODES=sc3-cp80,... keeps known-bad nodes (e.g. NVLink faults) out of both jobs
+    [ -n "${EXCLUDE_NODES:-}" ] && COMMON+=(--exclude="$EXCLUDE_NODES")
     NODE_ARR=()
     [ -n "${NODES:-}" ] && IFS=, read -r -a NODE_ARR <<< "$NODES"
     [ "${#NODE_ARR[@]}" -eq 0 ] || [ "${#NODE_ARR[@]}" -eq "$PP" ] || { echo "NODES must list $PP nodes" >&2; exit 1; }

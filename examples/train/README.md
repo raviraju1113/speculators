@@ -832,6 +832,39 @@ flip that filter if the keep-truncated recommendation is adopted). The live file
 the snapshot does not. Later snapshots will follow the same naming (`snap<pct>pct_<date>`), and the
 final merge is `nemo782k_regen_glm53_all.jsonl`.
 
+### 9.z Status 2026-11-02 08:25 — B2 pair lost to a GPU fault, relaunched
+
+| stream | rows | rows/h (31.8 h window) | state |
+|---|---|---|---|
+| A (c130) | 125,000 / 391,207 | 1,548 | running, ~7.2 d left → ~Nov 9 |
+| B1 (cp79+cp90) | 71,158 / 130,402 | 1,089 | running, ~2.3 d left → ~Nov 4 |
+| B2 | 36,371 / 130,402 | — | **died 11-01 04:31**, relaunched 11-02 08:25 as worker 15100568 / head 15100569 (queued) |
+| B3 (cp86+cp83) | 65,218 / 130,402 | 1,083 | running, ~2.5 d left → ~Nov 4 |
+| combined | 297,747 / 782,413 (38.1%) | | remaining 484,666 |
+
+**B2 incident.** At 04:26 on 11-01, after 33 h of clean running, Ray worker rank 12 (PP1/TP4 on the
+worker node **sc3-cp80**) died with
+`CUDA error: Invalid access of peer GPU memory over nvlink or a hardware error (cudaErrorContained)`
+from the NCCL watchdog. vLLM's Ray executor shut the engine down; the API server kept answering
+with HTTP 500 for ~5 min, then went away. The client does not stop on a dead server: it raced
+through the remaining 94,031 prompts in ~15 min, logging each as
+`ClientConnectorError` / `ServerDisconnectedError` in `shardB2.jsonl.errors.jsonl`, then exited
+"done" and the head job COMPLETED (exit 0) and cancelled its worker. Nothing restarted it, and the
+2-hourly report cron does not fire while the Claude session is idle, so the loss was noticed ~28 h later.
+The 36,371 rows written before the crash are intact; `--resume` retries every errored id, so the
+relaunch simply continues (94,031 prompts left, ~3.7 d of pair time once it starts).
+
+Lessons / changes:
+- Launcher gained `EXCLUDE_NODES=<list>` (passes `--exclude` to both sbatch calls); B2 was
+  relaunched with `EXCLUDE_NODES=sc3-cp80`. cp80 should be reported to the cluster admins as a
+  suspected NVLink fault.
+- Known weakness, not yet fixed: the client treats a dead server like per-prompt errors and the
+  head script treats "client finished" as success. A crash therefore looks like a normal completion.
+  Fix candidates: (a) client aborts after N consecutive connection errors (exit ≠ 0), and
+  (b) head script loops server+client while un-generated ids remain; either makes a pair self-heal.
+- Operational: check `squeue` for the expected 7 jobs whenever looking at progress; a pair that
+  vanished early with a `Done: ok=<small> errors=<huge>` line in its head `.out` is this failure mode.
+
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
 pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
