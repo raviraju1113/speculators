@@ -149,7 +149,11 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
   Pool from the paper's domains: `build_opd_pool.py --gsm8k/--math/--numina
   (aops_forum)/--codealpaca --mix gsm8k=2000,math=5000,aops=4000,codealpaca=5000`
   -> `data/opd_prompts/paper16k.jsonl`, hash-disjoint from nemo782k; NuminaMath's
-  amc_aime source never used (AIME is our eval). (b) SFT replay:
+  amc_aime source never used (AIME is our eval). The SFT filter bites: 6,501
+  of 7,473 GSM8K-train prompts (87%) and 4,299 of 7,500 MATH-train prompts
+  (57%) are inside nemo782k (Nemotron's math data uses them); AoPS and
+  CodeAlpaca had zero overlap. Final mix 972 GSM8K / 3,200 MATH / 6,828 AoPS /
+  5,000 CodeAlpaca = 16,000. (b) SFT replay:
   `rollouts_to_dataset.py --replay-dataset <nemo782k> --replay-rows N
   --replay-anchor-stride 4` appends N SFT rows whose anchors carry
   `opd_accepted = -2`; `compute_metrics` trains those blocks with the ordinary
