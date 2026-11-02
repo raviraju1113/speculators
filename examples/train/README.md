@@ -518,7 +518,9 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   `opd/README.md`. **Plan (2026-11-02): the Gemma line now serves as the
   recipe rehearsal for a GLM-5.3 DFlash2 draft.** Track A first — OPD retry
   on blk12 ep33 with the paper's math/code pool + SFT replay, two rounds,
-  eval after each (in progress). Track B on spare B200s — a full DFlash2
+  eval after each — **running since 2026-11-02 13:30**: arm a (replay) job
+  15182106 on H200 sc3-c127, arm b (no replay) job 15182107 on A100 sc-c96;
+  status and results in `opd/README.md` §6. Track B on spare B200s — a full DFlash2
   draft on Gemma as the dress rehearsal of the GLM model class. Order and
   estimates: `opd/README.md` §6.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
