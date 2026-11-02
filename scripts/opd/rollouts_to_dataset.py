@@ -46,6 +46,19 @@ def main():
     ap.add_argument("--seq-length", type=int, default=8192)
     ap.add_argument("--keep-full-accept", action="store_true")
     ap.add_argument("--min-anchors", type=int, default=1)
+    ap.add_argument("--as-sft", action="store_true",
+                    help="the paper's 'training data' control: keep the rollout anchors but mark "
+                    "them opd_accepted=-2, so the trainer applies the ordinary DSpark loss "
+                    "(no acceptance-aware term) to the same on-policy text")
+    ap.add_argument("--replay-dataset", default=None,
+                    help="prepared SFT dataset (load_from_disk; e.g. nemo782k) to sample replay rows "
+                    "from. Replay rows get anchors at random loss positions (opd_accepted=-2) and "
+                    "train with the ordinary DSpark loss, so the draft keeps its SFT distribution")
+    ap.add_argument("--replay-rows", type=int, default=0)
+    ap.add_argument("--replay-anchor-stride", type=int, default=4,
+                    help="one replay anchor per this many loss tokens on average (OPD rows have "
+                    "one anchor per ~3.7 output tokens: one per draft step)")
+    ap.add_argument("--replay-seed", type=int, default=0)
     args = ap.parse_args()
 
     tok = Tokenizer.from_file(str(Path(args.model) / "tokenizer.json"))
@@ -88,7 +101,7 @@ def main():
                 n_drop_full += 1
                 continue
             anchor_mask[pos] = True
-            accepted[pos] = r
+            accepted[pos] = -2 if args.as_sft else r
         n_a = sum(anchor_mask)
         if n_a < args.min_anchors:
             continue
@@ -104,6 +117,38 @@ def main():
         rows["opd_accepted"].append(accepted)
         n_rows += 1
         n_anchors += n_a
+
+    n_replay = n_replay_anchors = 0
+    if args.replay_dataset and args.replay_rows > 0:
+        import random
+
+        from datasets import load_from_disk
+
+        k_rep = k if n_rows else 12
+        sft = load_from_disk(args.replay_dataset).with_format(None)
+        rng = random.Random(args.replay_seed)
+        idx = rng.sample(range(len(sft)), min(args.replay_rows, len(sft)))
+        for row in sft.select(idx):
+            ids = list(row["input_ids"])[: args.seq_length]
+            lm = list(row["loss_mask"])[: len(ids)]
+            seq_len = len(ids)
+            anchor_mask = [False] * seq_len
+            accepted = [-1] * seq_len
+            for pos in range(seq_len - k_rep):
+                if lm[pos] and rng.random() < 1.0 / args.replay_anchor_stride:
+                    anchor_mask[pos] = True
+                    accepted[pos] = -2
+            n_a = sum(anchor_mask)
+            if n_a < args.min_anchors:
+                continue
+            rows["input_ids"].append(ids)
+            rows["loss_mask"].append([bool(x) for x in lm])
+            rows["seq_len"].append(seq_len)
+            rows["messages"].append(row["messages"])
+            rows["opd_anchor_mask"].append(anchor_mask)
+            rows["opd_accepted"].append(accepted)
+            n_replay += 1
+            n_replay_anchors += n_a
 
     # Mirror the SFT dataset's feature types (datasets>=5 `List(struct)` for
     # messages; `Sequence(dict)` would store a struct of lists instead).
@@ -136,6 +181,12 @@ def main():
     print(f"rollouts in: {n_in}  rows out: {n_rows}  anchors: {n_anchors} "
           f"({n_anchors / max(n_rows, 1):.1f}/row)  dropped steps: fit={n_drop_fit} "
           f"full_accept={n_drop_full}; bad rollouts skipped: {n_drop_bad}")
+    if n_replay:
+        print(f"replay rows: {n_replay} from {args.replay_dataset} (seed {args.replay_seed}, "
+              f"stride {args.replay_anchor_stride}): {n_replay_anchors} anchors "
+              f"({n_replay_anchors / max(n_replay, 1):.1f}/row), ordinary loss (opd_accepted=-2)")
+    if args.as_sft:
+        print("--as-sft: every rollout anchor marked -2 (ordinary loss; the paper's training-data control)")
     print(f"wrote {out}")
 
 

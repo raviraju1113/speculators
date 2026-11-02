@@ -182,9 +182,17 @@ PY
   # KEEP_FULL=1 (default): keep fully-accepted blocks. The sweep (PLAN.md,
   # 2026-10-22) showed dropping them is clearly worse: they are the forward-KL
   # anchoring signal; the paper keeps every anchor.
+  # REPLAY_ROWS=N (default 0): also put N random nemo782k rows into the round's
+  # dataset, trained with the ordinary DSpark loss (anchors every REPLAY_STRIDE
+  # loss tokens, opd_accepted = -2), so the draft keeps its SFT distribution
+  # (full run v2 forgot math/code on an off-domain pool, 2026-10-28).
+  # AS_SFT=1: the paper's "training data" control -- same rollouts, same
+  # anchors, ordinary loss instead of the OPD one.
   python scripts/opd/rollouts_to_dataset.py --rollouts "$RDIR/rollouts.jsonl" --model "$MODEL" \
     --token-freq "$VOCAB_DATA/token_freq.pt" --output "$RDIR/dataset" \
-    $( [ "${KEEP_FULL:-1}" = "1" ] && echo --keep-full-accept ) | tail -2
+    $( [ "${KEEP_FULL:-1}" = "1" ] && echo --keep-full-accept ) \
+    $( [ "${AS_SFT:-0}" = "1" ] && echo --as-sft ) \
+    $( [ "${REPLAY_ROWS:-0}" -gt 0 ] && echo --replay-dataset "${REPLAY_DATA:-$VOCAB_DATA}" --replay-rows "$REPLAY_ROWS" --replay-anchor-stride "${REPLAY_STRIDE:-4}" --replay-seed "$r" ) | tail -3
   fi
 
   echo "=== round $r: train one epoch on $RDIR/dataset $(date '+%T') ==="
@@ -197,7 +205,7 @@ PY
   # LR: the paper's 3e-4 (24-prompt batches) wrecked our draft at ~10 prompts
   # per step (pilot 12492724); 2e-5 at ACCUM 4 was stable but moved nothing in
   # 91 steps. Default 5e-5 for the next run; scale with the effective batch.
-  export WARMUP_RATIO="${WARMUP_RATIO:-0.05}" LR="${LR:-5e-5}"
+  export WARMUP_RATIO="${WARMUP_RATIO:-0.05}" LR="${LR:-5e-5}" OPD_REPLAY_WEIGHT="${OPD_REPLAY_WEIGHT:-1.0}"
   export MAX_ANCHORS="${MAX_ANCHORS:-512}" CHECKPOINT_FREQ=1 SAVE_BEST=0 TRAIN_DATA_RATIO="${TRAIN_DATA_RATIO:-0.98}"
   export ON_GENERATE=delete VLLM_TP=1 VLLM_DP="${VLLM_DP:-1}" TRAIN_GPUS_N="${TRAIN_GPUS_N:-1}"
   export GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}" WANDB_MODE="${WANDB_MODE:-offline}" WANDB_PROJECT=gemma4-dspark-opd

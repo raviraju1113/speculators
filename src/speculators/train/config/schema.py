@@ -477,6 +477,12 @@ class DFlashArgs(_Group):
         "magnitude as the accepted-slot term (reverse KL averaged 18 nats vs "
         "0.08 on the sci16k pool and degraded rollout acceptance, 2026-10-28).",
     )
+    opd_replay_weight: float = Field(
+        default=1.0,
+        description="Draft-OPD: weight of the ordinary DSpark loss on SFT-replay blocks "
+        "(anchors with opd_accepted == -2, added by rollouts_to_dataset.py "
+        "--replay-dataset) relative to the OPD loss. 0 disables replay training.",
+    )
     per_position_loss_weight: Literal["fixed-exp-decay", "dpace"] | None = Field(
         default=None,
         description="Per-position loss weight option for D-PACE support "

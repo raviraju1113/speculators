@@ -61,15 +61,62 @@ def read_general(files):
                 yield u, x
 
 
+def read_gsm8k(files):
+    import pyarrow.parquet as pq
+
+    for f in files:
+        t = pq.read_table(f, columns=["question"])
+        for i, x in enumerate(t.column("question").to_pylist()):
+            yield f"{Path(f).stem}:{i}", x
+
+
+def read_math(files):  # EleutherAI/hendrycks_math: problem/level/type/solution
+    import pyarrow.parquet as pq
+
+    for f in files:
+        t = pq.read_table(f, columns=["problem"])
+        for i, x in enumerate(t.column("problem").to_pylist()):
+            yield f"{Path(f).parent.name}:{i}", x
+
+
+def read_numina(files, sources):  # AI-MO/NuminaMath-CoT: source/problem/solution
+    import pyarrow.parquet as pq
+
+    for f in files:
+        t = pq.read_table(f, columns=["source", "problem"])
+        for i, (src, x) in enumerate(zip(t.column("source").to_pylist(), t.column("problem").to_pylist())):
+            if src in sources:
+                yield f"{src}:{Path(f).stem}:{i}", x
+
+
+def read_codealpaca(files):  # sahil2801/CodeAlpaca-20k: json list of instruction/input/output
+    for f in files:
+        for i, r in enumerate(json.load(open(f))):
+            x = r["instruction"].strip()
+            if r.get("input", "").strip():
+                x += "\n\n" + r["input"].strip()
+            yield f"{Path(f).stem}:{i}", x
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--science", nargs="+", default=[])
     ap.add_argument("--general", nargs="+", default=[])
+    # Paper-domain sources (Draft-OPD, arXiv 2605.29343: 2k GSM8K train, 5k MATH,
+    # 4k AoPS, 5k CodeAlpaca). Our evals are AIME/GPQA/LCB, so NuminaMath's
+    # amc_aime source is never used.
+    ap.add_argument("--gsm8k", nargs="+", default=[], help="openai/gsm8k main/train parquet")
+    ap.add_argument("--math", nargs="+", default=[], help="EleutherAI/hendrycks_math */train parquet")
+    ap.add_argument("--numina", nargs="+", default=[], help="AI-MO/NuminaMath-CoT train parquet")
+    ap.add_argument("--numina-sources", default="aops_forum", help="comma-separated NuminaMath sources")
+    ap.add_argument("--codealpaca", nargs="+", default=[], help="sahil2801/CodeAlpaca-20k json")
+    ap.add_argument("--mix", default="gsm8k=2000,math=5000,aops=4000,codealpaca=5000",
+                    help="prompts per paper-domain source (ignored for --science/--general)")
     ap.add_argument("--exclude-dataset", default=None, help="load_from_disk dir whose user turns are excluded")
     ap.add_argument("--model", default=None, help="backbone dir (tokenizer.json) for --max-prompt-tokens")
     ap.add_argument("--max-prompt-tokens", type=int, default=1800)
     ap.add_argument("--max-chars", type=int, default=6000)
-    ap.add_argument("--count", type=int, required=True)
+    ap.add_argument("--count", type=int, default=16000, help="total for --science/--general only")
     ap.add_argument("--science-frac", type=float, default=0.75)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
@@ -93,7 +140,7 @@ def main():
         tok = Tokenizer.from_file(str(Path(args.model) / "tokenizer.json"))
 
     def collect(gen, want, tag):
-        rng = random.Random(args.seed + (1 if tag == "science" else 2))
+        rng = random.Random(args.seed + sum(map(ord, tag)))
         rows = list(gen)
         rng.shuffle(rows)
         out, seen, dropped = [], set(), {"sft": 0, "dup": 0, "long": 0}
@@ -118,18 +165,31 @@ def main():
         print(f"{tag}: kept {len(out)} of {len(rows)} candidates, dropped {dropped}")
         return out
 
-    files_s = [f for p in args.science for f in sorted(glob.glob(p, recursive=True))]
-    files_g = [f for p in args.general for f in sorted(glob.glob(p, recursive=True))]
+    def expand(pats):
+        return [f for p in pats for f in sorted(glob.glob(p, recursive=True))]
+
+    pool = []
+    paper = {"gsm8k": (expand(args.gsm8k), read_gsm8k), "math": (expand(args.math), read_math),
+             "aops": (expand(args.numina), lambda fs: read_numina(fs, set(args.numina_sources.split(",")))),
+             "codealpaca": (expand(args.codealpaca), read_codealpaca)}
+    mix = {k: int(v) for k, v in (kv.split("=") for kv in args.mix.split(",") if kv)}
+    for tag, (files, reader) in paper.items():
+        if files:
+            pool += collect(reader(files), mix.get(tag, 0), tag)
+    files_s, files_g = expand(args.science), expand(args.general)
     n_s = round(args.count * args.science_frac) if files_s else 0
     n_g = args.count - n_s if files_g else 0
-    pool = collect(read_science(files_s), n_s, "science") + collect(read_general(files_g), n_g, "general")
+    if files_s or files_g:
+        pool += collect(read_science(files_s), n_s, "science") + collect(read_general(files_g), n_g, "general")
     random.Random(args.seed).shuffle(pool)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         for r in pool:
             f.write(json.dumps(r) + "\n")
-    print(f"wrote {len(pool)} prompts to {out} (science {n_s}, general {n_g})")
+    import collections
+
+    print(f"wrote {len(pool)} prompts to {out}: {dict(collections.Counter(r['src'] for r in pool))}")
 
 
 if __name__ == "__main__":

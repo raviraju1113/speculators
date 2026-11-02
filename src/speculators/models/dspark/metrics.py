@@ -148,6 +148,7 @@ def compute_metrics(
     opd_lambda_rej: float = 1.0,
     opd_rej_valid: torch.Tensor | None = None,  # [num_blocks, block_size], see opd_loss
     opd_rej_kl: str = "reverse",
+    opd_replay_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict]:
     """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
 
@@ -176,8 +177,26 @@ def compute_metrics(
             lambda_rej=opd_lambda_rej, rej_valid=opd_rej_valid, rej_kl=opd_rej_kl,
         )
         term_losses = {}
+        scored = opd_terms["opd_scored_mask"]
+        # SFT-replay blocks (opd_accepted == -2, rollouts_to_dataset.py
+        # --replay-dataset / --as-sft): the ordinary DSpark loss with position
+        # decay on those blocks only, added with weight opd_replay_weight. The
+        # OPD terms above already skip them (opd_slot_masks: r < 0 is not OPD).
+        replay_blocks = opd_accepted == -2
+        num_blocks = opd_accepted.shape[0]
+        replay_tok = loss_mask * replay_blocks.to(loss_mask.dtype).repeat_interleave(block_size).view(1, -1)
+        if bool(replay_blocks.any()):
+            l_rep, term_losses = compound_loss(
+                logits, targets, replay_tok, pos_idx, loss_config=loss_config, decay_fn=decay_fn
+            )
+            loss = loss + opd_replay_weight * l_rep
+            opd_terms["opd_replay_loss"] = l_rep.detach()
+            scored = scored | (replay_tok > 0)
+        else:
+            opd_terms["opd_replay_loss"] = torch.zeros((), device=device)
+        opd_terms["opd_replay_blocks"] = replay_blocks.sum().to(torch.float32)
         # Confidence-head labels only where the draft was actually scored.
-        loss_mask = loss_mask * opd_terms["opd_scored_mask"].to(loss_mask.dtype)
+        loss_mask = loss_mask * scored.to(loss_mask.dtype)
         decay_fn = None
     else:
         loss, term_losses = compound_loss(
@@ -263,7 +282,8 @@ def compute_metrics(
         metrics[f"position_{pos}_acc_total"] = total_per_pos[pos]
 
     if opd_terms is not None:
-        for name in ("opd_acc_loss", "opd_rej_loss", "opd_acc_slots", "opd_rej_slots"):
+        for name in ("opd_acc_loss", "opd_rej_loss", "opd_acc_slots", "opd_rej_slots",
+                     "opd_replay_loss", "opd_replay_blocks"):
             metrics[f"{name}_sum"] = opd_terms[name]
             metrics[f"{name}_total"] = ones.clone()
 
