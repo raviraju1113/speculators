@@ -973,6 +973,25 @@ so the suite can start without them and they can be appended later with `ONLY=`.
 4. When the DFlash2 draft exists: add it as an experiment entry in the same yaml
    (`draft: <ckpt>`, `method: dflash2`) and re-run — same prompts, same settings, same pair.
 
+**Outcome of run 1 (job 15113816, 09:45–11:32):** baseline done (76 tok/s single-stream on the
+PP2 pair, 130/130), all three MTP experiments failed at startup:
+`NotImplementedError: Pipeline parallelism is not supported for this model` — GLM-5.3's MTP
+draft module has no PP support in vLLM 0.26. Combined with the DFlash2 aux-hidden-state limit
+(9.w.2) and the cross-node TP16 Gloo hang in 0.28 (jobs 15137982/3, 30-min timeout in
+`is_in_the_same_node` after all 16 ranks joined), **neither baseline runs on a two-node pair**.
+Hosting GLM-5.3 across nodes is fine (regen pairs, baseline eval); speculative decoding is what
+does not cross nodes.
+
+**Decision 2026-11-02 13:00:** run both baselines on one **B300 node (sc3-c131)**, bf16, TP8, mp
+executor — identical to the data-gen server; the draft (MTP head / 2B DFlash2) lives in the same
+server process on the same 8 GPUs, no second node needed. Job **15171937**
+(`glm53-short-v028-b300.yaml`, vLLM 0.28, pinned `NODES=sc3-c131 GPUTYPE=b300m288`), queued
+behind chenw's job on c131 (ends ~00:10 Nov 3), then ~9 h. Fallback kept: `glm53-short-v028-fp8.yaml`
+(fp8 weights on one B200). In parallel a vLLM **0.33** env (`spec_eval/build_vllm033.sh`) is being
+built to re-test cross-node TP16 on a B200 pair; if that works, bf16 pairs become usable for the
+full suite. New-env gotcha: apply the FIPS OpenSSL swap (build script step 5) or `vllm serve`
+aborts with rc=-6 on sc3-cp nodes.
+
 Tooling added for this (commit 0dd70a6): `run_vllm_eval.py --extra-body` /
 yaml `eval.extra_body` (passes `chat_template_kwargs.reasoning_effort` on every request);
 pair launcher `EVAL_CONFIG=`/`ONLY=` mode.
