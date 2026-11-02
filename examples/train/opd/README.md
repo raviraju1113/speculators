@@ -135,6 +135,17 @@ DFlash2 draft for GLM-5.3. Two tracks; **A first, B only on spare B200 nodes.**
 **Track A — OPD retry on blk12 ep33 (in progress).** Settles the OPD recipe
 (pool domain, replay, rounds, λ_rej), which transfers to any draft class.
 
+*Status 2026-11-02 13:45:* code done and unit-tested (commit b1897ea), pool
+built (16,000 = 972 GSM8K / 3,200 MATH / 6,828 AoPS / 5,000 CodeAlpaca after
+the nemo782k filter removed 87% of GSM8K-train and 57% of MATH-train). Two
+arms running, 2 rounds × 16k each, eval after every round:
+arm **a** `opd_paper16k_replay` (OPD + 8k replay rows/round) job 15182106 on
+sc3-c127 (8×H200), arm **b** `opd_paper16k` (OPD, no replay) job 15182107 on
+sc-c96 (8×A100). All B200s are taken (GLM regen has priority — never touched);
+accept_len is hardware-invariant so evals run on idle A100s. Results land in
+`results/gemma4-31b-dspark-opd-v3`; arm **c** (as-SFT control) follows when a
+node frees.
+
 1. **Pool from the paper's domains**: GSM8K train, MATH train, NuminaMath
    AoPS, CodeAlpaca, 16k prompts in the paper's 2k/5k/4k/5k mix; AMC/AIME
    sources excluded (our eval); hash-filtered against nemo782k by
