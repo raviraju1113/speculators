@@ -930,6 +930,28 @@ experiment; ~15 min model load + ~2–3 h for `baseline`, ~1.5–2 h for each MT
 `n`), `server.log` next to it; runner log `data/glm53/logs/eval_pair_*_15113816.log`.
 Table: `python scripts/evaluate/experiments/tabulate_results.py --dir results/glm53-mtp-eval --baseline baseline`.
 
+### 9.w.2 Evaluation matrix (agreed 2026-11-02): two baselines × two experiment sets
+
+| | baseline 1: native MTP | baseline 2: released DFlash2 draft |
+|---|---|---|
+| what | GLM-5.3's built-in MTP layer, `method: mtp`, k = 2 / 4 | `incoai/GLM-5.3-DFlash2` (HF, CC BY-NC-ND 4.0, research/eval only): DFlash2DraftModel, 6 layers, hidden 6144, 2B params, block 8 → 7 drafts/step, target layers [5,19,33,47,61,75]. Local copy `/import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai` |
+| engine | vLLM 0.26 (run above) and 0.28 | vLLM **0.28** (DFlash2 support starts there; env `condaenvs/vllm028`, `spec_eval/build_vllm028.sh`) |
+| card numbers (greedy, SGLang, TP4 GB300) | GSM8K 5.12 / MATH-500 5.05 / HumanEval 4.85 / MBPP 4.34 / MT-Bench 3.81 accept_len | 5.94 / 6.02 / 5.48 / 4.95 / 4.19; 2.2–3.4× vs AR at c=1 |
+
+| set | config | prompts | experiments | est. time |
+|---|---|---|---|---|
+| **short** (run 1, vLLM 0.26) | `glm53-mtp-eval.yaml` | aime 30 + gpqa 50 + lcb 50 | baseline, mtp_k2, mtp_k4, mtp_k4_greedy | 7–9 h, running since 11-02 09:45 |
+| **short** (run 2, vLLM 0.28) | `glm53-short-v028.yaml` | same | dflash2_k7 (first, fail-fast), baseline, mtp_k4 (0.26↔0.28 cross-check), dflash2_k4, dflash2_k7_greedy | ~9 h, one pair |
+| **full** (vLLM 0.28) | `glm53-full-eval.yaml` | Chen's 28 benchmarks × 50 samples ≈ 1,330 prompts | baseline, mtp_k2, mtp_k4, dflash2_k7 — one pair per experiment via `ONLY=` | baseline ~18 h, MTP ~8 h each, DFlash2 ~6 h; ~18 h wall on 4 pairs |
+
+Order: short runs first (results tonight / tomorrow morning), then the full suite.
+Full-suite data on sc3: 30 of 28+ files present (aa-lcr 100 × ~95k tokens and bfcl copied from
+chenw's scratch); the six SPEED-Bench categories humanities/math/reasoning/roleplay/stem/
+summarization are not materialised yet — NVIDIA's `prepare.py` (fetched to the session scratchpad)
+→ `prepare_speedbench.py` → `prepare_data.py --only speed-…`; the evaluator skips a missing file,
+so the suite can start without them and they can be appended later with `ONLY=`.
+`max_model_len` is 131072 in the full config so aa-lcr fits.
+
 **Follow-ups (not started).**
 1. Broad suite: Chen's 25-benchmark list (`gemma4-31b-full.yaml` on
    `origin/feature/data-prep-and-eval-scripts`; 50 samples each, ~1,250 prompts). All data
