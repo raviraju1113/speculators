@@ -182,19 +182,20 @@ def compute_metrics(
         # --replay-dataset / --as-sft): the ordinary DSpark loss with position
         # decay on those blocks only, added with weight opd_replay_weight. The
         # OPD terms above already skip them (opd_slot_masks: r < 0 is not OPD).
+        # Branch-free on purpose: every rank must produce the same metric keys
+        # (the trainer dist.reduce()s them one by one) and the same graph, so
+        # the replay term is computed even when this batch has no replay block
+        # (all-zero mask -> 0 / eps = 0). A data-dependent `if` here desynced
+        # the four ranks at step 0 (job 15182106, NCCL watchdog timeout).
         replay_blocks = opd_accepted == -2
-        num_blocks = opd_accepted.shape[0]
         replay_tok = loss_mask * replay_blocks.to(loss_mask.dtype).repeat_interleave(block_size).view(1, -1)
-        if bool(replay_blocks.any()):
-            l_rep, term_losses = compound_loss(
-                logits, targets, replay_tok, pos_idx, loss_config=loss_config, decay_fn=decay_fn
-            )
-            loss = loss + opd_replay_weight * l_rep
-            opd_terms["opd_replay_loss"] = l_rep.detach()
-            scored = scored | (replay_tok > 0)
-        else:
-            opd_terms["opd_replay_loss"] = torch.zeros((), device=device)
+        l_rep, term_losses = compound_loss(
+            logits, targets, replay_tok, pos_idx, loss_config=loss_config, decay_fn=decay_fn
+        )
+        loss = loss + opd_replay_weight * l_rep
+        opd_terms["opd_replay_loss"] = l_rep.detach()
         opd_terms["opd_replay_blocks"] = replay_blocks.sum().to(torch.float32)
+        scored = scored | (replay_tok > 0)
         # Confidence-head labels only where the draft was actually scored.
         loss_mask = loss_mask * scored.to(loss_mask.dtype)
         decay_fn = None
