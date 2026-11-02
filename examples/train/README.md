@@ -32,7 +32,7 @@ eval (§6.1) at matched k, with no loss elsewhere.
 | **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
 | **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
 | **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 over k=8: +7…+16% tok/s on A100, +6…+16% on B200 (395 / 254 / 313 tok/s on AIME / GPQA / LCB, §6.5) | **works** → blk12 ep33 at k=12 (block-8 control closed 2026-10-29: 8 more epochs at block 8 == conv ep25 on every benchmark at k=8 and k=5, §6.3b — the draft had converged, the k=12 gain is from the new slots) |
-| **5. Draft-OPD** (§6.5, §8, `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted** (2026-10-28) — fails the bar below; next try needs a benchmark-domain pool and/or SFT replay |
+| **5. Draft-OPD** (§6.5, §8, **`opd/README.md`** — summary, paper diff, what worked, next steps; log in `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted** (2026-10-28) — fails the bar below; next try needs a benchmark-domain pool and/or SFT replay |
 
 **Current working recipe** = stages 1–4: train recipe B for 26 epochs on
 nemo782k, warm-start 8 more epochs at block 12 / γ 12, serve
@@ -400,6 +400,8 @@ sweep of scratch: 3.93 / 3.78 / 3.94 / 4.04 at 16k/32k/64k/~106k),
 ### 6.5 Draft-OPD v2 vs its seed blk12 ep33 (B200, TP=1, same flags; `results/gemma4-31b-dspark-opd-v2`)
 
 Verdict run for §0 stage 5 (2026-10-28, jobs 14149872 / 14149874 / 14192076).
+Why it dropped, how our setting differs from the paper's, what worked and
+what did not, and the next steps: **`opd/README.md`**.
 OPD ckpt 41 = seed + 8 rounds × 16k on-policy prompts (`sci16k`); ckpt 40 =
 7 rounds (the last one with a paired pool number, 0.2573 vs seed 0.2117);
 ckpt 34 = 1 round. accept_len is hardware-invariant (blk12 ep33 k=8: A100
@@ -512,9 +514,9 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   gained every round on the pool (paired rollout accept_rate at k=12 0.2117 →
   0.2573 over 8 rounds, ckpt 33 → 40; final ckpt 41) **and lost on every
   benchmark** (§6.5: accept_len −9…−18% at k=12). Verdict: not adopted as
-  stage 5. Open: does one round (ckpt 34, eval job 14192076) already hurt;
-  a pool drawn from the benchmark domains (math/code) or SFT replay mixed
-  into each round, before any further OPD runs.
+  stage 5. One round (ckpt 34) is already flat-to-negative. Diagnosis and
+  the plan for a retry (math/code pool like the paper's, SFT replay, two
+  rounds with an eval after each): `opd/README.md`.
 - Draft vocab 64k/full (the GPQA ceiling), block-size-at-serve sweeps.
 - **Response-length / end-to-end check** (does a DSpark draft make the
   target's replies longer?) — done 2026-10-29: no draft-specific effect.
