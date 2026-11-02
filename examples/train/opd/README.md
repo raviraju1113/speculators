@@ -139,12 +139,20 @@ DFlash2 draft for GLM-5.3. Two tracks; **A first, B only on spare B200 nodes.**
 built (16,000 = 972 GSM8K / 3,200 MATH / 6,828 AoPS / 5,000 CodeAlpaca after
 the nemo782k filter removed 87% of GSM8K-train and 57% of MATH-train). Two
 arms running, 2 rounds × 16k each, eval after every round:
-arm **a** `opd_paper16k_replay` (OPD + 8k replay rows/round) job 15182106 on
-sc3-c127 (8×H200), arm **b** `opd_paper16k` (OPD, no replay) job 15182107 on
-sc-c96 (8×A100). All B200s are taken (GLM regen has priority — never touched);
-accept_len is hardware-invariant so evals run on idle A100s. Results land in
-`results/gemma4-31b-dspark-opd-v3`; arm **c** (as-SFT control) follows when a
-node frees.
+all three on sc3-c127 (8×H200, the one idle node in the reservation; every
+B200 is taken and GLM regen has priority — never touched): arm **a**
+`opd_paper16k_replay` (OPD + 8k replay rows/round) job 15182106, then arm
+**b** `opd_paper16k` (OPD, no replay) job 15190244, then arm **c**
+`opd_paper16k_assft` (ordinary loss on the same rollouts) job 15190245,
+chained. Evals on idle 4×A100 nodes (accept_len is hardware-invariant; sc-c96
+is excluded: its driver, CUDA 12.7, is too old for the eval env). Results land
+in `results/gemma4-31b-dspark-opd-v3`.
+
+*Round 0 (seed blk12 ep33 on the paper pool, k=12):* accept_rate **0.4413**,
+5.30 accepted/step, 19% of blocks fully accepted — vs 0.2117 / 2.54 on the
+science/chat pool. The seed is already twice as good on math/code prompts,
+i.e. the pool is now in the draft's SFT domain. Round-0 dataset: 15,885 OPD
+rows (2.08M anchors) + 7,916 replay rows (1.55M anchors) for arm a.
 
 1. **Pool from the paper's domains**: GSM8K train, MATH train, NuminaMath
    AoPS, CodeAlpaca, 16k prompts in the paper's 2k/5k/4k/5k mix; AMC/AIME
