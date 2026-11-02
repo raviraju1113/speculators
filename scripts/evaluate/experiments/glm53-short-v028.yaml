@@ -2,7 +2,7 @@
 # both on vLLM 0.28 (DFlash2 needs >= 0.28; the first short run, glm53-mtp-eval.yaml,
 # was on vLLM 0.26). Same prompts, sampling and pair serving as glm53-mtp-eval.yaml.
 #
-#   CONDA_ENV=vllm028 EVAL_CONFIG=glm53-short-v028.yaml JOBNAME=glm53_short_v028 TIME=20:00:00 \
+#   TP=16 PP=1 CONDA_ENV=vllm028 EVAL_CONFIG=glm53-short-v028.yaml JOBNAME=glm53_short_v028 TIME=20:00:00 \
 #     EXCLUDE_NODES=sc3-cp80 bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 #
 # Draft: incoai/GLM-5.3-DFlash2 (DFlash2DraftModel, 6 layers, hidden 6144, 2B params, block
@@ -16,13 +16,11 @@ gpus: "0,1,2,3,4,5,6,7"
 server:
   host: 127.0.0.1
   port: 8000
-  tensor_parallel_size: 8
+  tensor_parallel_size: 16          # TP16 over the two nodes (ray); PP is not an option for DFlash2, see README 9.w.2
   gpu_memory_utilization: 0.92
   max_model_len: 32768
   health_timeout: 3600
   extra_args:
-    - --pipeline-parallel-size
-    - "2"
     - --distributed-executor-backend
     - ray
     - --block-size

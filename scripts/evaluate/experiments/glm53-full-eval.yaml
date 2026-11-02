@@ -5,7 +5,7 @@
 # on one B200 pair -> run the experiments on separate pairs with ONLY=:
 #
 #   for e in baseline mtp_k2 mtp_k4 dflash2_k7; do
-#     ONLY=$e CONDA_ENV=vllm028 EVAL_CONFIG=glm53-full-eval.yaml JOBNAME=glm53_full_$e TIME=1-12:00:00 \
+#     TP=16 PP=1 ONLY=$e CONDA_ENV=vllm028 EVAL_CONFIG=glm53-full-eval.yaml JOBNAME=glm53_full_$e TIME=1-12:00:00 \
 #       EXCLUDE_NODES=sc3-cp80 bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
 #   done
 #   python scripts/evaluate/experiments/tabulate_results.py --dir results/glm53-full-eval --baseline baseline
@@ -23,13 +23,11 @@ gpus: "0,1,2,3,4,5,6,7"
 server:
   host: 127.0.0.1
   port: 8000
-  tensor_parallel_size: 8
+  tensor_parallel_size: 16          # TP16 over the two nodes (ray); PP is not an option for DFlash2, see README 9.w.2
   gpu_memory_utilization: 0.92
   max_model_len: 131072
   health_timeout: 3600
   extra_args:
-    - --pipeline-parallel-size
-    - "2"
     - --distributed-executor-backend
     - ray
     - --block-size

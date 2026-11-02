@@ -41,6 +41,7 @@ KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 EXPERT_PARALLEL="${EXPERT_PARALLEL:-1}"
 BLOCK_SIZE="${BLOCK_SIZE:-64}"
+GPUS_PER_NODE="${GPUS_PER_NODE:-8}"      # what each node registers with ray (TP*PP may span nodes, e.g. TP=16 PP=1)
 PORT="${PORT:-8000}"
 RAY_PORT="${RAY_PORT:-6379}"
 LOG_DIR="${LOG_DIR:-$(dirname "$OUTFILE")/logs}"
@@ -51,7 +52,7 @@ CACHE_BASE="${CACHE_BASE:-/import/ml-sc-scratch1/mengmengj/cache}"
 JOIN_WAIT_MIN="${JOIN_WAIT_MIN:-60}"      # how long head/worker wait for each other
 export REPO MODEL INPUT_JSONL OUTFILE REASONING_EFFORT TEMPERATURE TOP_P MAX_TOKENS MAX_MODEL_LEN \
        CONCURRENCY TP PP KV_CACHE_DTYPE GPU_MEM_UTIL EXPERT_PARALLEL BLOCK_SIZE PORT RAY_PORT LOG_DIR \
-       CONDA_ENV CONDA_BASE CONDA_ENVS_DIR CACHE_BASE JOIN_WAIT_MIN
+       CONDA_ENV CONDA_BASE CONDA_ENVS_DIR CACHE_BASE JOIN_WAIT_MIN GPUS_PER_NODE
 [ -n "${LIMIT:-}" ] && export LIMIT
 # EVAL_CONFIG=<yaml[,yaml]> (relative to scripts/evaluate/experiments): instead of the
 # regen client, run run_experiments.py on the pair (it launches vllm serve itself; the
@@ -136,7 +137,7 @@ if [ "$ROLE" = "worker" ]; then
     RAY_ADDR=$(cat "$ADDR_FILE")
     echo "[worker] head at $RAY_ADDR"
     for _ in $(seq 1 30); do
-        if ray start --address="$RAY_ADDR" --num-gpus="$TP" --num-cpus="${SLURM_CPUS_PER_TASK:-32}" \
+        if ray start --address="$RAY_ADDR" --num-gpus="$GPUS_PER_NODE" --num-cpus="${SLURM_CPUS_PER_TASK:-32}" \
                --node-ip-address="$NODE_IP" --temp-dir="$RAY_TMP" > "$LOG_DIR/ray_worker_${SLURM_JOB_ID}.log" 2>&1; then
             echo "[worker] joined $RAY_ADDR"
             trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
@@ -161,7 +162,7 @@ cleanup() {
     [ -n "${WORKER_JOBIDS:-}" ] && scancel ${WORKER_JOBIDS//,/ } 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
-ray start --head --node-ip-address="$NODE_IP" --port="$RAY_PORT" --num-gpus="$TP" \
+ray start --head --node-ip-address="$NODE_IP" --port="$RAY_PORT" --num-gpus="$GPUS_PER_NODE" \
     --num-cpus="${SLURM_CPUS_PER_TASK:-32}" --temp-dir="$RAY_TMP" --disable-usage-stats > "$LOG_DIR/ray_head_${SLURM_JOB_ID}.log" 2>&1
 echo "$RAY_ADDR" > "$ADDR_FILE"
 WANT_GPUS=$((TP * PP))

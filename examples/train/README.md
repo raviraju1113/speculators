@@ -945,6 +945,15 @@ Table: `python scripts/evaluate/experiments/tabulate_results.py --dir results/gl
 | **full** (vLLM 0.28) | `glm53-full-eval.yaml` | Chen's 28 benchmarks × 50 samples ≈ 1,330 prompts | baseline, mtp_k2, mtp_k4, dflash2_k7 — one pair per experiment via `ONLY=` | baseline ~18 h, MTP ~8 h each, DFlash2 ~6 h; ~18 h wall on 4 pairs |
 
 Order: short runs first (results tonight / tomorrow morning), then the full suite.
+
+**Topology constraint found 2026-11-02 11:30.** DFlash2 (like EAGLE3) feeds the draft the
+target's hidden states from layers [5,19,33,47,61,75]. In vLLM 0.28 a model collects those only
+for layers that live on its own pipeline stage and `IntermediateTensors` does not forward them,
+so under TP8×PP2 the drafter on stage 1 would never see layers 5/19/33. All vLLM 0.28 evals
+therefore run **TP16 over the two nodes (PP=1)** via Ray: GLM-5.3 divides cleanly (64 heads,
+256 experts, 32 indexer heads). Cross-node all-reduce makes absolute tok/s lower than the
+PP2 regen server — compare speedups inside a run only; acceptance is unaffected. Launcher
+gained `GPUS_PER_NODE` (ray registers 8 per node; `TP=16 PP=1` on submit).
 Full-suite data on sc3: 30 of 28+ files present (aa-lcr 100 × ~95k tokens and bfcl copied from
 chenw's scratch); the six SPEED-Bench categories humanities/math/reasoning/roleplay/stem/
 summarization are not materialised yet — NVIDIA's `prepare.py` (fetched to the session scratchpad)
