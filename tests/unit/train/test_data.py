@@ -1,18 +1,28 @@
 """Unit tests for data processing in speculators.train.data."""
 
-import json
+import asyncio
+import logging
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
+import pytest
 import torch
 from datasets import Dataset
-from safetensors.torch import save_file
 
+import speculators.train.hidden_states_source as source_module
 from speculators.models.eagle3.data import shift_batch
 from speculators.train.data import (
     ArrowDataset,
-    CollateFn,
-    SampleFileDataset,
-    standardize_data_v1,
+    SpeculatorsDataset,
+    _add_document_ids,
+    _pad_samples,
+)
+from speculators.train.data_types import DatasetRecord
+from speculators.train.recovery import (
+    RECOVERY_METADATA_KEY,
+    RecoveryMetadata,
+    SampleUnavailable,
 )
 
 
@@ -54,88 +64,9 @@ def test_shift_batch():
         assert torch.allclose(value, expected_output[key])
 
 
-def test_standardize_data_v1():
-    """Test v1 data format standardization."""
-    v1_data = {
-        "input_ids": torch.tensor([0, 1, 2, 3, 4], dtype=torch.long),
-        "loss_mask": torch.tensor([0, 0, 1, 1, 1], dtype=torch.long),
-        "hidden_states": [
-            torch.tensor(
-                [
-                    [0.0, 0.1, 0.2],
-                    [1.0, 1.1, 1.2],
-                    [2.0, 2.1, 2.2],
-                    [3.0, 3.1, 3.2],
-                    [4.0, 4.1, 4.2],
-                ]
-            ),
-            torch.tensor(
-                [
-                    [5.0, 5.1, 5.2],
-                    [6.0, 6.1, 6.2],
-                    [7.0, 7.1, 7.2],
-                    [8.0, 8.1, 8.2],
-                    [9.0, 9.1, 9.2],
-                ]
-            ),
-            torch.tensor(
-                [
-                    [10.0, 10.1, 10.2],
-                    [11.0, 11.1, 11.2],
-                    [12.0, 12.1, 12.2],
-                    [13.0, 13.1, 13.2],
-                    [14.0, 14.1, 14.2],
-                ]
-            ),
-            torch.tensor(
-                [
-                    [15.0, 15.1, 15.2],
-                    [16.0, 16.1, 16.2],
-                    [17.0, 17.1, 17.2],
-                    [18.0, 18.1, 18.2],
-                    [19.0, 19.1, 19.2],
-                ]
-            ),
-        ],
-    }
-
-    expected_output = {
-        "hidden_states": torch.tensor(
-            [
-                [0.0, 0.1, 0.2, 5.0, 5.1, 5.2, 10.0, 10.1, 10.2],
-                [1.0, 1.1, 1.2, 6.0, 6.1, 6.2, 11.0, 11.1, 11.2],
-                [2.0, 2.1, 2.2, 7.0, 7.1, 7.2, 12.0, 12.1, 12.2],
-                [3.0, 3.1, 3.2, 8.0, 8.1, 8.2, 13.0, 13.1, 13.2],
-                [4.0, 4.1, 4.2, 9.0, 9.1, 9.2, 14.0, 14.1, 14.2],
-            ]
-        ),
-        "input_ids": torch.tensor([0, 1, 2, 3, 4], dtype=torch.long),
-        "verifier_last_hidden_states": torch.tensor(
-            [
-                [15.0, 15.1, 15.2],
-                [16.0, 16.1, 16.2],
-                [17.0, 17.1, 17.2],
-                [18.0, 18.1, 18.2],
-                [19.0, 19.1, 19.2],
-            ]
-        ),
-        "loss_mask": torch.tensor([0, 0, 1, 1, 1], dtype=torch.long),
-    }
-
-    standardized = standardize_data_v1(v1_data)
-
-    for key, value in standardized.items():
-        assert torch.allclose(value, expected_output[key])
-
-
-def test_collate_fn_basic():
-    """Test basic collation functionality."""
+def test_pad_samples_basic():
+    """Test padding and document-ID construction."""
     max_len = 10
-    hidden_size = 1
-    num_target_layers = 3
-    collate_fn = CollateFn(
-        max_len, hidden_size, num_target_layers=num_target_layers, dtype=torch.float32
-    )
 
     batch = [
         {
@@ -197,20 +128,25 @@ def test_collate_fn_basic():
         ),
     }
 
-    collated = collate_fn(batch)
+    collated = _pad_samples(batch, max_len, torch.float32)
+    _add_document_ids(collated, max_len)
 
     for key, value in collated.items():
-        assert value.shape == expected_output[key].shape
+        if isinstance(value, torch.Tensor):
+            assert isinstance(expected_output[key], torch.Tensor)
+            assert value.shape == expected_output[key].shape  # type: ignore[attr-defined]
 
-        is_masking = expected_output[key] == -1
-        assert torch.all(
-            torch.isclose(value[~is_masking], expected_output[key][~is_masking])
-        )
+            is_masking = expected_output[key] == -1
+            assert torch.all(
+                torch.isclose(value[~is_masking], expected_output[key][~is_masking])  # type: ignore[index]
+            )
+
+        else:
+            assert value == expected_output[key]
 
 
-def test_collate_fn_casts_hidden_states_dtype():
-    """Test that hidden-states keys are cast to the target dtype during collation."""
-    collate_fn = CollateFn(4, 1, dtype=torch.bfloat16)
+def test_pad_samples_casts_hidden_states_dtype():
+    """Test that hidden-states keys are cast to the target dtype during padding."""
     batch = [
         {
             "input_ids": torch.tensor([0], dtype=torch.long),
@@ -222,21 +158,18 @@ def test_collate_fn_casts_hidden_states_dtype():
         }
     ]
 
-    collated = collate_fn(batch)
+    collated = _pad_samples(batch, 4, torch.bfloat16)
 
     assert collated["hidden_states"].dtype == torch.bfloat16
     assert collated["verifier_last_hidden_states"].dtype == torch.bfloat16
     assert collated["input_ids"].dtype == torch.long
 
 
-def test_collate_fn_length_truncation():
+def test_pad_samples_length_truncation():
     """Test that lengths are truncated when they exceed max_len."""
     max_len = 11
     hidden_size = 8
     num_target_layers = 3
-    collate_fn = CollateFn(
-        max_len, hidden_size, num_target_layers=num_target_layers, dtype=torch.float32
-    )
 
     batch = [
         {
@@ -257,7 +190,8 @@ def test_collate_fn_length_truncation():
         },
     ]
 
-    collated = collate_fn(batch)
+    collated = _pad_samples(batch, max_len, torch.float32)
+    _add_document_ids(collated, max_len)
 
     # document_ids: doc 0 has length 5, doc 1 truncated to length 6, rest is padding
     expected_document_ids = torch.tensor(
@@ -277,198 +211,6 @@ def test_collate_fn_length_truncation():
         assert collated[key].shape[1] == max_len
 
 
-def test_dataset_getitem_v1_format(tmp_path: Path):
-    """Test dataset __getitem__ with v1 data format."""
-
-    file_dtype = torch.float32
-
-    # Create v1 format data
-    data = {
-        "input_ids": torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=torch.long),
-        "loss_mask": torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1], dtype=torch.long),
-        "hidden_states": [
-            torch.tensor(
-                [
-                    [0.0, 0.1],
-                    [1.0, 1.1],
-                    [2.0, 2.1],
-                    [3.0, 3.1],
-                    [4.0, 4.1],
-                    [5.0, 5.1],
-                    [6.0, 6.1],
-                    [7.0, 7.1],
-                    [8.0, 8.1],
-                    [9.0, 9.1],
-                ],
-                dtype=file_dtype,
-            ),
-            torch.tensor(
-                [
-                    [10.0, 10.1],
-                    [11.0, 11.1],
-                    [12.0, 12.1],
-                    [13.0, 13.1],
-                    [14.0, 14.1],
-                    [15.0, 15.1],
-                    [16.0, 16.1],
-                    [17.0, 17.1],
-                    [18.0, 18.1],
-                    [19.0, 19.1],
-                ],
-                dtype=file_dtype,
-            ),
-            torch.tensor(
-                [
-                    [20.0, 20.1],
-                    [21.0, 21.1],
-                    [22.0, 22.1],
-                    [23.0, 23.1],
-                    [24.0, 24.1],
-                    [25.0, 25.1],
-                    [26.0, 26.1],
-                    [27.0, 27.1],
-                    [28.0, 28.1],
-                    [29.0, 29.1],
-                ],
-                dtype=file_dtype,
-            ),
-            torch.tensor(
-                [
-                    [30.0, 30.1],
-                    [31.0, 31.1],
-                    [32.0, 32.1],
-                    [33.0, 33.1],
-                    [34.0, 34.1],
-                    [35.0, 35.1],
-                    [36.0, 36.1],
-                    [37.0, 37.1],
-                    [38.0, 38.1],
-                    [39.0, 39.1],
-                ],
-                dtype=file_dtype,
-            ),
-        ],
-    }
-    expected_output = {
-        "input_ids": torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=torch.long),
-        "hidden_states": torch.tensor(
-            [
-                [0.0, 0.1, 10.0, 10.1, 20.0, 20.1],
-                [1.0, 1.1, 11.0, 11.1, 21.0, 21.1],
-                [2.0, 2.1, 12.0, 12.1, 22.0, 22.1],
-                [3.0, 3.1, 13.0, 13.1, 23.0, 23.1],
-                [4.0, 4.1, 14.0, 14.1, 24.0, 24.1],
-                [5.0, 5.1, 15.0, 15.1, 25.0, 25.1],
-                [6.0, 6.1, 16.0, 16.1, 26.0, 26.1],
-                [7.0, 7.1, 17.0, 17.1, 27.0, 27.1],
-                [8.0, 8.1, 18.0, 18.1, 28.0, 28.1],
-            ],
-            dtype=file_dtype,
-        ),
-        "verifier_last_hidden_states": torch.tensor(
-            [
-                [31.0, 31.1],
-                [32.0, 32.1],
-                [33.0, 33.1],
-                [34.0, 34.1],
-                [35.0, 35.1],
-                [36.0, 36.1],
-                [37.0, 37.1],
-                [38.0, 38.1],
-                [39.0, 39.1],
-            ],
-            dtype=file_dtype,
-        ),
-        "loss_mask": torch.tensor([0, 1, 1, 1, 1, 1, 1, 1, 1], dtype=torch.long),
-        "lengths": torch.tensor([9], dtype=torch.long),
-        "position_ids": torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=torch.long),
-    }
-
-    file_path = tmp_path / f"data_{0}.pt"
-    torch.save(data, file_path)
-
-    dataset = SampleFileDataset(
-        max_len=12, file_list=[str(file_path)], hidden_states_dtype=file_dtype
-    )
-
-    raw_item = dataset[0]
-    assert raw_item is not None
-    item = shift_batch(raw_item)
-
-    for key, value in item.items():
-        assert torch.allclose(value, expected_output[key]), (
-            f"Key {key} does not match expected output"
-        )
-
-
-def test_dataset_loads_lengths_from_sample_lengths_json(tmp_path: Path):
-    """Test that approx_lengths are loaded from sample_lengths.json when present."""
-    for i in range(3):
-        seq_len = 10 + i * 5  # 10, 15, 20
-        data = {
-            "input_ids": torch.arange(seq_len, dtype=torch.long),
-            "loss_mask": torch.ones(seq_len, dtype=torch.long),
-            "hidden_states": [
-                torch.randn(seq_len, 2, dtype=torch.float32) for _ in range(4)
-            ],
-        }
-        torch.save(data, tmp_path / f"data_{i}.pt")
-
-    # Create sample_lengths.json with exact lengths (after shift_batch reduces by 1)
-    expected_lengths = {"0": 9, "1": 14, "2": 19}
-    with (tmp_path / "sample_lengths.json").open("w") as f:
-        json.dump(expected_lengths, f)
-
-    file_list = sorted([str(f) for f in tmp_path.glob("data_*.pt")])
-    dataset = SampleFileDataset(max_len=50, file_list=file_list)
-
-    assert dataset.approx_lengths == [9, 14, 19], (
-        f"Expected [9, 14, 19], got {dataset.approx_lengths}"
-    )
-
-
-def test_dataset_fallback_when_sample_lengths_json_missing(tmp_path: Path):
-    """Test fallback to file-size approximation when sample_lengths.json is missing."""
-    seq_len = 10
-    data = {
-        "input_ids": torch.arange(seq_len, dtype=torch.long),
-        "loss_mask": torch.ones(seq_len, dtype=torch.long),
-        "hidden_states": [
-            torch.randn(seq_len, 2, dtype=torch.float32) for _ in range(4)
-        ],
-    }
-    torch.save(data, tmp_path / "data_0.pt")
-
-    file_list = [str(tmp_path / "data_0.pt")]
-    dataset = SampleFileDataset(max_len=50, file_list=file_list)
-
-    # Should use fallback and return a list with one length
-    assert len(dataset.approx_lengths) == 1
-    assert dataset.approx_lengths[0] == seq_len
-
-
-def test_dataset_fallback_when_sample_lengths_json_malformed(tmp_path: Path):
-    """Test fallback when sample_lengths.json has missing keys."""
-    for i in range(2):
-        seq_len = 10
-        data = {
-            "input_ids": torch.arange(seq_len, dtype=torch.long),
-            "loss_mask": torch.ones(seq_len, dtype=torch.long),
-            "hidden_states": [
-                torch.randn(seq_len, 2, dtype=torch.float32) for _ in range(4)
-            ],
-        }
-        torch.save(data, tmp_path / f"data_{i}.pt")
-
-    # Create malformed sample_lengths.json (missing key "1")
-    with (tmp_path / "sample_lengths.json").open("w") as f:
-        json.dump({"0": 9}, f)
-
-    file_list = sorted([str(f) for f in tmp_path.glob("data_*.pt")])
-    dataset = SampleFileDataset(max_len=50, file_list=file_list)
-    assert len(dataset.approx_lengths) == 2
-
-
 def test_arrow_dataset_default_train_ratio_does_not_crash(tmp_path: Path):
     ds = Dataset.from_dict(
         {
@@ -481,48 +223,442 @@ def test_arrow_dataset_default_train_ratio_does_not_crash(tmp_path: Path):
     (tmp_path / "data" / "hidden_states").mkdir()
 
     arrow_ds = ArrowDataset(
-        max_len=128,
         datapath=str(tmp_path / "data"),
-        on_missing="skip",
     )
 
     # Should not raise AttributeError
-    assert arrow_ds._map_to_file_idx(0) == 0
-    assert arrow_ds._map_to_file_idx(5) == 5
+    assert arrow_ds._map_to_storage_index(0) == 0
+    assert arrow_ds._map_to_storage_index(5) == 5
 
 
-def test_arrow_dataset_on_generate_cache_creates_hidden_states_dir(tmp_path: Path):
-    """on_generate="cache" must create the cache dir when cache() is called —
-    otherwise shutil.move into it raises FileNotFoundError, which _maybe_generate_hs
-    downgrades to a warning, so caching silently fails for every sample."""
+class _SequenceTransfer:
+    """Minimal transfer fake which returns or raises queued generated results."""
+
+    def __init__(self, generated_results):
+        self.generated_results = list(generated_results)
+        self.deleted: list[str] = []
+
+    def setup(self):
+        return None
+
+    def get_cached(self, _file_idx):
+        return None
+
+    def get_generated(self, _hs_transfer_params):
+        result = self.generated_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def delete(self, handle):
+        self.deleted.append(handle)
+
+
+class _QueuedAsyncOpenAI:
+    """Fake AsyncOpenAI client which returns queued handles in request order."""
+
+    def __init__(self, handles):
+        self.handles = iter(handles)
+        self.requests: list[list[int]] = []
+        self.active_requests = 0
+        self.max_active_requests = 0
+        self.completions = self
+
+    async def create(self, *, prompt, **_kwargs):
+        self.requests.append(prompt)
+        self.active_requests += 1
+        self.max_active_requests = max(self.max_active_requests, self.active_requests)
+        await asyncio.sleep(0)
+        self.active_requests -= 1
+        handle = next(self.handles)
+        return SimpleNamespace(
+            prompt_token_ids=prompt,
+            kv_transfer_params={"handle": handle},
+        )
+
+    async def close(self):
+        return None
+
+
+def _make_generation_dataset(
+    tmp_path: Path,
+    transfer: _SequenceTransfer,
+    num_records: int = 1,
+    **kwargs,
+) -> SpeculatorsDataset:
+    handles = kwargs.pop("handles", ())
     ds = Dataset.from_dict(
         {
-            "input_ids": [[1, 2, 3]],
-            "loss_mask": [[1, 1, 1]],
-            "seq_len": [3],
+            "input_ids": [[1, 2, 3]] * num_records,
+            "loss_mask": [[1, 1, 1]] * num_records,
+            "seq_len": [3] * num_records,
         }
     )
     ds.save_to_disk(str(tmp_path / "data"))
-
-    arrow_ds = ArrowDataset(
-        max_len=128,
+    records = ArrowDataset(
         datapath=str(tmp_path / "data"),
-        on_missing="generate",
-        on_generate="cache",
+    )
+    records.data.set_format(type="torch")
+    source = source_module.VllmHiddenStatesSource(
+        transfer=transfer,  # type: ignore[arg-type]
+        model="model",
+        generation_validation_retries=kwargs.pop("generation_validation_retries", 2),
+        max_consecutive_generation_failures=kwargs.pop(
+            "max_consecutive_generation_failures", 20
+        ),
+    )
+    dataset = SpeculatorsDataset(
+        records=records,
+        max_len=8,
+        hidden_states=source,
+        hidden_size=4,
+        num_target_layers=kwargs.pop("num_target_layers", 1),
+    )
+    source.client = _QueuedAsyncOpenAI(handles)  # type: ignore[assignment]
+    return dataset
+
+
+def test_arrow_dataset_builds_explicit_dataset_record(tmp_path):
+    dataset = _make_generation_dataset(tmp_path, _SequenceTransfer([]))
+
+    record = dataset.records[0]
+
+    assert torch.equal(record.input_ids, torch.tensor([1, 2, 3]))
+    assert torch.equal(record.loss_mask, torch.tensor([1, 1, 1]))
+    assert record.seq_len == 3
+    assert record.storage_index == 0
+    assert record.messages is None
+
+
+def test_arrow_dataset_getitems_preserves_order_and_storage_indices(tmp_path):
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2], [3, 4], [5, 6]],
+            "loss_mask": [[1, 1], [1, 0], [0, 1]],
+            "seq_len": [2, 2, 2],
+        }
+    )
+    ds.save_to_disk(str(tmp_path / "data"))
+    records = ArrowDataset(datapath=str(tmp_path / "data"))
+    records.data.set_format(type="torch")
+
+    loaded = records.__getitems__([2, 0])
+
+    assert [record.storage_index for record in loaded] == [2, 0]
+    assert [record.input_ids.tolist() for record in loaded] == [[5, 6], [1, 2]]
+
+
+def _valid_generated_sample() -> dict[str, torch.Tensor]:
+    return {
+        "hidden_states": torch.ones(3, 2, 4, dtype=torch.bfloat16),
+        "token_ids": torch.tensor([1, 2, 3], dtype=torch.long),
+    }
+
+
+def _generated_sample(num_layers: int, hidden_size: int = 4) -> dict[str, torch.Tensor]:
+    """Build a payload whose layer values make truncation observable."""
+    capture = torch.arange(1, num_layers + 1, dtype=torch.bfloat16)
+    return {
+        "hidden_states": capture.view(1, -1, 1).expand(3, num_layers, hidden_size),
+        "token_ids": torch.tensor([1, 2, 3], dtype=torch.long),
+    }
+
+
+def test_vllm_source_workers_overlap_requests():
+    source = source_module.VllmHiddenStatesSource(
+        transfer=_SequenceTransfer(  # type: ignore[arg-type]
+            [_valid_generated_sample()] * 2
+        ),
+        model="model",
+        generation_validation_retries=0,
+    )
+    client = _QueuedAsyncOpenAI(["0", "1"])
+    source.client = client  # type: ignore[assignment]
+    records = [
+        DatasetRecord(
+            input_ids=torch.tensor([1, 2, 3]),
+            loss_mask=torch.ones(3, dtype=torch.bool),
+            seq_len=3,
+            storage_index=index,
+        )
+        for index in range(2)
+    ]
+
+    source.get_batch(records)
+    source.close()
+
+    assert client.max_active_requests == 2
+
+
+def test_speculators_dataset_getitems_builds_collated_batch(tmp_path):
+    transfer = _SequenceTransfer([_valid_generated_sample()])
+    dataset = _make_generation_dataset(tmp_path, transfer, handles=["handle"])
+
+    batch = dataset.__getitems__([0])
+
+    assert batch["input_ids"].shape == (1, 8)
+    assert batch["hidden_states"].shape == (1, 8, 4)
+    assert batch["document_ids"].shape == (1, 8)
+    assert batch["error_records"] == 0
+
+
+def test_offline_hidden_states_source_loads_cached_sample():
+    cached = _valid_generated_sample()
+
+    class CachedTransfer:
+        def __init__(self):
+            self.requested_indices = []
+
+        def get_cached(self, file_index):
+            self.requested_indices.append(file_index)
+            return cached
+
+    transfer = CachedTransfer()
+    source = source_module.OfflineHiddenStatesSource(
+        transfer=transfer,  # type: ignore[arg-type]
+        on_missing="raise",
     )
 
-    assert hasattr(arrow_ds.transfer, "hidden_states_path")
-    # Directory is created lazily when cache() is called
-    assert not arrow_ds.transfer.hidden_states_path.exists()
+    record = DatasetRecord(
+        input_ids=torch.tensor([1, 2, 3]),
+        loss_mask=torch.ones(3, dtype=torch.bool),
+        seq_len=3,
+        storage_index=17,
+    )
+    assert source.get_one(record) is cached
+    assert transfer.requested_indices == [17]
 
-    # Simulate caching a generated sample
+    batch = source.get_batch([record, record])
+    assert batch[0] is cached
+    assert batch[1] is cached
+    assert transfer.requested_indices == [17, 17, 17]
 
-    temp_file = tmp_path / "temp_hs.safetensors"
-    save_file({"hidden_states": torch.zeros(1, 1)}, temp_file)
 
-    arrow_ds.transfer.cache(str(temp_file), file_idx=0)
+@pytest.mark.parametrize("on_missing", ["skip", "warn"])
+def test_offline_hidden_states_source_handles_cache_miss(on_missing):
+    class MissingTransfer:
+        def get_cached(self, _storage_index):
+            return None
 
-    # Now the directory should exist
-    assert arrow_ds.transfer.hidden_states_path.is_dir()
-    # And the cached file should exist
-    assert (arrow_ds.transfer.hidden_states_path / "hs_0.safetensors").exists()
+    record = DatasetRecord(
+        input_ids=torch.tensor([1, 2, 3]),
+        loss_mask=torch.ones(3, dtype=torch.bool),
+        seq_len=3,
+        storage_index=17,
+    )
+    source = source_module.OfflineHiddenStatesSource(
+        transfer=MissingTransfer(),  # type: ignore[arg-type]
+        on_missing=on_missing,
+    )
+
+    if on_missing == "warn":
+        with pytest.warns(UserWarning, match="sample 17"):
+            result = source.get_one(record)
+    else:
+        result = source.get_one(record)
+
+    assert isinstance(result, SampleUnavailable)
+
+
+def test_offline_hidden_states_source_raises_on_cache_miss():
+    class MissingTransfer:
+        def get_cached(self, _storage_index):
+            return None
+
+    record = DatasetRecord(
+        input_ids=torch.tensor([1, 2, 3]),
+        loss_mask=torch.ones(3, dtype=torch.bool),
+        seq_len=3,
+        storage_index=17,
+    )
+    source = source_module.OfflineHiddenStatesSource(
+        transfer=MissingTransfer(),  # type: ignore[arg-type]
+        on_missing="raise",
+    )
+
+    with pytest.raises(RuntimeError, match="sample 17"):
+        source.get_one(record)
+
+
+def test_vllm_hidden_states_source_close_is_idempotent():
+    class CloseableClient:
+        def __init__(self):
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+
+    source = source_module.VllmHiddenStatesSource(
+        transfer=object(),  # type: ignore[arg-type]
+        model="model",
+    )
+    client = CloseableClient()
+    source.client = client  # type: ignore[assignment]
+
+    source.close()
+    source.close()
+
+    assert client.close_calls == 1
+    assert source.client is None
+
+
+def test_arrow_dataset_retries_nonfinite_read_then_recovers(tmp_path, caplog):
+    corrupt = _valid_generated_sample()
+    corrupt["hidden_states"][1, 0, 0] = float("nan")
+    transfer = _SequenceTransfer([corrupt, _valid_generated_sample()])
+    arrow_ds = _make_generation_dataset(
+        tmp_path,
+        transfer,
+        generation_validation_retries=1,
+        handles=["bad-handle", "good-handle"],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="speculators"):
+        item = arrow_ds[0]
+
+    assert isinstance(item, dict)
+    assert "non-finite" in caplog.text
+    assert item["hidden_states"].shape == (3, 4)
+    assert torch.isfinite(item["hidden_states"]).all()
+    assert transfer.deleted == ["bad-handle", "good-handle"]
+    assert isinstance(arrow_ds.hidden_states, source_module.VllmHiddenStatesSource)
+    assert arrow_ds.hidden_states.generation_recovery.consecutive_failures == 0
+    client = arrow_ds.hidden_states.client
+    assert isinstance(client, _QueuedAsyncOpenAI)
+    assert client.requests == [[1, 2, 3], [1, 2, 3]]
+
+
+def test_arrow_dataset_payload_matching_target_layers_feeds_all_entries(
+    tmp_path,
+):
+    num_target_layers = 3
+    hidden_size = 4
+    sample = _generated_sample(num_target_layers, hidden_size)
+    transfer = _SequenceTransfer([sample])
+    arrow_ds = _make_generation_dataset(
+        tmp_path,
+        transfer,
+        num_target_layers=num_target_layers,
+        handles=["handle-0"],
+    )
+
+    item = arrow_ds[0]
+
+    assert isinstance(item, dict)
+    assert item["hidden_states"].shape == (3, num_target_layers * hidden_size)
+    assert torch.equal(item["hidden_states"], sample["hidden_states"].flatten(1))
+    assert torch.equal(
+        item["verifier_last_hidden_states"], sample["hidden_states"][:, -1]
+    )
+
+
+def test_arrow_dataset_payload_one_past_target_layers_drops_trailing(
+    tmp_path,
+):
+    num_target_layers = 3
+    hidden_size = 4
+    sample = _generated_sample(num_target_layers + 1, hidden_size)
+    transfer = _SequenceTransfer([sample])
+    arrow_ds = _make_generation_dataset(
+        tmp_path,
+        transfer,
+        num_target_layers=num_target_layers,
+        handles=["handle-0"],
+    )
+
+    item = arrow_ds[0]
+
+    assert isinstance(item, dict)
+    assert item["hidden_states"].shape == (3, num_target_layers * hidden_size)
+    assert torch.equal(
+        item["hidden_states"], sample["hidden_states"][:, :-1].flatten(1)
+    )
+    assert torch.equal(
+        item["verifier_last_hidden_states"], sample["hidden_states"][:, -1]
+    )
+
+
+def test_exhausted_generation_produces_locally_empty_zero_loss_batch(tmp_path, caplog):
+    transfer = _SequenceTransfer(
+        [ValueError("checksum mismatch"), ValueError("checksum mismatch")]
+    )
+    arrow_ds = _make_generation_dataset(
+        tmp_path,
+        transfer,
+        generation_validation_retries=1,
+        max_consecutive_generation_failures=10,
+        handles=["bad-1", "bad-2"],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="speculators"):
+        collated = arrow_ds.__getitems__([0])
+
+    assert "checksum mismatch" in caplog.text
+    assert collated["error_records"] == 1
+    metadata = collated[RECOVERY_METADATA_KEY]
+    assert isinstance(metadata, RecoveryMetadata)
+    assert metadata.locally_empty
+    assert metadata.failure_count == 1
+    assert not metadata.fatal
+    assert not collated["loss_mask"].bool().any()
+    assert torch.equal(collated["document_ids"], torch.full((1, 8), -1))
+    assert collated["hidden_states"].shape == (1, 8, 4)
+    assert collated["hidden_states"].dtype == torch.bfloat16
+
+
+def test_consecutive_generation_failures_trip_circuit_breaker(tmp_path, caplog):
+    transfer = _SequenceTransfer(
+        [
+            ValueError("bad read 1"),
+            ValueError("bad read 2"),
+            ValueError("bad read 3"),
+            ValueError("bad read 4"),
+        ]
+    )
+    arrow_ds = _make_generation_dataset(
+        tmp_path,
+        transfer,
+        generation_validation_retries=1,
+        max_consecutive_generation_failures=2,
+        handles=["bad-1", "bad-2", "bad-3", "bad-4"],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="speculators"):
+        first_batch = arrow_ds.__getitems__([0])
+        collated = arrow_ds.__getitems__([0])
+
+    assert "consecutive failures=2/2" in caplog.text
+    first_metadata = first_batch[RECOVERY_METADATA_KEY]
+    assert isinstance(first_metadata, RecoveryMetadata)
+    assert not first_metadata.fatal
+    metadata = collated[RECOVERY_METADATA_KEY]
+    assert isinstance(metadata, RecoveryMetadata)
+    assert metadata.fatal
+    assert "bad read 4" in metadata.error
+
+
+def test_getitems_keeps_valid_samples_when_one_generation_fails(tmp_path):
+    transfer = _SequenceTransfer(
+        [ValueError("transient read"), _valid_generated_sample()]
+    )
+    dataset = _make_generation_dataset(
+        tmp_path,
+        transfer,
+        num_records=2,
+        generation_validation_retries=0,
+        handles=["bad", "good"],
+    )
+
+    collated = dataset.__getitems__([0, 1])
+
+    assert collated["error_records"] == 1
+    metadata = collated[RECOVERY_METADATA_KEY]
+    assert isinstance(metadata, RecoveryMetadata)
+    assert not metadata.locally_empty
+    assert metadata.failure_count == 1
+    assert collated["loss_mask"].sum() == 3
+    assert torch.equal(collated["input_ids"][0, :3], torch.tensor([1, 2, 3]))
+    source = cast("source_module.VllmHiddenStatesSource", dataset.hidden_states)
+    client = source.client
+    assert isinstance(client, _QueuedAsyncOpenAI)
+    assert client.requests == [[1, 2, 3], [1, 2, 3]]

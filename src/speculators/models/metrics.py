@@ -3,6 +3,33 @@
 import torch
 
 
+@torch.no_grad()
+def compute_accepted_length_counts(
+    correct: torch.Tensor,  # shape: [num_blocks, num_draft_slots]
+    valid: torch.Tensor,  # shape: [num_blocks, num_draft_slots]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Count accepted length per speculative block as raw sum/total counts.
+
+    A block is accepted up to its first wrong draft slot, so its length is the
+    leading run of correct slots plus the verifier's always-emitted bonus token
+    (vLLM's convention). Forming the run inside the block preserves the
+    correlation between slots; a product of per-slot marginals discards it and
+    understates the result.
+
+    Args:
+        correct: Whether each draft slot matched the target.
+        valid: Whether each draft slot is trained on (block-shaped loss mask).
+
+    Returns:
+        Tuple of (accepted_length_sum, valid_block_total) as raw counts suitable
+        for distributed reduction before computing the ratio.
+    """
+    accepted = torch.logical_and(correct, valid).to(torch.float32)
+    per_block_len = accepted.cumprod(dim=-1).sum(dim=-1) + 1.0
+    block_valid = valid.any(dim=-1).to(torch.float32)
+    return (per_block_len * block_valid).sum(), block_valid.sum()
+
+
 def compute_accuracy_single_step(
     pred_ids: torch.Tensor,  # shape: [1, seq_len]
     target_ids: torch.Tensor,  # shape: [1, seq_len]
@@ -23,15 +50,18 @@ def compute_accuracy_single_step(
         counts suitable for distributed reduction before computing ratios.
     """
     correct = pred_ids == target_ids
-    cond_total = torch.tensor(correct.numel(), dtype=torch.float, device=correct.device)
+    numel = torch.full((), correct.numel(), dtype=torch.float, device=correct.device)
+    cond_total = numel
     if prev_correct is not None:
         cond_total = prev_correct.sum().float()
         correct = torch.logical_and(prev_correct, correct, out=prev_correct)
     if loss_mask is not None:
-        correct = torch.masked_select(correct, loss_mask.to(torch.bool))
-
-    correct_sum = correct.float().sum()
-    full_total = torch.tensor(correct.numel(), dtype=torch.float, device=correct.device)
+        mask = loss_mask.to(torch.bool)
+        correct_sum = torch.logical_and(correct, mask).float().sum()
+        full_total = mask.sum().float()
+    else:
+        correct_sum = correct.float().sum()
+        full_total = numel.clone()
 
     return correct_sum, full_total, correct_sum.clone(), cond_total
 

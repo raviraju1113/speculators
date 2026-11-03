@@ -1,7 +1,7 @@
 """Resolution seam tests plus the example-recipe back-compat suite.
 
 The recipe suite is the central backward-compatibility guard: each real
-``examples/train/*.sh`` recipe's ``train.py`` invocation is extracted (bash does
+``examples/train/*.sh`` recipe's training invocation is extracted (bash does
 the variable expansion and word-splitting, exactly as a user's shell would) and
 run through :meth:`TrainConfig.resolve`; the flags it sets must resolve to their
 expected values in the flat dict. A renamed, dropped, or retyped flag breaks a
@@ -299,6 +299,76 @@ def test_matching_algorithm_block_does_not_warn():
         )
 
 
+def test_dflash2_consumes_shared_and_exclusive_algorithm_blocks():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = TrainConfig.from_sources(
+            cli={
+                "verifier_name_or_path": "m",
+                "speculator_type": "dflash2",
+                "block_size": 4,
+                "conv_kernel_size": 3,
+            },
+            argv=["train.py"],
+        )
+    assert cfg.dflash.block_size == 4
+    assert cfg.dflash2.conv_kernel_size == 3
+
+
+def test_dflash2_exclusive_block_warns_for_other_dflash_family_member():
+    with pytest.warns(UserWarning, match="does not use the 'dflash2'"):
+        TrainConfig.from_sources(
+            cli={
+                "verifier_name_or_path": "m",
+                "speculator_type": "dspark",
+                "selector_top_k": 8,
+            },
+            argv=["train.py"],
+        )
+
+
+def test_on_generate_flag_warns_deprecated():
+    with pytest.warns(FutureWarning, match="--on-generate is deprecated"):
+        TrainConfig.from_sources(
+            cli={"verifier_name_or_path": "m", "on_generate": "delete"},
+            argv=["train.py"],
+        )
+
+
+def test_on_generate_yaml_warns_deprecated(tmp_path):
+    config_path = _write(tmp_path, "train:\n  generation:\n    on_generate: delete\n")
+    with pytest.warns(FutureWarning, match="--on-generate is deprecated"):
+        TrainConfig.from_sources(
+            cli={"verifier_name_or_path": "m"},
+            config_path=config_path,
+            argv=["train.py"],
+        )
+
+
+def test_peagle_flag_warns_deprecated():
+    with pytest.warns(FutureWarning, match="P-EAGLE is deprecated"):
+        TrainConfig.from_sources(
+            cli={"verifier_name_or_path": "m", "speculator_type": "peagle"},
+            argv=["train.py"],
+        )
+
+
+def test_peagle_yaml_warns_deprecated(tmp_path):
+    config_path = _write(tmp_path, "train:\n  speculator_type: peagle\n")
+    with pytest.warns(FutureWarning, match="P-EAGLE is deprecated"):
+        TrainConfig.from_sources(
+            cli={"verifier_name_or_path": "m"},
+            config_path=config_path,
+            argv=["train.py"],
+        )
+
+
+def test_default_on_generate_does_not_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        TrainConfig.from_sources(cli={"verifier_name_or_path": "m"}, argv=["train.py"])
+
+
 def test_default_algorithm_block_does_not_warn():
     # An untouched (all-default) mismatched group is not "set", so it stays silent.
     with warnings.catch_warnings():
@@ -331,6 +401,54 @@ def test_resolve_verifier_from_config_only_succeeds(tmp_path):
     config.write_text("train:\n  verifier:\n    verifier_name_or_path: from-yaml\n")
     cfg = TrainConfig.resolve(["--config", str(config)])
     assert cfg.flatten()["verifier_name_or_path"] == "from-yaml"
+
+
+def test_resolve_dflash2_flags_and_derived_defaults():
+    cfg = TrainConfig.resolve(
+        [
+            "--verifier-name-or-path",
+            "m",
+            "--speculator-type",
+            "dflash2",
+            "--conv-kernel-size",
+            "3",
+            "--conv-group-size",
+            "8",
+            "--selector-rank",
+            "128",
+            "--selector-top-k",
+            "12",
+            "--selector-loss-alpha",
+            "0.3",
+            "--selector-miss-policy",
+            "strict",
+        ]
+    )
+    flat = cfg.flatten()
+    assert flat["num_layers"] == 5
+    assert flat["block_size"] == 8
+    assert flat["loss_fn"] == "kl_div"
+    assert flat["sliding_window_non_causal"] is True
+    assert flat["conv_kernel_size"] == 3
+    assert flat["conv_group_size"] == 8
+    assert flat["selector_rank"] == 128
+    assert flat["selector_top_k"] == 12
+    assert flat["selector_loss_alpha"] == pytest.approx(0.3)
+    assert flat["selector_miss_policy"] == "strict"
+
+
+def test_resolve_dflash2_allows_explicit_causal_override():
+    cfg = TrainConfig.resolve(
+        [
+            "--verifier-name-or-path",
+            "m",
+            "--speculator-type",
+            "dflash2",
+            "--no-sliding-window-non-causal",
+        ]
+    )
+
+    assert cfg.flatten()["sliding_window_non_causal"] is False
 
 
 def test_resolve_config_error_exits_cleanly(capsys):
@@ -387,9 +505,25 @@ def test_resolve_flag_overrides_config_file(tmp_path):
     assert cfg.flatten()["lr"] == 0.5
 
 
+def test_resolve_max_transfer_workers():
+    cfg = TrainConfig.resolve(
+        ["--verifier-name-or-path", "m", "--max-transfer-workers", "1"]
+    )
+
+    assert cfg.flatten()["max_transfer_workers"] == 1
+
+
 def test_help_is_grouped_by_concern():
     titles = {group.title for group in build_parser()._action_groups}
-    assert {"general", "verifier", "draft", "data", "optimizer", "mtp"} <= titles
+    assert {
+        "general",
+        "verifier",
+        "draft",
+        "data",
+        "optimizer",
+        "dflash2",
+        "mtp",
+    } <= titles
 
 
 # --------------------------------------------------------------------------- #
@@ -409,19 +543,19 @@ def _config_block(lines: list[str]) -> list[str]:
 
 
 def _train_invocation_args(lines: list[str]) -> str:
-    """The argument text after ``scripts/train.py``, with continuations joined."""
-    start = next(i for i, line in enumerate(lines) if "scripts/train.py" in line)
+    """The argument text after ``-m speculators.train``, with continuations joined."""
+    start = next(i for i, line in enumerate(lines) if "-m speculators.train" in line)
     block: list[str] = []
     for line in lines[start:]:
         block.append(line)
         if not line.rstrip().endswith("\\"):
             break
     joined = " ".join(line.rstrip().rstrip("\\").strip() for line in block)
-    return joined.split("scripts/train.py", 1)[1]
+    return joined.split("-m speculators.train", 1)[1]
 
 
 def _recipe_argv(path: Path) -> list[str]:
-    """Extract the argv a recipe threads into ``train.py`` via a real shell."""
+    """Extract the argv a recipe threads into training via a real shell."""
     lines = path.read_text().splitlines()
     script = (
         "\n".join(_config_block(lines))
@@ -439,11 +573,11 @@ def _recipe_argv(path: Path) -> list[str]:
 
 
 RECIPES: dict[str, dict] = {
-    "dflash_qwen3_8b_sharegpt_online_5k.sh": {
+    "dflash_qwen3_8b_ultrachat_online_5k.sh": {
         "verifier_name_or_path": "Qwen/Qwen3-8B",
-        "data_path": "./output/dflash_qwen3_8b_sharegpt",
+        "data_path": "./output/dflash_qwen3_8b_ultrachat_200k_regen",
         "vllm_endpoint": "http://localhost:8000/v1",
-        "save_path": "./output/dflash_qwen3_8b_sharegpt/checkpoints",
+        "save_path": "./output/dflash_qwen3_8b_ultrachat_200k_regen/checkpoints",
         "draft_vocab_size": 32000,
         "epochs": 5,
         "lr": 3e-4,
@@ -454,13 +588,14 @@ RECIPES: dict[str, dict] = {
         "num_layers": 5,
         "target_layer_ids": [2, 18, 33],
         "on_missing": "generate",
-        "on_generate": "delete",
     },
     "dflash_qwen3_8b_ultrachat_online_5k_bestpractices.sh": {
         "verifier_name_or_path": "Qwen/Qwen3-8B",
-        "data_path": "./output/dflash_qwen3_8b_ultrachat_bestpractices",
+        "data_path": "./output/dflash_qwen3_8b_ultrachat_200k_regen_bestpractices",
         "vllm_endpoint": "http://localhost:8000/v1",
-        "save_path": "./output/dflash_qwen3_8b_ultrachat_bestpractices/checkpoints",
+        "save_path": (
+            "./output/dflash_qwen3_8b_ultrachat_200k_regen_bestpractices/checkpoints"
+        ),
         "draft_vocab_size": 32000,
         "epochs": 5,
         "lr": 3e-4,
@@ -473,7 +608,21 @@ RECIPES: dict[str, dict] = {
         "loss_fn": "ce",
         "target_layer_ids": [2, 18, 33],
         "on_missing": "generate",
-        "on_generate": "delete",
+    },
+    "dflash2_qwen3_8b_ultrachat_online_5k.sh": {
+        "verifier_name_or_path": "Qwen/Qwen3-8B",
+        "data_path": "./output/dflash2_qwen3_8b_ultrachat_200k_regen",
+        "vllm_endpoint": "http://localhost:8000/v1",
+        "save_path": "./output/dflash2_qwen3_8b_ultrachat_200k_regen/checkpoints",
+        "epochs": 5,
+        "lr": 3e-4,
+        "total_seq_len": 8192,
+        "speculator_type": "dflash2",
+        "block_size": 8,
+        "max_anchors": 3072,
+        "num_layers": 5,
+        "target_layer_ids": [2, 18, 33],
+        "on_missing": "generate",
     },
     "dspark_qwen3_0_6b_sharegpt_online.sh": {
         "verifier_name_or_path": "Qwen/Qwen3-0.6B",
@@ -496,7 +645,6 @@ RECIPES: dict[str, dict] = {
         "loss_fn": '{"ce": 0.1, "tv": 0.9}',
         "confidence_head_alpha": 1.0,
         "on_missing": "generate",
-        "on_generate": "delete",
     },
     "eagle3_llama3_8b_ultrachat_offline_5k.sh": {
         "verifier_name_or_path": "meta-llama/Llama-3.1-8B-Instruct",
@@ -509,7 +657,7 @@ RECIPES: dict[str, dict] = {
         "total_seq_len": 8192,
         "on_missing": "raise",
     },
-    "eagle3_qwen3_8b_sharegpt_online_5k.sh": {
+    "eagle3_qwen3_8b_ultrachat_online_5k.sh": {
         "verifier_name_or_path": "Qwen/Qwen3-8B",
         "data_path": "./output",
         "vllm_endpoint": "http://localhost:8000/v1",
@@ -519,7 +667,6 @@ RECIPES: dict[str, dict] = {
         "lr": 1e-4,
         "total_seq_len": 8192,
         "on_missing": "generate",
-        "on_generate": "delete",
     },
     "mtp_qwen3_5_9b_gsm8k_online.sh": {
         "verifier_name_or_path": "Qwen/Qwen3.5-9B",
@@ -534,14 +681,15 @@ RECIPES: dict[str, dict] = {
         "lr": 1e-4,
         "total_seq_len": 8192,
         "on_missing": "generate",
-        "on_generate": "delete",
     },
-    "peagle_qwen3_8b_sharegpt_online_5k.sh": {
+    "peagle_qwen3_8b_ultrachat_online_5k.sh": {
         "verifier_name_or_path": "Qwen/Qwen3-8B",
-        "data_path": "./output/peagle_qwen3_8b_sharegpt",
+        "data_path": "./output/peagle_qwen3_8b_ultrachat_200k_regen",
         "vllm_endpoint": "http://localhost:8108/v1",
-        "hidden_states_path": "./output/peagle_qwen3_8b_sharegpt/hidden_states",
-        "save_path": "./output/peagle_qwen3_8b_sharegpt/checkpoints",
+        "hidden_states_path": (
+            "./output/peagle_qwen3_8b_ultrachat_200k_regen/hidden_states"
+        ),
+        "save_path": "./output/peagle_qwen3_8b_ultrachat_200k_regen/checkpoints",
         "epochs": 5,
         "lr": 6e-4,
         "total_seq_len": 4096,
@@ -553,7 +701,6 @@ RECIPES: dict[str, dict] = {
         "norm_before_residual": False,
         "scheduler_type": "cosine",
         "on_missing": "generate",
-        "on_generate": "delete",
     },
 }
 
