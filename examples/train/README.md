@@ -1029,6 +1029,24 @@ at 16:05 and resubmitted as **15220086** with the greedy anchors first
 (`dflash2_k7_greedy`, `mtp_k4_greedy`, then the sampled pairs, baseline, k-variants); the partial
 sampled DFlash2 results are kept in `results/glm53-short-v028-b300/dflash2_k7_partial_1st_attempt/`.
 
+**Resolved 17:05 — vLLM 0.28's DFlash2 integration is broken for GLM-5.3; 0.33 works.** The greedy
+c131 run on 0.28 stayed at accept_len 1.40 over 65k drafts, so sampling was not the cause. Card-recipe
+diagnostics (`glm53-dflash2-cardrecipe-fp8-v0{28,33}.yaml`: official fp8 target, TP8 on one B200,
+reasoning parser, no EP, greedy AIME ×30):
+
+| env | DFlash2 k=7 greedy | native MTP k=4 greedy |
+|---|---|---|
+| vLLM 0.28 (job 15227669) | accept_len **1.42**, 77 tok/s | — (cancelled) |
+| vLLM 0.33 (job 15227671) | accept_len **4.87**, rate 0.55, **430 tok/s** | accept_len **3.66**, rate 0.67, 357 tok/s |
+
+So on the same prompts the released DFlash2 draft beats native MTP by +1.2 accepted tokens/step and
++20% decode speed (card: 5.9 vs 5.1 on GSM8K — AIME at max-effort is harder). Likely 0.28 culprit:
+its DFlash proposer derived the draft's RoPE layout from the *target* (GLM's MLA is interleaved, the
+Qwen3-style draft is not); 0.33 dropped that and added a dedicated DFlash2 conv kernel. **All
+DFlash2 evals must use `condaenvs/vllm033`.** The c131 short set was resubmitted on 0.33 as job
+**15231512** (`glm53-short-v033-b300.yaml`, bf16, same experiment order); the 0.28 runs
+(`results/glm53-short-v028-b300/`) are kept only as a record of the bug.
+
 Tooling added for this (commit 0dd70a6): `run_vllm_eval.py --extra-body` /
 yaml `eval.extra_body` (passes `chat_template_kwargs.reasoning_effort` on every request);
 pair launcher `EVAL_CONFIG=`/`ONLY=` mode.
