@@ -1,0 +1,115 @@
+# GLM-5.3 FULL suite (Chen's 28-benchmark list from full-eval.yaml) on ONE B300 node,
+# vLLM 0.33, bf16 weights + bf16 KV, TP8 multiprocessing executor — the same server as the
+# short set (glm53-short-v033-b300.yaml) and as data generation. Sampling = data-gen/serving
+# regime (T 1.0, top-p 0.95, reasoning_effort max, clear_thinking). 50 samples per benchmark
+# (seed 42, Chen's convention) -> ~1,370 prompts per experiment; the evaluator skips a
+# benchmark whose data file is missing (the six SPEED-Bench categories humanities/math/
+# reasoning/roleplay/stem/summarization until NVIDIA's prepare.py has been run).
+#
+# Time on one B300 (from the short set: ~3.1k tokens/reply; baseline 125 tok/s, MTP k4 ~250,
+# MTP k2 ~230, DFlash2 k7 ~270; +15 min load and ~20 min aa-lcr prefill per experiment):
+#   dflash2_k7 ~4.5 h, mtp_k4 ~5 h, baseline ~9.5 h, mtp_k2 ~5.5 h  => core 4 ~26 h
+#   + greedy anchors (dflash2_k7_greedy, mtp_k4_greedy) ~8 h          => all 6 ~34 h
+# Order below = priority, so a cancelled run still yields the comparison that matters.
+#
+#   TP=8 PP=1 NODES=sc3-c131 GPUTYPE=b300m288 CONDA_ENV=vllm033 EVAL_CONFIG=glm53-full-v033-b300.yaml \
+#     JOBNAME=glm53_full_v033_b300 TIME=2-00:00:00 LOG_DIR=$PWD/data/glm53/logs \
+#     bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
+#   # ONLY=dflash2_k7,mtp_k4,baseline,mtp_k2 to skip the greedy anchors (1.5-day budget)
+#   python scripts/evaluate/experiments/tabulate_results.py --dir scripts/evaluate/experiments/results/glm53-full-v033-b300 --baseline baseline
+#
+# max_model_len 131072 so aa-lcr (~95k-token prompts) fits; single-stream eval, so the
+# ~0.75M-token KV pool of one B300 is ample.
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-bf16
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 131072
+  health_timeout: 3600
+  extra_args:
+    - --distributed-executor-backend
+    - mp
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks:
+    - gsm8k
+    - humaneval
+    - mbpp
+    - speed-coding
+    - speed-humanities
+    - speed-math
+    - speed-multilingual
+    - speed-rag
+    - speed-reasoning
+    - speed-roleplay
+    - speed-stem
+    - speed-summarization
+    - math500
+    - swe-bench-pro
+    - aa-lcr
+    - mt-bench
+    - speed-qa
+    - speed-writing
+    - aime26
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: ./results/glm53-full-v033-b300
+
+experiments:
+  - name: dflash2_k7                    # incoai released draft, data-gen/serving sampling
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+
+  - name: mtp_k4                        # native MTP, colleague's k=4
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
+
+  - name: baseline                      # speedup denominator (long pole, ~9.5 h)
+
+  - name: mtp_k2                        # native MTP, colleague's k=2
+    speculative_config: {method: mtp, num_speculative_tokens: 2}
+
+  - name: dflash2_k7_greedy             # greedy anchors for card comparability
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+    eval: {temperature: 0.0, top_p: 1.0}
+
+  - name: mtp_k4_greedy
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
+    eval: {temperature: 0.0, top_p: 1.0}
