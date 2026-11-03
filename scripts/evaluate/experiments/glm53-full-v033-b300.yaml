@@ -8,14 +8,16 @@
 #
 # Time on one B300 (from the short set: ~3.1k tokens/reply; baseline 125 tok/s, MTP k4 ~250,
 # MTP k2 ~230, DFlash2 k7 ~270; +15 min load and ~20 min aa-lcr prefill per experiment):
-#   dflash2_k7 ~4.5 h, mtp_k4 ~5 h, baseline ~9.5 h, mtp_k2 ~5.5 h  => core 4 ~26 h
-#   + greedy anchors (dflash2_k7_greedy, mtp_k4_greedy) ~8 h          => all 6 ~34 h
+#   dflash2_k7 ~4.5 h, mtp_k4 ~5 h, baseline ~9.5 h, mtp_k2 ~5.5 h  => ~26 h total
+# No greedy anchors here: the short set (glm53-short-v033-b300.yaml) already has them and they
+# match the cards; this suite is the fixed harness in which our own trained DFlash2 draft is
+# later compared against the two baselines under the serving regime. To test a new draft, add
+# an experiment entry with its checkpoint path and run with ONLY=<name> (~4.5 h).
 # Order below = priority, so a cancelled run still yields the comparison that matters.
 #
 #   TP=8 PP=1 NODES=sc3-c131 GPUTYPE=b300m288 CONDA_ENV=vllm033 EVAL_CONFIG=glm53-full-v033-b300.yaml \
 #     JOBNAME=glm53_full_v033_b300 TIME=2-00:00:00 LOG_DIR=$PWD/data/glm53/logs \
 #     bash examples/train/glm53/sbatch_regen_glm53_b200pair.sh
-#   # ONLY=dflash2_k7,mtp_k4,baseline,mtp_k2 to skip the greedy anchors (1.5-day budget)
 #   python scripts/evaluate/experiments/tabulate_results.py --dir scripts/evaluate/experiments/results/glm53-full-v033-b300 --baseline baseline
 #
 # max_model_len 131072 so aa-lcr (~95k-token prompts) fits; single-stream eval, so the
@@ -104,12 +106,8 @@ experiments:
   - name: mtp_k2                        # native MTP, colleague's k=2
     speculative_config: {method: mtp, num_speculative_tokens: 2}
 
-  - name: dflash2_k7_greedy             # greedy anchors for card comparability
-    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
-    speculative_config: {method: dflash}
-    num_speculative_tokens: 7
-    eval: {temperature: 0.0, top_p: 1.0}
-
-  - name: mtp_k4_greedy
-    speculative_config: {method: mtp, num_speculative_tokens: 4}
-    eval: {temperature: 0.0, top_p: 1.0}
+  # Later: our own trained draft, same settings, e.g.
+  # - name: dflash2_ours_<tag>
+  #   draft: /path/to/our/dflash2/checkpoint
+  #   speculative_config: {method: dflash}
+  #   num_speculative_tokens: 7
