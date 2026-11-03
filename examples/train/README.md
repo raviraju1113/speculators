@@ -1051,6 +1051,44 @@ Tooling added for this (commit 0dd70a6): `run_vllm_eval.py --extra-body` /
 yaml `eval.extra_body` (passes `chat_template_kwargs.reasoning_effort` on every request);
 pair launcher `EVAL_CONFIG=`/`ONLY=` mode.
 
+### 9.w.3 Short set DONE (2026-11-02 21:48) — GLM-5.3 bf16 on one B300, vLLM 0.33
+
+Job 15231512 (`glm53-short-v033-b300.yaml`, sc3-c131, TP8, bf16 target, `max_model_len 32768`,
+`reasoning_effort=max`, `clear_thinking=true`; 4 h 45 min for 7 experiments). "Sampled" = T 1.0 /
+top-p 0.95, i.e. the data-generation regime; "greedy" = T 0 anchor for comparison with the model
+cards. Full table with decode tok/s, TTFT and speedup:
+`python scripts/evaluate/experiments/tabulate_results.py --dir scripts/evaluate/experiments/results/glm53-short-v033-b300 --baseline baseline`.
+Baseline (no spec decode) is 125 tok/s on all three benchmarks.
+
+accept_len / accept_rate / e2e tok/s (speedup vs baseline):
+
+| config | AIME ×30 | GPQA ×50 | LiveCodeBench ×50 |
+|---|---|---|---|
+| DFlash2 k=7 greedy | **5.03** / 0.58 / 362 (2.91×) | **3.66** / 0.38 / 271 (2.19×) | **4.27** / 0.47 / 309 (2.50×) |
+| native MTP k=4 greedy | 3.74 / 0.68 / 301 (2.42×) | 3.32 / 0.58 / 271 (2.19×) | 3.46 / 0.62 / 278 (2.25×) |
+| DFlash2 k=7 sampled | **4.44** / 0.49 / 317 (2.55×) | 2.73 / 0.25 / 201 (1.62×) | **3.98** / 0.43 / 287 (2.32×) |
+| DFlash2 k=4 sampled | 3.57 / 0.64 / 290 (2.33×) | 2.50 / 0.38 / 208 (1.67×) | 3.35 / 0.59 / 271 (2.20×) |
+| native MTP k=4 sampled | 3.47 / 0.62 / 277 (2.23×) | 2.59 / 0.40 / 211 (1.70×) | 3.24 / 0.56 / 258 (2.09×) |
+| native MTP k=2 sampled | 2.56 / 0.78 / 243 (1.95×) | 2.13 / 0.57 / 205 (1.65×) | 2.47 / 0.74 / 233 (1.89×) |
+
+Takeaways:
+- **The released `incoai/GLM-5.3-DFlash2` draft beats native MTP on AIME and code in both
+  regimes** (+1.0–1.3 accepted tokens/step greedy, +0.7–1.0 sampled; +15–20% e2e). On GPQA they
+  tie: identical e2e greedy (271 vs 271) and MTP k=4 slightly ahead sampled (211 vs 201).
+- **Sampling at T 1.0 / top-p 0.95 costs 0.3–0.9 accepted tokens** for both drafters, and GPQA is
+  hit hardest (DFlash2 k=7 drops 3.66 → 2.73). Expected: the rejection sampler accepts a draft
+  token only with probability p_target(token) under the request's temperature, so flat target
+  distributions (GPQA multiple-choice reasoning) lose more than peaked ones (math/code). This is
+  the regime our off-policy data was generated in, so these are the numbers a trained draft must
+  beat to be worth deploying under sampling.
+- k=7 vs k=4 for DFlash2: +0.9 accepted tokens on AIME but +0.2 on GPQA, so a per-domain k (or
+  confidence-gated length) would help; MTP k=2 → k=4 is +0.9 / +0.5 / +0.8.
+- bf16 B300 (this table) vs fp8 B200 card recipe (§9.w.2): DFlash2 greedy AIME 5.03 vs 4.87
+  accepted tokens, e2e 362 vs 430 tok/s — fp8 is faster per step, bf16 accepts slightly more.
+
+Next: full 28-benchmark set (`glm53-full-eval.yaml`) on the same node/env, reworked for 0.33
+(DFlash2 single-node; the six SPEED-Bench categories still need NVIDIA's prepare script run first).
+
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
 pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
