@@ -33,6 +33,9 @@ COLUMNS = [
     ("decode tok/s", "decode_tok_s", ".1f"),
     ("e2e tok/s", "e2e_tok_s", ".1f"),
     ("ttft (s)", "mean_ttft_s", ".3f"),
+    ("total resp tok", "total_completion_tokens", "d"),
+    ("mean resp tok", "mean_completion_tokens", ".0f"),
+    ("cap hit", "cap_hit_rate", ".2f"),
     ("accept_len", "accept_length", ".3f"),
     ("accept_rate", "accept_rate", ".4f"),
 ]
