@@ -1,0 +1,42 @@
+# incoai GLM-5.3-DFlash2 exactly as the model card serves it (vLLM example on the
+# incoai/GLM-5.3-NVFP4 card): official fp8 target, TP8 on one 8xB200 node, reasoning parser,
+# no EP, no chat_template_kwargs, greedy. Diagnostic for the accept_len 1.4 seen on c131
+# (bf16 + EP + effort max, vLLM 0.28) vs the card's 4-6. Env: v033.
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3
+gpus: "0,1,2,3,4,5,6,7"
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.9
+  max_model_len: 16384
+  health_timeout: 3600
+  extra_args:
+    - --distributed-executor-backend
+    - mp
+    - --reasoning-parser
+    - glm45
+    - --tool-call-parser
+    - glm47
+    - --enable-auto-tool-choice
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [aime]
+  num_samples: 30
+  max_tokens: 4096
+  temperature: 0.0
+output_dir: ./results/glm53-dflash2-cardrecipe-fp8-v033
+experiments:
+  - name: dflash2_k7_greedy
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+  - name: mtp_k4_greedy
+    speculative_config: {method: mtp, num_speculative_tokens: 4}
