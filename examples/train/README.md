@@ -516,8 +516,10 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   on blk12 ep33 with the paper's math/code pool + SFT replay, two rounds,
   eval after each — **running since 2026-11-02 13:30**: arm a (replay) job
   15215074, arm b (no replay) 15215075, arm c (ordinary-loss control)
-  15215073 running, chained c → a → b on B200 sc3-cp88 (moved there from
-  the H200 at 15:38). Arm b's first
+  15215073 — all three finished 2026-11-02 evening on B200 sc3-cp88. Pool
+  acceptance after one round: b +4.2%, c +6.3%, a flat, λ=1 accident −10%;
+  c's gain does not show on the benchmarks (7.20 / 4.63 / 5.76 vs seed
+  7.19 / 4.64 / 5.80); the remaining five evals run on A100 2026-11-03. Arm b's first
   attempt ran at the paper's λ_rej=1 by accident and lost 0.046 pool
   acceptance in one round (kept as arm b1, eval running); the preset now
   pins λ_rej 0.05 (every B200 is taken; GLM regen has

@@ -175,12 +175,27 @@ in `results/gemma4-31b-dspark-opd-v3`.
 *Paired pool acceptance at k=12 (same 16k prompts, measured by the next
 round's rollout; seed 0.4413 / 5.30 accepted per step):*
 
-| arm | after round 0 (ckpt 34) | after round 1 (ckpt 35) |
+| arm | after round 0 (ckpt 34) | ckpt 35 |
 |---|---|---|
-| b1: OPD, λ_rej = 1 (accident) | 0.3952 / 4.74 — guard stopped it | – |
-| c: ordinary loss on the rollouts | **0.4691 / 5.63** (+6.3%) | pending |
-| a: OPD λ 0.05 + replay | pending | pending |
-| b: OPD λ 0.05, no replay | pending | pending |
+| b1: OPD, λ_rej = 1 (accident) | 0.3952 / 4.74 (−10%) — guard stopped it | – |
+| c: ordinary loss on the rollouts | **0.4691 / 5.63** (+6.3%) | trained; no pool number (2 rounds = 1 paired measurement) |
+| b: OPD λ 0.05, no replay | 0.4598 / 5.52 (+4.2%) | trained |
+| a: OPD λ 0.05 + 8k replay rows | 0.4405 / 5.28 (−0.2%, flat) | trained |
+
+*Benchmarks, k=12, accept_len AIME / GPQA / LCB (A100 evals; seed on the same
+hardware 7.19 / 4.64 / 5.80):*
+
+| checkpoint | AIME | GPQA | LCB | vs seed |
+|---|---|---|---|---|
+| b1 ckpt 34 (λ=1) | 6.41 | 4.38 | 5.34 | −11% / −6% / −8% |
+| c ckpt 34 (ordinary loss, 1 round) | 7.20 | 4.63 | 5.76 | 0 / 0 / −1% |
+| a 34, a 35 (k12 + k8), b 34, b 35, c 35 | running (jobs 15435658–15435668, A100) | | | |
+
+Reading so far (2026-11-03 morning): with λ_rej fixed, on-policy data from
+the in-domain pool no longer hurts the pool — b gained 4.2% in one round and
+plain SFT on the same rollouts (c) gained 6.3% — but c's gain did **not**
+transfer to the benchmarks (flat). Replay (a) cancelled b's pool gain. All
+three ran 2 rounds on sc3-cp88 (16:13 / 16:58 / 17:37, 35–45 min each).
 
 *Round 0 (seed blk12 ep33 on the paper pool, k=12):* accept_rate **0.4413**,
 5.30 accepted/step, 19% of blocks fully accepted — vs 0.2117 / 2.54 on the
