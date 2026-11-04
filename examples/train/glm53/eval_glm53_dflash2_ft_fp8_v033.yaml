@@ -59,3 +59,15 @@ experiments:
     speculative_config: {method: dflash}
     num_speculative_tokens: 6
     eval: {temperature: 0.0, top_p: 1.0}
+
+  # One epoch = 2,908 steps. Run later checkpoints with --only so earlier rows stay.
+  - name: ft_ep1_k6                   # end of FT epoch 1 (step 2,908; on-policy val accept_len 2.946)
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicy20_ft3ep_lr2e-5/snapshots_vllm/ep1_end
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: ft_ep1_k6_greedy
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicy20_ft3ep_lr2e-5/snapshots_vllm/ep1_end
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+    eval: {temperature: 0.0, top_p: 1.0}
