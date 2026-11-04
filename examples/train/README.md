@@ -923,9 +923,21 @@ Consequences:
   Cleaned snapshot: `data/glm53/nemo782k_regen_glm53_snap20pct_20261031_clean.jsonl`
   (131,525 rows kept, 33,028 dropped).
 
-Open (decision pending, 2026-11-04 13:30): smoke-test the same job on vLLM 0.33 on a free B200
-pair (expect 0% `!`), then stop B2 and relaunch its remainder plus every corrupted B prompt
-(~40% of 391k ≈ 156k prompts) on 0.33 pairs; B1/B3 finish within hours and are left to end.
+Decision (user, 2026-11-04 15:00): move the B remainder to single-node B300 generation, which
+is proven clean (shard A), and smoke-test 0.33 on a pair in parallel.
+- 15:05 B2 pair (15100568/9) cancelled. Raw output archived as
+  `nemo782k_regen_glm53_shardB2.pp2raw_20261104.jsonl`; the clean rows (54,632, filter `!{32,}`)
+  rewritten as `nemo782k_regen_glm53_shardB2.jsonl`, so the resumable client regenerates the
+  75,770 missing ids. Job **15663156** `glm53_regen_shardB2_c131` (sc3-c131, same launcher and
+  settings as shard A, vLLM 0.26 TP8 EP, 3-day limit) queued behind a 75-min prefill probe.
+- B1 (ends ~17:00) and B3 (ends ~22:40) run to completion; then the same archive + filter +
+  c131 follow-up job per shard (`glm53_regen_shardB{1,3}_c131`), queued on c131 after B2.
+  ~185k B prompts in total at ~1,500 rows/h → B done ~Nov 9–10, same as shard A.
+- Smoke test **15663159/15663160** `glm53_smoke_pp2_v033`: identical job on vLLM 0.33, TP8×PP2
+  on sc3-cp78+cp89, LIMIT=1500 → `smoke_pp2_v033.jsonl`. If 0 `!` rows, the pairs can rejoin
+  on 0.33 for B1/B3 regeneration (B done ~Nov 6); if not, c131 does all of it.
+- Reservation renamed `sn50-hdi-0` → `sn50-hdi-1` today; launchers updated (cc55a07).
+- Standing check from now on: every output file is scanned for `!{32,}` at each progress report.
 PR #64458 itself is not the fix for 0.26 (no MRV2 there); 0.33 is the candidate because it
 rewrote the PP broadcast path.
 
