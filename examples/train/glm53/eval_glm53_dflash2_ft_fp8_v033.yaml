@@ -1,0 +1,61 @@
+# On-policy continued fine-tune checkpoints, same server/eval settings as
+# eval_glm53_dflash2_fp8_v033.yaml (FP8 GLM-5.3, TP8, vLLM 0.33, one 8xB200 node), so the
+# baseline / incoai / ep9 rows there are the comparison. Draft dirs: snapshot the
+# checkpoint first (checkpoints/<n> is overwritten at epoch end), then
+# export_dflash2_vllm.py.
+#
+#   JOBID=<eval alloc> CONFIG=examples/train/glm53/eval_glm53_dflash2_ft_fp8_v033.yaml \
+#     bash examples/train/glm53/launch_eval_glm53_salloc.sh
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 32768
+  health_timeout: 3600
+  extra_args:
+    - --distributed-executor-backend
+    - mp
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/eval/glm53-dflash2-onpolicy-ft-fp8-v033
+
+experiments:
+  - name: ft_ep0.5_k6                 # warm start from ep9 + 1,454 on-policy steps (half epoch)
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicy20_ft3ep_lr2e-5/snapshots_vllm/ep0_step1454
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: ft_ep0.5_k6_greedy
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicy20_ft3ep_lr2e-5/snapshots_vllm/ep0_step1454
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+    eval: {temperature: 0.0, top_p: 1.0}
