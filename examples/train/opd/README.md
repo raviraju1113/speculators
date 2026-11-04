@@ -232,7 +232,12 @@ same pool, 2 rounds, no replay; first-rejected-only and the OOV mask kept
 is required by our 32k vocab). Tests two things at once: whether the two
 loss deviations mattered, and whether a less-converged seed has the
 headroom the paper's 6-epoch draft has. Baseline = checkpoint 28 itself,
-eval job 15658944; results `d_seed28_k12`, `d29_k12`, `d30_k12`.
+eval job 15658944; results `d_seed28_k12`, `d29_k12`.
+**Result (15:20): pool acceptance 0.4206 (seed 28) → 0.3648 after one round
+(−13%), guard stopped it** — the same collapse as λ=1 on seed 33 (−10%) and
+v1 on sci16k, now with the paper's decay and a less-converged seed. The
+paper's exact rejected term is the wrong regime for this draft at either
+epoch; the decay changes nothing. Benchmark eval of checkpoint 29 pending.
 
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
