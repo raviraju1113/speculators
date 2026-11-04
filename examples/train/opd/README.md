@@ -1,6 +1,6 @@
 # Draft-OPD on the Gemma-4-31B DSpark draft — status and lessons
 
-Status (2026-11-02): **tried, works mechanically, not adopted.** Eight rounds of
+Status (2026-11-04): **tried twice, works mechanically, not adopted — closed.** Eight rounds of
 on-policy post-training raised acceptance on its own prompt pool by 22% and
 lowered it on every standard benchmark by 9–18%. The served draft remains the
 SFT checkpoint `conv_blk12/checkpoints/33` at k=12 (main README §0). This doc
@@ -132,8 +132,9 @@ touch the domain problem.
 The Gemma DSpark line now exists to produce a recipe that transfers to a SOTA
 DFlash2 draft for GLM-5.3. Two tracks; **A first, B only on spare B200 nodes.**
 
-**Track A — OPD retry on blk12 ep33 (in progress).** Settles the OPD recipe
-(pool domain, replay, rounds, λ_rej), which transfers to any draft class.
+**Track A — OPD retry on blk12 ep33 (done, negative; verdict below).**
+Settled the OPD recipe questions (pool domain, replay, rounds, λ_rej); the
+answer transfers to any draft class: not for a converged seed.
 
 *Status 2026-11-02 13:45:* code done and unit-tested (commit b1897ea), pool
 built (16,000 = 972 GSM8K / 3,200 MATH / 6,828 AoPS / 5,000 CodeAlpaca after
@@ -182,41 +183,46 @@ round's rollout; seed 0.4413 / 5.30 accepted per step):*
 | b: OPD λ 0.05, no replay | 0.4598 / 5.52 (+4.2%) | trained |
 | a: OPD λ 0.05 + 8k replay rows | 0.4405 / 5.28 (−0.2%, flat) | trained |
 
-*Benchmarks, k=12, accept_len AIME / GPQA / LCB (A100 evals; seed on the same
-hardware 7.19 / 4.64 / 5.80):*
+*Benchmarks, k=12, accept_len AIME / GPQA / LCB (A100 evals, jobs
+15435658–15435668; seed on the same hardware 7.19 / 4.64 / 5.80; results in
+`results/gemma4-31b-dspark-opd-v3`):*
 
 | checkpoint | AIME | GPQA | LCB | vs seed |
 |---|---|---|---|---|
-| b1 ckpt 34 (λ=1) | 6.41 | 4.38 | 5.34 | −11% / −6% / −8% |
-| c ckpt 34 (ordinary loss, 1 round) | 7.20 | 4.63 | 5.76 | 0 / 0 / −1% |
-| a 34, a 35 (k12 + k8), b 34, b 35, c 35 | running (jobs 15435658–15435668, A100) | | | |
+| c, 1 round (ordinary loss on the rollouts) | 7.20 | 4.63 | 5.76 | 0 / 0 / −1% |
+| b, 1 round (OPD λ 0.05) | 7.00 | 4.58 | 5.72 | −3% / −1% / −1% |
+| a, 1 round (OPD λ 0.05 + replay) | 6.90 | 4.55 | 5.67 | −4% / −2% / −2% |
+| b, 2 rounds | 6.71 | 4.43 | 5.40 | −7% / −5% / −7% |
+| a, 2 rounds | 6.50 | 4.39 | 5.27 | −10% / −5% / −9% |
+| a, 2 rounds, k=8 | 5.74 | 4.10 | 4.80 | −7% / −5% / −8% (seed k=8 6.16 / 4.30 / 5.19) |
+| b1, 1 round (OPD λ 1, accident) | 6.41 | 4.38 | 5.34 | −11% / −6% / −8% |
+| c, 2 rounds | eval rerun (sc3-c97's GPUs are dead) | | | |
 
-Reading so far (2026-11-03 morning): with λ_rej fixed, on-policy data from
-the in-domain pool no longer hurts the pool — b gained 4.2% in one round and
-plain SFT on the same rollouts (c) gained 6.3% — but c's gain did **not**
-transfer to the benchmarks (flat). Replay (a) cancelled b's pool gain. All
-three ran 2 rounds on sc3-cp88 (16:13 / 16:58 / 17:37, 35–45 min each).
+**Track A verdict (2026-11-04): Draft-OPD does not help this draft, in-domain
+pool or not. Closed.**
 
-*Round 0 (seed blk12 ep33 on the paper pool, k=12):* accept_rate **0.4413**,
-5.30 accepted/step, 19% of blocks fully accepted — vs 0.2117 / 2.54 on the
-science/chat pool. The seed is already twice as good on math/code prompts,
-i.e. the pool is now in the draft's SFT domain. Round-0 dataset: 15,885 OPD
-rows (2.08M anchors) + 7,916 replay rows (1.55M anchors) for arm a.
+- The pool gain is real but does not transfer. OPD at λ 0.05 raised paired
+  pool acceptance 4.2% in one round (arm b) and lowered every benchmark, by
+  1–3% after one round and 5–7% after two. Each round makes it worse, as in
+  v2 on the science pool.
+- Plain SFT on the same on-policy rollouts (arm c) raised the pool 6.3% and
+  left the benchmarks exactly flat: the on-policy text itself is neutral,
+  so the damage in a/b comes from the acceptance-aware objective, not the
+  data.
+- SFT replay (arm a) did not protect the draft: it cancelled the pool gain
+  and lost *more* on the benchmarks than no replay. Forgetting of the SFT
+  distribution was the wrong model of the v2 drop.
+- λ_rej = 1, the paper's setting, is strictly worse again (−6…−11% in one
+  round): the ~19-nat rejected term dominates whatever the pool.
 
-1. **Pool from the paper's domains**: GSM8K train, MATH train, NuminaMath
-   AoPS, CodeAlpaca, 16k prompts in the paper's 2k/5k/4k/5k mix; AMC/AIME
-   sources excluded (our eval); hash-filtered against nemo782k by
-   `scripts/opd/build_opd_pool.py`. Sources downloaded to
-   `datasets/opd_pool_raw/{gsm8k,hendrycks_math,numina_cot,codealpaca}`.
-2. **SFT replay**: each round's dataset also carries nemo782k rows trained
-   with the ordinary DSpark loss (encoded as replay anchors, `opd_accepted =
-   -2`), so the draft keeps its SFT distribution. Addresses the forgetting
-   share of the drop (GPQA).
-3. **Two rounds, benchmark eval after each** (AIME/GPQA/LCB at k=12 and k=8
-   on B200), not eight on faith. ≈ 1 day on 8 B200.
-4. **The paper's own control**: continued SFT on the target's responses to
-   the same pool prompts, no OPD loss (`rollouts_to_dataset.py --as-sft`).
-   Separates "the data hurts" from "the objective hurts".
+Why the paper sees +8% and we see a loss: their seed is a 6-epoch DFlash draft
+with headroom; ours is converged (33 epochs; the block-8 control proved 8 more
+SFT epochs change nothing). On a converged draft the on-policy objective
+trades benchmark acceptance for pool acceptance. Nothing in the loop can fix
+that — pool domain, replay and λ were all tried. For GLM-5.3: do not plan on
+OPD as a stage; if its DFlash2 draft is trained to convergence the same
+result is expected, and if it is stopped early (paper-style) OPD becomes a
+question worth one pilot, not a line item.
 
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
