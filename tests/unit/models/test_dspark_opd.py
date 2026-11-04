@@ -149,3 +149,21 @@ def test_compute_metrics_replay_blocks_use_ordinary_loss():
     l_rep, m_rep = compute_metrics(logits, targets, opd_accepted=torch.tensor([-2, -2, -2]), **common)
     assert m_rep["opd_acc_slots_sum"] == 0 and m_rep["opd_rej_slots_sum"] == 0
     assert torch.allclose(l_rep, m_rep["opd_replay_loss_sum"])
+
+
+def test_opd_loss_paper_decay_weights_late_rejections_less():
+    """rej_decay='paper': weight gamma^r on the first rejected slot (eq. 12),
+    vs weight 1 for every first rejection with the default."""
+    torch.manual_seed(1)
+    block, v = 4, 12
+    logits = torch.randn(1, 3 * block, v)
+    targets = torch.softmax(torch.randn(1, 3 * block, v), -1)
+    lm = torch.ones(1, 3 * block)
+    acc = torch.tensor([0, 2, 3])  # rejections at slots 0, 2, 3
+    rev = _reverse_kl(logits, targets).view(3, block)
+    per = torch.stack([rev[0, 0], rev[1, 2], rev[2, 3]])
+    _, t_def = opd_loss(logits, targets, lm, acc, block, lambda_rej=1.0)
+    _, t_pap = opd_loss(logits, targets, lm, acc, block, lambda_rej=1.0, rej_decay="paper")
+    assert torch.allclose(t_def["opd_rej_loss"], per.mean(), atol=1e-5)
+    w = torch.tensor([0.8 ** 0, 0.8 ** 2, 0.8 ** 3])
+    assert torch.allclose(t_pap["opd_rej_loss"], (per * w).sum() / w.sum(), atol=1e-5)

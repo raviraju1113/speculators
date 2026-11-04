@@ -72,6 +72,7 @@ def opd_loss(
     first_rejected_only: bool = True,
     rej_valid: torch.Tensor | None = None,  # [num_blocks, block_size] bool
     rej_kl: str = "reverse",  # "reverse" (paper) | "forward" (ablation)
+    rej_decay: str = "from_rejection",  # "from_rejection": gamma^(j-r) | "paper": gamma^j (eq. 12, j = k-1)
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Acceptance-aware distillation (arXiv 2605.29343 eqs. 10-13): forward KL
     on accepted slots, ``gamma^(j-r)``-weighted reverse KL on rejected slots
@@ -88,9 +89,13 @@ def opd_loss(
     valid = loss_mask.to(torch.bool).view(num_blocks, block_size)
     acc_w = (acc_mask & valid).to(torch.float32)
     slots = torch.arange(block_size, device=logits.device).unsqueeze(0)
-    rej_w = (rej_mask & valid).to(torch.float32) * (
-        rej_gamma ** (slots - accepted.clamp_min(0).unsqueeze(1)).clamp_min(0).to(torch.float32)
-    )
+    # Paper eq. 12: w_k = gamma^(k-1) counted from the block start, so a block
+    # rejected after r accepted tokens has weight gamma^r on its first rejected
+    # slot (0.8^5 = 0.33, 0.8^11 = 0.09). "from_rejection" (our earlier runs)
+    # restarts the decay at the rejection, i.e. weight 1 on every first
+    # rejected slot. Both are normalized by the weight sum below (paper's Z).
+    exponent = slots if rej_decay == "paper" else (slots - accepted.clamp_min(0).unsqueeze(1)).clamp_min(0)
+    rej_w = (rej_mask & valid).to(torch.float32) * (rej_gamma ** exponent.to(torch.float32))
     rej_oov = torch.zeros((), device=logits.device, dtype=torch.float32)
     if rej_valid is not None:
         rej_oov = ((rej_w > 0) & ~rej_valid.to(torch.bool)).sum().to(torch.float32)
@@ -149,6 +154,7 @@ def compute_metrics(
     opd_rej_valid: torch.Tensor | None = None,  # [num_blocks, block_size], see opd_loss
     opd_rej_kl: str = "reverse",
     opd_replay_weight: float = 1.0,
+    opd_rej_decay: str = "from_rejection",
 ) -> tuple[torch.Tensor, dict]:
     """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
 
@@ -175,6 +181,7 @@ def compute_metrics(
         loss, opd_terms = opd_loss(
             logits, targets, loss_mask, opd_accepted, block_size,
             lambda_rej=opd_lambda_rej, rej_valid=opd_rej_valid, rej_kl=opd_rej_kl,
+            rej_decay=opd_rej_decay,
         )
         term_losses = {}
         scored = opd_terms["opd_scored_mask"]
