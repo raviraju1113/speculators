@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Submit the GLM-5.3 regeneration as a batch job on the 8x B300 node sc3-c130
-# (reservation sn50-hdi-0). Wraps run_regen_glm53.sh; every env var it reads
+# (reservation sn50-hdi-1). Wraps run_regen_glm53.sh; every env var it reads
 # passes through (REASONING_EFFORT, TEMPERATURE, MAX_TOKENS, LIMIT, ...).
 #
 #   # 2k-row throughput probe (~1 h incl. weight load), then read tok/s from
@@ -10,13 +10,13 @@
 #   TIME=3-00:00:00 bash examples/train/glm53/sngpu_regen_glm53_sc3-c130.sh
 #
 # The interactive form of the same allocation, for poking at the server:
-#   sngpu --nodelist sc3-c130 --reservation sn50-hdi-0 --gputype b300m288 \
+#   sngpu --nodelist sc3-c130 --reservation sn50-hdi-1 --gputype b300m288 \
 #         --gpu 8 --cpu 32 --mem 256000 --time 5:59:59 --interactive
 set -euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 NODE="${NODE:-sc3-c130}"
-RESERVATION="${RESERVATION:-sn50-hdi-0}"
+RESERVATION="${RESERVATION:-sn50-hdi-1}"
 GPUTYPE="${GPUTYPE:-b300m288}"
 TIME="${TIME:-3-00:00:00}"
 CPU="${CPU:-32}"

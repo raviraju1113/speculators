@@ -70,7 +70,7 @@ if [ -z "${ROLE:-}" ]; then
     TIME="${TIME:-5-00:00:00}"
     PAIR_TAG="${JOBNAME}_$(date +%m%d_%H%M%S)"
     ADDR_FILE="$LOG_DIR/ray_head_${PAIR_TAG}.addr"
-    COMMON=(--partition="${PARTITION:-gpuonly}" --reservation="${RESERVATION:-sn50-hdi-0}" --nodes=1 --ntasks=1
+    COMMON=(--partition="${PARTITION:-gpuonly}" --reservation="${RESERVATION:-sn50-hdi-1}" --nodes=1 --ntasks=1
             --gres="gpu:${GPUTYPE:-b200m180}:8" --cpus-per-task="${CPU:-64}" --mem="${MEM:-500G}" --exclusive --time="$TIME")
     # EXCLUDE_NODES=sc3-cp80,... keeps known-bad nodes (e.g. NVLink faults) out of both jobs
     [ -n "${EXCLUDE_NODES:-}" ] && COMMON+=(--exclude="$EXCLUDE_NODES")
