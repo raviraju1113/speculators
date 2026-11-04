@@ -832,6 +832,9 @@ Reporting: a 2-hourly session cron appends `A=<rows> B=<rows>` to the scratchpad
 
 ### 9.y 20% snapshot handed to the DFlash2 training side (2026-10-31 22:30)
 
+> **2026-11-04: this snapshot contains 21.4% corrupted rows from the B200 pairs (§9.v). Use
+> `nemo782k_regen_glm53_snap20pct_20261031_clean.jsonl` (131,525 rows) instead.**
+
 Frozen copy of the four live output files at the 20% mark, for off-policy draft training to start
 while generation continues:
 
@@ -883,6 +886,46 @@ Lessons / changes:
   (b) head script loops server+client while un-generated ids remain; either makes a pair self-heal.
 - Operational: check `squeue` for the expected 7 jobs whenever looking at progress; a pair that
   vanished early with a `Done: ok=<small> errors=<huge>` line in its head `.out` is this failure mode.
+
+### 9.v INCIDENT 2026-11-04 — B200-pair (TP8×PP2, vLLM 0.26) outputs are ~40% "!!!!" garbage; shard A is clean
+
+Trigger: a colleague pointed at vLLM PR #64458 ("[MRV2][PP] Fix spec-decode draft/sampled-token
+broadcast issues", merged 2026-10-29, cherry-picked into v0.33.0): a race in the PP draft-token
+broadcast that degenerates outputs into repeated tokens. That PR is for Model Runner V2 + spec
+decode, which our 0.26 pairs do not run, but a scan of the outputs found the same *symptom*
+on every pair:
+
+| file | rows | reply is `!!!!…` from token 1 | `!` run of ≥32 appears later | truncated | tokens spent on `!` rows |
+|---|---|---|---|---|---|
+| shard A (c130, single node TP8, 0.26) | 204,541 | **0** | **0** | 9.5% | 0 |
+| B1 (cp79+cp90, PP2) | 126,941 | 30,972 (24.4%) | 19,170 (15.1%) | 38.1% | 43% |
+| B2 (cp99+cp84, PP2, relaunched pair) | 91,241 | 23,480 (25.7%) | 14,056 (15.4%) | 39.4% | 45% |
+| B3 (cp86+cp83, PP2) | 121,207 | 31,522 (26.0%) | 19,146 (15.8%) | 39.7% | 45% |
+| 20% snapshot handed over 10-31 (§9.y) | 164,553 | 21,916 (13.3%) | 13,375 (8.1%) | 24.7% | 29% |
+
+What the bad rows look like: the reply is token id 0 (`!`) repeated to the 16,384 cap, usually
+from the very first token (median onset at 1% of the reply), occasionally after a few normal
+sentences (`… $\sin\theta_2 =!!!!!!!!…`); 98% are still inside `<think>`. That is the signature
+of corrupted logits (NaN/zeroed hidden states → argmax 0), not of sampling drift. The rate is
+flat over time (19–28% per file quarter), identical on all three pairs including B2's second
+set of nodes, and absent on the single-node run with the same checkpoint/settings — so it is
+the pipeline-parallel path (TP8×PP2 over Ray) in vLLM 0.26, not a bad GPU. **The §9.x
+"truncation observation" was this bug**, not long reasoning: B truncation 38–40% vs A 9.5%.
+
+Consequences:
+- The B pairs' real clean throughput is ~600 rows/h, not ~1,050, and 43–45% of their tokens
+  went into 16k-token garbage.
+- Rows without a `!` run are normal (B1 clean rows: mean 4,068 completion tokens, median 1,111;
+  A: 4,218 / 1,432), so the B files are usable after filtering.
+- Filter rule: drop any row whose assistant reply contains a run of ≥32 `!` (regex `!{32,}`).
+  Cleaned snapshot: `data/glm53/nemo782k_regen_glm53_snap20pct_20261031_clean.jsonl`
+  (131,525 rows kept, 33,028 dropped).
+
+Open (decision pending, 2026-11-04 13:30): smoke-test the same job on vLLM 0.33 on a free B200
+pair (expect 0% `!`), then stop B2 and relaunch its remainder plus every corrupted B prompt
+(~40% of 391k ≈ 156k prompts) on 0.33 pairs; B1/B3 finish within hours and are left to end.
+PR #64458 itself is not the fix for 0.26 (no MRV2 there); 0.33 is the candidate because it
+rewrote the PP broadcast path.
 
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
