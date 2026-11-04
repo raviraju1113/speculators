@@ -32,7 +32,7 @@ eval (§6.1) at matched k, with no loss elsewhere.
 | **2. Recipe A** (§3) | all-sliding DSpark (5 layers, window 2048, block 8, 32k draft vocab, CE+TV loss), 26 epochs from scratch | the baseline: scratch ep25, val 4.71 | superseded by B |
 | **3. Recipe B** (§4) | A + DFlash2 local convolution (kernel 2, group 16); same data and schedule; selector/KL loss **not** adopted | +0.1 accept_len at k=8, +0.1…0.2 on AA-LCR at every length to 112k; beats the Google assistant draft on tok/s at k=8 on B200 | **works** → conv ep25 |
 | **4. Block 12 by warm start** (§4.1) | B's ep25 checkpoint + 8 epochs at block 12, γ 12, nothing else changed | k≤8 identical to conv ep25 (nothing lost); k=12 over k=8: +7…+16% tok/s on A100, +6…+16% on B200 (395 / 254 / 313 tok/s on AIME / GPQA / LCB, §6.5) | **works** → blk12 ep33 at k=12 (block-8 control closed 2026-10-29: 8 more epochs at block 8 == conv ep25 on every benchmark at k=8 and k=5, §6.3b — the draft had converged, the k=12 gain is from the new slots) |
-| **5. Draft-OPD** (§6.5, §8, **`opd/README.md`** — summary, paper diff, what worked, next steps; log in `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted** (2026-10-28) — fails the bar below; next try needs a benchmark-domain pool and/or SFT replay |
+| **5. Draft-OPD** (§6.5, §8, **`opd/README.md`** — summary, paper diff, what worked, next steps; log in `opd/PLAN.md`) | on-policy post-training of stage 4's checkpoint on its own rollouts (acceptance-aware loss: forward KL on accepted slots, 0.05 × reverse KL on the first rejected slot, out-of-vocab rejected slots masked) | full run v2 (8 rounds × 16k external science/chat prompts): paired rollout acceptance on the pool up every round, 0.212 → 0.257 (+22%) — but on the standard benchmarks accept_len fell 9–18% at k=12 and 7–15% at k=8 (§6.5): the draft learned the pool and forgot math/code | **not adopted — closed** (2026-11-04): the retry with the paper's math/code pool, λ 0.05 and SFT replay also lost 1–7% on the benchmarks while gaining on the pool; plain SFT on the same rollouts was flat (`opd/README.md` §6) |
 
 **Current working recipe** = stages 1–4: train recipe B for 26 epochs on
 nemo782k, warm-start 8 more epochs at block 12 / γ 12, serve
@@ -520,10 +520,13 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   on blk12 ep33 with the paper's math/code pool + SFT replay, two rounds,
   eval after each — **running since 2026-11-02 13:30**: arm a (replay) job
   15215074, arm b (no replay) 15215075, arm c (ordinary-loss control)
-  15215073 — all three finished 2026-11-02 evening on B200 sc3-cp88. Pool
-  acceptance after one round: b +4.2%, c +6.3%, a flat, λ=1 accident −10%;
-  c's gain does not show on the benchmarks (7.20 / 4.63 / 5.76 vs seed
-  7.19 / 4.64 / 5.80); the remaining five evals run on A100 2026-11-03. Arm b's first
+  15215073 — done. **Verdict 2026-11-04: closed, negative.** Pool
+  acceptance rose (b +4.2%, c +6.3%) but benchmarks fell for every OPD arm
+  (b −1…−3% after one round, −5…−7% after two; replay arm a worse still),
+  while plain SFT on the same rollouts (c) was exactly flat. The objective,
+  not the data or the domain, costs benchmark acceptance on a converged
+  seed. Full table and reasoning: `opd/README.md` §6. Track B (Gemma
+  DFlash2 rehearsal) is next. Arm b's first
   attempt ran at the paper's λ_rej=1 by accident and lost 0.046 pool
   acceptance in one round (kept as arm b1, eval running); the preset now
   pins λ_rej 0.05 (every B200 is taken; GLM regen has
