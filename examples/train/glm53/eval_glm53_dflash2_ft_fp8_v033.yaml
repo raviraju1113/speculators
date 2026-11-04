@@ -82,3 +82,14 @@ experiments:
     speculative_config: {method: dflash}
     num_speculative_tokens: 6
     eval: {temperature: 0.0, top_p: 1.0}
+
+  - name: ft_ep3_k6                   # final (step 8,718; on-policy val accept_len 2.968)
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicy20_ft3ep_lr2e-5/snapshots_vllm/ep3_end
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: ft_ep3_k6_greedy
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicy20_ft3ep_lr2e-5/snapshots_vllm/ep3_end
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+    eval: {temperature: 0.0, top_p: 1.0}
