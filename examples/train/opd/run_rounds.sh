@@ -214,7 +214,7 @@ PY
   # ~18-nat rejected term dominate and lost acceptance every round (v1 on
   # sci16k; v3 arm b on paper16k, 0.441 -> 0.395 in one round, 2026-11-02 --
   # the preset did not set it and the driver default is 1.0).
-  export OPD_LAMBDA_REJ="${OPD_LAMBDA_REJ:-0.05}" OPD_REJ_KL="${OPD_REJ_KL:-reverse}"
+  export OPD_LAMBDA_REJ="${OPD_LAMBDA_REJ:-0.05}" OPD_REJ_KL="${OPD_REJ_KL:-reverse}" OPD_REJ_DECAY="${OPD_REJ_DECAY:-from_rejection}"
   export MAX_ANCHORS="${MAX_ANCHORS:-512}" CHECKPOINT_FREQ=1 SAVE_BEST=0 TRAIN_DATA_RATIO="${TRAIN_DATA_RATIO:-0.98}"
   export ON_GENERATE=delete VLLM_TP=1 VLLM_DP="${VLLM_DP:-1}" TRAIN_GPUS_N="${TRAIN_GPUS_N:-1}"
   export GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}" WANDB_MODE="${WANDB_MODE:-offline}" WANDB_PROJECT=gemma4-dspark-opd

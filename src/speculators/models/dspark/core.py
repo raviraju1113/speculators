@@ -146,6 +146,7 @@ class DSparkDraftModel(DFlashDraftModel):
             "opd_lambda_rej": kwargs.get("opd_lambda_rej", 1.0),
             "opd_rej_kl": kwargs.get("opd_rej_kl", "reverse"),
             "opd_replay_weight": kwargs.get("opd_replay_weight", 1.0),
+            "opd_rej_decay": kwargs.get("opd_rej_decay", "from_rejection"),
         }
         return dict(shared), dict(shared)
 
@@ -168,6 +169,7 @@ class DSparkDraftModel(DFlashDraftModel):
         opd_lambda_rej: float = 1.0,
         opd_rej_kl: str = "reverse",
         opd_replay_weight: float = 1.0,
+        opd_rej_decay: str = "from_rejection",
         **kwargs,
     ):
         # Draft-OPD batch: anchors fixed by the rollout and, per anchor, how
@@ -303,6 +305,7 @@ class DSparkDraftModel(DFlashDraftModel):
             opd_rej_valid=opd_rej_valid,
             opd_rej_kl=opd_rej_kl,
             opd_replay_weight=opd_replay_weight,
+            opd_rej_decay=opd_rej_decay,
         )
         metrics.update(opd_extra)
         return None, loss, metrics

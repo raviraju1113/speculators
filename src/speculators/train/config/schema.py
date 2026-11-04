@@ -477,6 +477,12 @@ class DFlashArgs(_Group):
         "magnitude as the accepted-slot term (reverse KL averaged 18 nats vs "
         "0.08 on the sci16k pool and degraded rollout acceptance, 2026-10-28).",
     )
+    opd_rej_decay: Literal["from_rejection", "paper"] = Field(
+        default="from_rejection",
+        description="Draft-OPD rejected-slot weight: 'paper' = gamma^(k-1) from the block "
+        "start (arXiv 2605.29343 eq. 12, gamma 0.8: late rejections weigh less); "
+        "'from_rejection' = gamma^(k-r-1), weight 1 on every first rejected slot.",
+    )
     opd_replay_weight: float = Field(
         default=1.0,
         description="Draft-OPD: weight of the ordinary DSpark loss on SFT-replay blocks "
