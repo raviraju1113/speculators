@@ -832,8 +832,10 @@ Reporting: a 2-hourly session cron appends `A=<rows> B=<rows>` to the scratchpad
 
 ### 9.y 20% snapshot handed to the DFlash2 training side (2026-10-31 22:30)
 
-> **2026-11-04: this snapshot contains 21.4% corrupted rows from the B200 pairs (§9.v). Use
-> `nemo782k_regen_glm53_snap20pct_20261031_clean.jsonl` (131,525 rows) instead.**
+> **2026-11-04: this snapshot contains 21.4% corrupted rows from the B200 pairs (§9.v). Replaced by
+> `data/glm53/nemo782k_regen_glm53_snap20pct_shardA_20261104.jsonl`: the first 156,483 rows (= 20% of
+> 782,413) of shard A only — single-node output, 0 `!` rows, 9.4% truncated, mean 4,243 completion
+> tokens, 3.2 GB. (`..._snap20pct_20261031_clean.jsonl` is the filtered mixed version, 131,525 rows.)**
 
 Frozen copy of the four live output files at the 20% mark, for off-policy draft training to start
 while generation continues:
