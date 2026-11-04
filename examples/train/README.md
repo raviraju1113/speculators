@@ -941,6 +941,40 @@ is proven clean (shard A), and smoke-test 0.33 on a pair in parallel.
 PR #64458 itself is not the fix for 0.26 (no MRV2 there); 0.33 is the candidate because it
 rewrote the PP broadcast path.
 
+**Are the non-garbage pair rows degraded? (checks 2026-11-04 16:30, 12–20k-row samples per file)**
+
+Concern: a racy PP broadcast could feed a wrong token back on some steps and leave text that
+looks fine but is subtly off. Signals that would move first if that happened:
+
+| signal (per clean row / per 1M chars) | A (single node) | B1 clean | B3 clean |
+|---|---|---|---|
+| short `!` runs (2–31, below the filter), rows | 1.80% | 2.13% | 2.44% |
+| short `!` runs per 1M chars | 4.8 | 4.8 | 5.3 |
+| `!` inside a word per 1M chars | 2.6 | 2.6 | 2.8 |
+| non-`!` repeated-n-gram loops, rows | 0.97% | 0.89% | 1.03% |
+| U+FFFD per 1M chars | 0.1 | 0.1 | 0.1 |
+| reply ends right after `</think>` | 0.00% | 0.00% | 0.00% |
+| completion tokens, prompt <2000 chars (mean/median) | 4063 / 1725 | 3991 / 1189 | 4033 / 1188 |
+| completion tokens, prompt <8000 chars | 8127 / 5706 | 8242 / 6193 | 8451 / 5996 |
+| **truncated at the 16k cap** | **9.7%** | **15.6%** | **16.8%** |
+| **looping at the cap (zlib ratio of last 6k chars < 0.15), all rows** | **0.10%** | **0.44%** | **0.51%** |
+
+Everything corruption-sensitive matches A to the decimal → the fault is binary (token 0 injected
+and stuck), not graded. Two residual differences (truncation, looping at the cap) are not yet
+attributable: A and B draw from different pool shards (A = `nemo782k:0000[0-3]`, B1 = `0000[6-8]`,
+B2 = `0000[8-9]`/`00010`, B3 = `0001[0-2]`) and A's own truncation varies 8.3–10.4% by shard, so
+prompt mix is plausible; but the pairs cannot be excluded from this alone. Garbage is also
+*not* prompt-independent (B2 raw: 46.7% of prompts <500 chars vs 30.0% for 500–2000; 37% single-
+turn vs 53% four-turn), so the clean subset is skewed toward longer prompts.
+
+Decisive test, no extra hardware: c131 (job 15663156) regenerates the B2 ids whose pair output
+was garbage — same pool shards, single node. Reference for the comparison, B2 pair-clean rows by
+pool shard, truncated% / looping%: 00008 15.1 / 0.51, 00009 14.6 / 0.49, 00010 14.6 / 0.54.
+When c131 has produced ≥10k B2 rows (expected 2026-11-05 morning), compare truncation and
+looping within prompt-length buckets: equal → keep all clean pair rows; worse on the pair side →
+discard every pair row (`*.pp2raw_*` archives + the filtered files) and regenerate.
+
+
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
 **Goal.** Establish the number the DFlash2 draft must beat: GLM-5.3 served with its own
