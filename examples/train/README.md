@@ -1133,6 +1133,38 @@ length of the baseline run (26% of replies hit the 4,096 cap overall; 2.04M resp
 | writing | 125 | 2.26 / 0.63 / 220 (1.76×) | 2.71 / 0.43 / 222 (1.78×) | 2.98 / 0.28 / 220 (1.76×) | 2101 |
 | speed-writing | 124 | 2.19 / 0.59 / 212 (1.71×) | 2.61 / 0.40 / 213 (1.72×) | 2.71 / 0.24 / 201 (1.62×) | 3903 |
 
+Token counts and latency. "total resp tok" = sum of completion tokens over the n prompts (baseline run; the
+spec-decode runs are within ±5% since the same prompts are sampled at the same T). "e2e s" = mean wall-clock
+seconds per request from send to last token; "ttft" = mean seconds to first token (baseline / DFlash2 k=7).
+
+| benchmark | n | total resp tok | mean resp tok | cap hit | e2e s baseline | e2e s MTP k=2 | e2e s MTP k=4 | e2e s DFlash2 k=7 | ttft s base / DF2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| gsm8k | 50 | 14,852 | 297 | 0.00 | 2.5 | 1.1 | 1.2 | 1.0 | 0.20 / 0.08 |
+| humaneval | 50 | 124,012 | 2480 | 0.22 | 20.0 | 10.4 | 8.9 | 7.9 | 0.20 / 0.06 |
+| mbpp | 50 | 151,121 | 3022 | 0.38 | 24.2 | 12.2 | 11.0 | 10.2 | 0.06 / 0.06 |
+| speed-coding | 50 | 175,197 | 3504 | 0.62 | 28.3 | 14.9 | 13.2 | 12.6 | 0.18 / 0.07 |
+| speed-multilingual | 50 | 88,163 | 1763 | 0.16 | 14.2 | 6.8 | 6.1 | 5.1 | 0.17 / 0.06 |
+| speed-rag | 50 | 36,846 | 737 | 0.02 | 6.1 | 3.7 | 3.2 | 2.8 | 0.19 / 0.17 |
+| math500 | 50 | 70,340 | 1407 | 0.14 | 11.3 | 5.3 | 4.7 | 3.7 | 0.18 / 0.06 |
+| swe-bench-pro | 50 | 204,800 | 4096 | 1.00 | 33.2 | 17.5 | 15.9 | 16.3 | 0.19 / 0.15 |
+| aa-lcr | 50 | 138,183 | 2764 | 0.36 | 25.6 | 13.9 | 12.3 | 11.9 | 2.58 / 2.79 |
+| mt-bench | 50 | 109,040 | 2181 | 0.22 | 17.5 | 9.2 | 9.6 | 9.8 | 0.11 / 0.06 |
+| speed-qa | 50 | 64,578 | 1292 | 0.06 | 10.3 | 5.8 | 5.9 | 6.0 | 0.05 / 0.06 |
+| speed-writing | 50 | 195,128 | 3903 | 0.88 | 31.6 | 18.6 | 18.2 | 19.7 | 0.17 / 0.11 |
+| aime26 | 30 | 107,139 | 3571 | 0.73 | 28.8 | 15.0 | 12.6 | 12.3 | 0.20 / 0.06 |
+| HumanEval | 50 | 142,285 | 2846 | 0.30 | 22.9 | 11.4 | 10.4 | 8.9 | 0.20 / 0.06 |
+| math_reasoning | 50 | 13,977 | 280 | 0.00 | 2.3 | 1.2 | 1.0 | 0.8 | 0.12 / 0.06 |
+| qa | 50 | 65,760 | 1315 | 0.06 | 10.5 | 5.8 | 6.0 | 6.0 | 0.05 / 0.06 |
+| question | 50 | 105,401 | 2108 | 0.22 | 16.9 | 9.2 | 9.9 | 9.7 | 0.06 / 0.06 |
+| rag | 50 | 29,457 | 589 | 0.00 | 4.9 | 2.6 | 2.3 | 2.5 | 0.18 / 0.18 |
+| summarization | 50 | 29,061 | 581 | 0.00 | 4.8 | 2.6 | 2.2 | 2.2 | 0.18 / 0.15 |
+| tool_call | 50 | 41,398 | 828 | 0.06 | 6.8 | 4.2 | 3.1 | 3.5 | 0.17 / 0.13 |
+| translation | 50 | 32,280 | 646 | 0.00 | 5.2 | 2.7 | 2.2 | 2.1 | 0.10 / 0.06 |
+| writing | 50 | 105,052 | 2101 | 0.20 | 16.8 | 9.1 | 9.8 | 9.7 | 0.06 / 0.06 |
+| **all 22** | 1080 | 2,044,070 | 1893 | 0.26 | 15.4 | 8.2 | 7.6 | 7.4 | 0.25 / 0.21 |
+
+Total wall-clock generation time over the 1,080 prompts: baseline 4.6 h (2,044,070 tokens), mtp_k2 2.5 h (2,029,112 tokens), mtp_k4 2.3 h (2,054,865 tokens), dflash2_k7 2.2 h (2,070,682 tokens).
+
 By domain (mean accept_len / mean speedup):
 
 | group | benchmarks | MTP k=2 | MTP k=4 | DFlash2 k=7 |
