@@ -224,6 +224,16 @@ OPD as a stage; if its DFlash2 draft is trained to convergence the same
 result is expected, and if it is stopped early (paper-style) OPD becomes a
 question worth one pilot, not a line item.
 
+*Arm d (launched 2026-11-04, job 15659070): the paper's exact loss on an earlier
+seed.* λ_rej 1, γ 0.8 as γ^(k−1) from the block start (`--opd-rej-decay
+paper`), reverse KL, seed **blk12 checkpoint 28** (val 5.29 vs 5.55 at 33),
+same pool, 2 rounds, no replay; first-rejected-only and the OOV mask kept
+(the paper's own ablation shows first-rejected-only is equivalent; the mask
+is required by our 32k vocab). Tests two things at once: whether the two
+loss deviations mattered, and whether a less-converged seed has the
+headroom the paper's 6-epoch draft has. Baseline = checkpoint 28 itself,
+eval job 15658944; results `d_seed28_k12`, `d29_k12`, `d30_k12`.
+
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
 nothing we measured was on that class; a Gemma run is the cheap dress
