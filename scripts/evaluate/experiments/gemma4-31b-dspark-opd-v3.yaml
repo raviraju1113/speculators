@@ -74,3 +74,20 @@ experiments:
     draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_assft/checkpoints/35
     num_speculative_tokens: 12
     speculative_config: {method: dspark}
+
+  # d: the paper's exact loss (lambda_rej 1, gamma^(k-1) decay from the block
+  # start, reverse KL; first-rejected-only + OOV mask kept) on an EARLIER seed,
+  # blk12 checkpoint 28 (val 5.29 vs 5.55 at 33): tests the "converged seed"
+  # explanation. Same pool, 2 rounds, no replay. d_seed28 is its own baseline.
+  - name: d_seed28_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv_blk12/checkpoints/28
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: d29_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_ep28_paperloss/checkpoints/29
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
+  - name: d30_k12
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_ep28_paperloss/checkpoints/30
+    num_speculative_tokens: 12
+    speculative_config: {method: dspark}
