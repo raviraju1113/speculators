@@ -1091,6 +1091,78 @@ Takeaways:
 Next: full 28-benchmark set (`glm53-full-eval.yaml`) on the same node/env, reworked for 0.33
 (DFlash2 single-node; the six SPEED-Bench categories still need NVIDIA's prepare script run first).
 
+### 9.w.4 Full suite DONE (2026-11-03 23:54) — 22 benchmarks, GLM-5.3 bf16 on one B300, vLLM 0.33
+
+Job 15435527 (`glm53-full-v033-b300.yaml`, sc3-c131, TP8, bf16 weights + bf16 KV,
+`max_model_len 131072`, `max_tokens 4096`, `reasoning_effort=max`, T 1.0 / top-p 0.95 = the
+data-gen/serving regime; 50 samples per benchmark, seed 42; 12 h 33 min for four experiments,
+1,080 prompts each). Six SPEED-Bench categories (humanities/math/reasoning/roleplay/stem/
+summarization) are still missing on sc3 and were skipped. Full table (decode tok/s, TTFT,
+response tokens, cap-hit): `python scripts/evaluate/experiments/tabulate_results.py --dir
+scripts/evaluate/experiments/results/glm53-full-v033-b300 --baseline baseline`.
+Raw: `scripts/evaluate/experiments/results/glm53-full-v033-b300/<experiment>/`.
+
+Cells: accept_len / accept_rate / e2e tok/s (speedup vs baseline). Last column: mean reply
+length of the baseline run (26% of replies hit the 4,096 cap overall; 2.04M response tokens).
+
+| benchmark | baseline tok/s | MTP k=2 | MTP k=4 | DFlash2 k=7 | mean resp tok |
+|---|---|---|---|---|---|
+| gsm8k | 119 | 2.76 / 0.88 / 259 (2.18×) | 3.78 / 0.69 / 296 (2.50×) | **5.06** / 0.58 / 346 (2.92×) | 297 |
+| math500 | 124 | 2.67 / 0.84 / 253 (2.04×) | 3.73 / 0.68 / 298 (2.41×) | **5.06** / 0.58 / 360 (2.91×) | 1407 |
+| math_reasoning | 121 | 2.67 / 0.84 / 251 (2.07×) | 3.74 / 0.68 / 293 (2.42×) | **5.01** / 0.57 / 346 (2.85×) | 280 |
+| aime26 | 124 | 2.53 / 0.76 / 240 (1.94×) | 3.48 / 0.62 / 278 (2.25×) | **4.19** / 0.46 / 300 (2.43×) | 3571 |
+| humaneval | 124 | 2.62 / 0.81 / 250 (2.02×) | 3.59 / 0.65 / 288 (2.32×) | **4.63** / 0.52 / 333 (2.69×) | 2480 |
+| HumanEval | 124 | 2.61 / 0.81 / 250 (2.01×) | 3.57 / 0.64 / 287 (2.31×) | **4.65** / 0.52 / 336 (2.70×) | 2846 |
+| mbpp | 125 | 2.53 / 0.76 / 243 (1.95×) | 3.35 / 0.59 / 270 (2.17×) | **4.19** / 0.46 / 304 (2.43×) | 3022 |
+| speed-coding | 124 | 2.46 / 0.73 / 234 (1.89×) | 3.30 / 0.57 / 264 (2.13×) | **3.96** / 0.42 / 285 (2.30×) | 3504 |
+| swe-bench-pro | 123 | 2.42 / 0.71 / 230 (1.86×) | 3.18 / 0.54 / 253 (2.05×) | 3.49 / 0.36 / 251 (2.04×) | 4096 |
+| tool_call | 122 | 2.45 / 0.73 / 229 (1.87×) | 3.06 / 0.51 / 242 (1.98×) | **3.98** / 0.43 / 281 (2.30×) | 828 |
+| translation | 125 | 2.54 / 0.77 / 248 (1.98×) | 3.48 / 0.62 / 285 (2.27×) | **4.24** / 0.46 / 311 (2.49×) | 646 |
+| speed-multilingual | 124 | 2.59 / 0.80 / 248 (2.00×) | 3.56 / 0.64 / 287 (2.32×) | **4.25** / 0.46 / 310 (2.51×) | 1763 |
+| rag | 121 | 2.49 / 0.74 / 225 (1.86×) | 3.27 / 0.57 / 248 (2.06×) | **3.78** / 0.40 / 261 (2.16×) | 589 |
+| speed-rag | 121 | 2.48 / 0.74 / 228 (1.88×) | 3.33 / 0.58 / 257 (2.12×) | **3.94** / 0.42 / 274 (2.26×) | 737 |
+| summarization | 121 | 2.53 / 0.76 / 229 (1.90×) | 3.33 / 0.58 / 253 (2.10×) | **3.86** / 0.41 / 268 (2.22×) | 581 |
+| aa-lcr (~95k-token prompts) | 108 | 2.53 / 0.76 / 193 (1.79×) | 3.45 / 0.61 / 214 (1.98×) | 3.94 / 0.42 / 217 (2.01×) | 2764 |
+| mt-bench | 125 | 2.26 / 0.63 / 220 (1.76×) | 2.73 / 0.43 / 223 (1.79×) | 2.92 / 0.27 / 216 (1.73×) | 2181 |
+| qa | 126 | 2.33 / 0.67 / 228 (1.81×) | 2.82 / 0.46 / 232 (1.85×) | 3.03 / 0.29 / 225 (1.79×) | 1315 |
+| speed-qa | 126 | 2.33 / 0.67 / 228 (1.81×) | 2.82 / 0.46 / 232 (1.85×) | 3.00 / 0.29 / 223 (1.78×) | 1292 |
+| question | 125 | 2.26 / 0.63 / 220 (1.76×) | 2.73 / 0.43 / 223 (1.79×) | 2.97 / 0.28 / 219 (1.75×) | 2108 |
+| writing | 125 | 2.26 / 0.63 / 220 (1.76×) | 2.71 / 0.43 / 222 (1.78×) | 2.98 / 0.28 / 220 (1.76×) | 2101 |
+| speed-writing | 124 | 2.19 / 0.59 / 212 (1.71×) | 2.61 / 0.40 / 213 (1.72×) | 2.71 / 0.24 / 201 (1.62×) | 3903 |
+
+By domain (mean accept_len / mean speedup):
+
+| group | benchmarks | MTP k=2 | MTP k=4 | DFlash2 k=7 |
+|---|---|---|---|---|
+| math | gsm8k, math500, math_reasoning, aime26 | 2.66 / 2.06× | 3.68 / 2.39× | **4.83 / 2.78×** |
+| code | humaneval ×2, mbpp, speed-coding, swe-bench-pro | 2.53 / 1.95× | 3.40 / 2.20× | **4.18 / 2.43×** |
+| tool / translation | tool_call, translation, speed-multilingual | 2.53 / 1.95× | 3.37 / 2.19× | **4.15 / 2.43×** |
+| rag / summarization / long-context | rag, speed-rag, summarization, aa-lcr | 2.51 / 1.86× | 3.34 / 2.06× | **3.88 / 2.16×** |
+| chat / QA / writing | mt-bench, qa, speed-qa, question, writing, speed-writing | 2.27 / 1.77× | 2.74 / 1.80× | 2.93 / 1.74× |
+| **all 22** | | 2.48 / 1.90× (233 tok/s) | 3.25 / 2.10× (257 tok/s) | **3.90 / 2.26× (277 tok/s)** |
+
+Takeaways:
+- **The released `incoai/GLM-5.3-DFlash2` draft is the stronger baseline on 16 of 22 benchmarks**:
+  +0.65 accepted tokens/step and +8% e2e over native MTP k=4 on average, +1.0–1.3 tokens on
+  math, code, tool calling and translation (2.4–2.9× over no speculation).
+- **Open-ended chat/QA/writing is the weak spot for both drafters** (accept_len 2.6–3.0) and
+  there DFlash2's 7-token draft brings nothing: its per-token rate drops to 0.24–0.29, so e2e
+  is equal to or 2–4% below MTP k=4. A domain-adaptive k, or a draft trained with more chat
+  data, is the obvious target for our own DFlash2 draft.
+- **Native MTP k=2 → k=4 is worth +0.77 tokens / +10% e2e** everywhere except chat (+2%); the
+  single MTP layer's acceptance falls off fast past position 2 (rate 0.88 → 0.69 on gsm8k).
+- Long-context aa-lcr: acceptance holds (3.94 / 3.45) but the baseline is slower (108 tok/s
+  from the 95k-token prefix), so speedups are ~2× for both.
+- Reply lengths under max effort average 1.9k tokens here vs 3.1k on the short set (AIME/GPQA/
+  LCB); swe-bench-pro hits the 4,096 cap on every prompt, so its acceptance is over the first
+  4k tokens only.
+- Sampled GSM8K DFlash2 5.06 vs the card's greedy 5.9: consistent with the 0.3–0.9 sampling
+  penalty measured in §9.w.3.
+
+Harness for our own draft: add an experiment entry to `glm53-full-v033-b300.yaml` with the
+checkpoint path and run `ONLY=<name>` on c131 (~3.5 h incl. startup); then
+`tabulate_results.py --baseline baseline` gives the same table with the new column.
+
 ## Historical
 `archive/` — cluster-era launchers, completed one-off eval wrappers,
 pre-DSpark gemma examples, `NEXT_STEPS.md`. Non-gemma examples (`eagle3_*`,
