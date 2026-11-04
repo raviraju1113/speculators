@@ -16,6 +16,10 @@
 #   RUN_DIR   per-run dir for logs / IP handshake (required, fresh per launch)
 #   SMOKE=1   probe hidden states, then train MAX_STEPS (default 30) and exit
 #   VLLM_EXTRA_ARGS  extra `vllm serve` flags for both verifier nodes
+#   FROM_PRETRAINED  warm-start from a speculators checkpoint dir (weights + its
+#                    draft config; fresh optimizer/schedule) instead of
+#                    building the draft from glm53_dflash2_draft_config.json
+#   LR / EPOCHS      peak LR (default 5e-5) / epochs (default 10)
 set -uo pipefail
 
 : "${REPO:?set REPO to a frozen code snapshot}"
@@ -174,6 +178,12 @@ timeout 180 python -c "import wandb; print('wandb OK', wandb.Api(timeout=60).vie
 
 EXTRA=()
 [ "${SMOKE:-0}" = 1 ] && EXTRA+=(--max-steps "${MAX_STEPS:-30}")
+# --from-pretrained is mutually exclusive with --draft-config (train.py).
+if [ -n "${FROM_PRETRAINED:-}" ]; then
+    DRAFT_INIT=(--from-pretrained "$FROM_PRETRAINED")
+else
+    DRAFT_INIT=(--draft-config "$REPO/examples/train/glm53/glm53_dflash2_draft_config.json")
+fi
 cd "$REPO"
 python -m torch.distributed.run --nnodes=1 --nproc_per_node 8 \
     --rdzv-backend=c10d --rdzv-endpoint=127.0.0.1:29500 --local-addr=127.0.0.1 \
@@ -187,10 +197,10 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node 8 \
     --save-path "$SAVE_PATH" --log-dir "$RUN_DIR/train_logs" \
     --run-name "$RUN_NAME" --logger wandb \
     --speculator-type dflash2 \
-    --draft-config "$REPO/examples/train/glm53/glm53_dflash2_draft_config.json" \
+    "${DRAFT_INIT[@]}" \
     --target-layer-ids $TARGET_LAYER_IDS \
     --block-size 7 --max-anchors 512 --total-seq-len "$SEQ_LEN" \
-    --optimizer adamw --lr 5e-5 --weight-decay 0.0 \
+    --optimizer adamw --lr "${LR:-5e-5}" --weight-decay 0.0 \
     --scheduler-type cosine --scheduler-warmup-ratio 0.04 \
     --loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4 \
     --epochs "${EPOCHS:-10}" --checkpoint-freq "${CHECKPOINT_FREQ:-0.5}" \

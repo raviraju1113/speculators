@@ -1,0 +1,83 @@
+# GLM-5.3 DFlash2 acceptance on ONE 8xB200 node: our Kimi-recipe draft vs the incoai
+# DFlash2 card draft vs no speculation, all in this one config (Mengmeng's B300/bf16
+# numbers are a different node type and dtype, so they are not the denominator here).
+#
+# Target: official FP8 GLM-5.3 (707 GB). bf16 (1.51 TB) does not fit one B200 node and
+# DFlash2 cannot use pipeline parallelism (its aux hidden states stay on their PP stage).
+# Our draft was trained on bf16 hidden states, so FP8 costs it a little acceptance.
+# vLLM 0.33: DFlash2 under 0.28 read accept_len ~1.4 for the incoai card draft.
+#
+# Sampling = the regeneration/serving setup (effort max, T 1.0, top-p 0.95); the greedy
+# rows are the card-comparable anchor. Our draft is k=6 (block 7, sample_from_anchor
+# false); incoai is k=7 (block 8). Draft dirs come from export_dflash2_vllm.py.
+#
+#   srun --jobid=<eval alloc> --overlap -N1 -n1 /usr/bin/bash \
+#     examples/train/glm53/run_eval_glm53_1node.sh examples/train/glm53/eval_glm53_dflash2_fp8_v033.yaml
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 32768
+  health_timeout: 3600
+  extra_args:
+    - --distributed-executor-backend
+    - mp
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/eval/glm53-dflash2-kimirecipe-ep9-fp8-v033
+
+experiments:
+  # Ours first, so a serving/convention problem shows after one model load.
+  # Speedups: tabulate_results.py --baseline baseline.
+  - name: ours_ep9_k6
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_gemma782k_kimirecipe_v2/checkpoints_vllm/8
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: incoai_k7
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+
+  - name: baseline
+
+  - name: ours_ep9_k6_greedy
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_gemma782k_kimirecipe_v2/checkpoints_vllm/8
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+    eval: {temperature: 0.0, top_p: 1.0}
+
+  - name: incoai_k7_greedy
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+    eval: {temperature: 0.0, top_p: 1.0}
