@@ -1,12 +1,12 @@
 #!/bin/bash
 # Draft-OPD full stage on one 8x B200 node (preset over run_rounds.sh).
-# Submit ONLY when the sc3-cp pool is usable (sn50-hdi-0 reservation access).
+# Submit ONLY when the sc3-cp pool is usable (sn50-hdi-1 reservation access).
 #
 #   cd /import/ml-sc-scratch1/mengmengj/speculators
-#   PROMPTS=data/opd_prompts/<pool>.jsonl sbatch --reservation=sn50-hdi-0 examples/train/opd/sbatch_sc3_opd_full.sh
-#   (every sc3-cp B200 sits inside the sn50-hdi-0 reservation: without --reservation the job
+#   PROMPTS=data/opd_prompts/<pool>.jsonl sbatch --reservation=sn50-hdi-1 examples/train/opd/sbatch_sc3_opd_full.sh
+#   (every sc3-cp B200 sits inside the sn50-hdi-1 reservation: without --reservation the job
 #   pends forever with "ReqNodeNotAvail, May be reserved for other job"; fix a pending job with
-#   `scontrol update jobid=<id> Reservation=sn50-hdi-0`. Not hard-coded here because the same
+#   `scontrol update jobid=<id> Reservation=sn50-hdi-1`. Not hard-coded here because the same
 #   preset runs on the A100 nodes outside the reservation.)
 #
 # Layout per round: rollout server on the first allocated GPU (concurrency 32),
