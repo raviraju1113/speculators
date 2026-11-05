@@ -196,7 +196,9 @@ round's rollout; seed 0.4413 / 5.30 accepted per step):*
 | a, 2 rounds | 6.50 | 4.39 | 5.27 | −10% / −5% / −9% |
 | a, 2 rounds, k=8 | 5.74 | 4.10 | 4.80 | −7% / −5% / −8% (seed k=8 6.16 / 4.30 / 5.19) |
 | b1, 1 round (OPD λ 1, accident) | 6.41 | 4.38 | 5.34 | −11% / −6% / −8% |
-| c, 2 rounds | eval rerun (sc3-c97's GPUs are dead) | | | |
+| c, 2 rounds | 6.88 | 4.46 | 5.52 | −4% / −4% / −5% |
+| d: seed blk12 ckpt 28 itself (baseline for arm d) | 6.81 | 4.52 | 5.55 | −5% / −3% / −4% vs ckpt 33 |
+| d, 1 round (paper's exact loss: λ 1, γ^(k−1)) on ckpt 28 | 5.97 | 4.16 | 5.09 | **−12% / −8% / −8% vs ckpt 28** |
 
 **Track A verdict (2026-11-04): Draft-OPD does not help this draft, in-domain
 pool or not. Closed.**
@@ -206,9 +208,12 @@ pool or not. Closed.**
   1–3% after one round and 5–7% after two. Each round makes it worse, as in
   v2 on the science pool.
 - Plain SFT on the same on-policy rollouts (arm c) raised the pool 6.3% and
-  left the benchmarks exactly flat: the on-policy text itself is neutral,
-  so the damage in a/b comes from the acceptance-aware objective, not the
-  data.
+  left the benchmarks flat after one round (0 / 0 / −1%), then lost 4–5%
+  after the second. So continued training on 16k self-generated rollouts
+  is itself mildly harmful to a converged draft, and the acceptance-aware
+  objective adds to it: at every round OPD (b) is below plain SFT (c) on
+  every benchmark, and the gap widens with rounds (round 2: b −7/−5/−7%
+  vs c −4/−4/−5%).
 - SFT replay (arm a) did not protect the draft: it cancelled the pool gain
   and lost *more* on the benchmarks than no replay. Forgetting of the SFT
   distribution was the wrong model of the v2 drop.
@@ -224,7 +229,7 @@ OPD as a stage; if its DFlash2 draft is trained to convergence the same
 result is expected, and if it is stopped early (paper-style) OPD becomes a
 question worth one pilot, not a line item.
 
-*Arm d (launched 2026-11-04, job 15659070): the paper's exact loss on an earlier
+*Arm d (2026-11-04, job 15659070, done): the paper's exact loss on an earlier
 seed.* λ_rej 1, γ 0.8 as γ^(k−1) from the block start (`--opd-rej-decay
 paper`), reverse KL, seed **blk12 checkpoint 28** (val 5.29 vs 5.55 at 33),
 same pool, 2 rounds, no replay; first-rejected-only and the OOV mask kept
@@ -237,7 +242,15 @@ eval job 15658944; results `d_seed28_k12`, `d29_k12`.
 (−13%), guard stopped it** — the same collapse as λ=1 on seed 33 (−10%) and
 v1 on sci16k, now with the paper's decay and a less-converged seed. The
 paper's exact rejected term is the wrong regime for this draft at either
-epoch; the decay changes nothing. Benchmark eval of checkpoint 29 pending.
+epoch; the decay changes nothing. **Benchmarks (18:20, A100, jobs 15658944
+/ 15661164): checkpoint 28 itself 6.81 / 4.52 / 5.55; after one paper-loss
+round 5.97 / 4.16 / 5.09, i.e. −12% / −8% / −8%** — the largest benchmark
+loss of any arm, on a seed that did have headroom (ckpt 28 sits 3–5% below
+ckpt 33). Headroom was not the missing ingredient; the λ=1 rejected term
+is simply destructive for a 32k-vocab draft whose rejected-slot
+distribution is far from the target's. Arm d closes the paper-exact
+question: no setting of λ, γ, pool, replay or seed epoch turned OPD
+positive on benchmarks.
 
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
