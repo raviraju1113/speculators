@@ -101,3 +101,8 @@ experiments:
     draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots_vllm/ep0_step1824
     speculative_config: {method: dflash}
     num_speculative_tokens: 6
+
+  - name: ftA_ep1_k6                    # end of epoch 1 (step 3,647; val accept_len 2.613)
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots_vllm/ep1_end
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
