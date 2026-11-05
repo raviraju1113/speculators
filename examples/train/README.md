@@ -519,10 +519,13 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   15215073 — done. **Verdict 2026-11-04: closed, negative.** Pool
   acceptance rose (b +4.2%, c +6.3%) but benchmarks fell for every OPD arm
   (b −1…−3% after one round, −5…−7% after two; replay arm a worse still),
-  while plain SFT on the same rollouts (c) was exactly flat. The objective,
-  not the data or the domain, costs benchmark acceptance on a converged
-  seed. Full table and reasoning: `opd/README.md` §6. Track B (Gemma
-  DFlash2 rehearsal) is next. Arm b's first
+  while plain SFT on the same rollouts (c) was flat after one round and
+  −4…−5% after two: continued training on self-generated rollouts is
+  mildly harmful to a converged draft and OPD is worse than that at every
+  round. Arm d (paper's exact loss, λ_rej 1 with γ^(k−1) decay, on the
+  less-converged blk12 ckpt 28): pool −13% in one round, benchmarks
+  −12 / −8 / −8% vs ckpt 28 — the worst arm. Full table and reasoning:
+  `opd/README.md` §6. Track B (Gemma DFlash2 rehearsal) is next. Arm b's first
   attempt ran at the paper's λ_rej=1 by accident and lost 0.046 pool
   acceptance in one round (kept as arm b1, eval running); the preset now
   pins λ_rej 0.05 (every B200 is taken; GLM regen has
