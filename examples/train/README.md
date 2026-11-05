@@ -549,6 +549,8 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
 
 ## 9. GLM-5.3 DFlash2-MTP draft — data generation (branch `mengmengj/glm-dflash2`)
 
+> **Training plan (2026-11-05):** `examples/train/glm53/PLAN_multidraft.md` — one B300 verifier + one B200 node training 8–16 draft variants on a shared hidden-state stream; reuses ravir's trainer/Mooncake/draft config.
+
 Second target, same repo and README. Status 2026-10-27: scripts written and
 tested end-to-end against a mock server + the real GLM tokenizer; **nothing
 has run on a GPU yet** (B300 node busy with Draft-OPD setup).
