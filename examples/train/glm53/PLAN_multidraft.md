@@ -5,6 +5,14 @@ Companion to README §9 (data generation). Nothing here has run yet.
 
 ## 0. Summary
 
+**Scope decision (2026-11-05):** no sweep and no Draft-OPD until a working recipe
+exists. Phase 1 is two drafts with zero new code (§6): ravir's Kimi recipe from
+scratch on the cleaned on-policy regen data, and the same recipe warm-started from
+ravir's off-policy checkpoint, evaluated every half epoch. §3–§5 describe the
+capacity and the multi-draft mechanism for phase 2, once one of the two beats the
+incoai release. "On-policy" here means SFT on GLM-5.3's own regenerated answers;
+Draft-OPD (the rollout objective, negative on Gemma) is a separate, later question.
+
 - The verifier forward (GLM-5.3, 744B) is ~8× the cost of a draft's forward+backward
   per row. One verifier stream can therefore feed several drafts for free; what we
   pay for extra drafts is trainer GPUs, not verifier time.
@@ -53,7 +61,7 @@ Numbers behind the layout:
 | stream rate | 18–25k tok/s measured on 2×B200 PP2; one B300 TP8 should land in the same band (not measured: the probe was cancelled for regen priority) |
 | transport | 20k tok/s × 74 KB = 1.5 GB/s → Mooncake over 100 GbE is fine; NFS (~400 MB/s) is not; same-node `/dev/shm` is fine |
 | data per epoch | ~600–650k usable rows after the §9.v cleanup; 5.3k tokens/row mean with truncated rows kept (14 % at the 16k cap), ~3.5k if dropped → 2–3.4B tokens |
-| epoch time | ~1.2–2 days per verifier node; 10-epoch recipe = 2–3 weeks on layout A, half on B; a 3-epoch warm-start fine-tune = 4–6 days |
+| epoch time | ~1.2–2 days per verifier node; the full 10-epoch recipe = 2–3 weeks on layout A, half on B. Our rows are ~5× ravir's gemma782k rows in tokens (5.3k vs 991 mean), so one of our epochs ≈ several of theirs; checkpoint every half epoch and stop when the short set plateaus — first evaluable draft after 1–2 days |
 | draft cost per row | ≈ 6 × 1.7B × 3,584 positions (512 anchors × block 7) ≈ 37 TFLOP vs verifier ≈ 80 GFLOP/token × 5.3k ≈ 420 TFLOP → 1:11; one B200 draft rank handles ~10 rows/s against a stream of ~3.8 rows/s |
 
 Decode (on-policy rollouts, OPD-style) is a different budget: ~3.4k tok/s per B300,
@@ -93,6 +101,8 @@ exact flags, and read `torch.cuda.max_memory_allocated`. Repeat with anchors 102
 block 16 (the largest variants in §4). Half a day.
 
 ## 4. Variations: fixed architecture, one shared stream
+
+*Phase 2 material — deferred until phase 1 (§6) has a working recipe.*
 
 Everything downstream of the verifier hidden states can differ per draft. The
 architecture (layers, hidden, heads, window) stays ravir's so checkpoints are
@@ -210,16 +220,30 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
 
 ## 6. Order of work
 
-1. **Footprint measurement** on sc3-c127 (§3): decides 8 vs 16 slots. No verifier.
-2. **Verifier on one B300 with the stock 0.33 aux path + Mooncake producer**, gated by
-   ravir's `probe_hidden_states.py --verifier` (lm_head top-1 agreement, NaN scan).
-   Needs a B300 free of regen (shard A ends ~Nov 9; c131 is on shard B2).
-3. **Option C pilot**: two drafts (slots 1 and 2) for one epoch on the full cleaned
-   data, evaluated on the short set. Validates layout A and gives the first
-   block-size answer.
-4. **Shared-stream mode** (§5.2), tested on the H200, then the 8-slot sweep.
-5. Full-suite evals of the top slots; pick the recipe; 10-epoch run from scratch of
-   the winner (or continue the warm start, depending on slot 1 vs its scratch twin).
+**Phase 1 — a working recipe (two drafts, zero new code).**
+
+1. **Verifier on one B300** with the stock vLLM 0.33 aux-hidden-state path and the
+   Mooncake producer, gated by ravir's `probe_hidden_states.py --verifier` (lm_head
+   top-1 agreement, NaN scan). Needs a B300 free of regen (shard A ends ~Nov 9;
+   c131 is on shard B2). Data: the full cleaned regen set, tokenized with
+   `prepare_glm53_data.sh` (truncated-row policy decided once, README §9.x).
+2. **Two drafts on one B200 node, ravir's trainer unchanged** (two independent
+   trainers, §5.4; the verifier absorbs the 2× load):
+   - **scratch:** Kimi recipe (block 7, kl_div γ 4, AdamW 5e-5 cosine, anchors 512)
+     from random init on the on-policy data — the candidate recipe;
+   - **warm:** identical flags, initialised from ravir's off-policy checkpoint —
+     the cheap comparison and a check on whether the Gemma-answer prior helps or hurts.
+3. **Evaluate every half epoch** on the short set (`glm53-short-v033-b300.yaml`,
+   greedy + sampled, README §9.w). Stop a run when it plateaus. Bar: beat the incoai
+   release (short set greedy 5.03 / 3.66 / 4.27, sampled 4.44 / 2.73 / 3.98) and
+   ravir's off-policy draft.
+
+**Phase 2 — only after phase 1 produces a draft above the bar.**
+
+4. Footprint measurement on sc3-c127 (§3): 8 vs 16 slots.
+5. Shared-stream mode (§5.2), tested on the H200.
+6. The §4 sweep around the working recipe; full-suite evals of the top slots.
+7. Draft-OPD: at most one pilot on an early (non-converged) checkpoint, last.
 
 ## 7. Open questions
 
