@@ -935,13 +935,20 @@ is proven clean (shard A), and smoke-test 0.33 on a pair in parallel.
   ~185k B prompts in total at ~1,500 rows/h → B done ~Nov 9–10, same as shard A.
 - Smoke test **15663159/15663160** `glm53_smoke_pp2_v033`: identical job on vLLM 0.33, TP8×PP2
   on sc3-cp78+cp89, LIMIT=1500 → `smoke_pp2_v033.jsonl`. **Verdict 16:14: worse, not fixed —
-  776 of the first 1,103 rows (70%) are `!` garbage on 0.33.** So the fault is in the TP8×PP2
+  776 of the first 1,103 rows (70%) are `!` garbage on 0.33; final count 1,165 of 1,499 rows
+  (78%), job ended 16:43.** So the fault is in the TP8×PP2
   (+EP, Ray) path for this model in both 0.26 and 0.33, and PR #64458 is unrelated. B200 pairs
   are out for GLM-5.3 generation; everything runs single-node on the B300s from here.
 - 16:14 B1 pair finished (`Done: ok=123590 errors=1669`): raw archived as
   `nemo782k_regen_glm53_shardB1.pp2raw_20261104.jsonl`, 77,728 clean rows kept, 51,005 dropped;
   follow-up job **15672234** `glm53_regen_shardB1_c131` queued on c131 behind B2 for the
   52,674 missing ids. cp79/cp90 are free.
+- 18:14 B3 pair finished (`Done: ok=125399 errors=5003`, worker hit its time limit at 17:47 so
+  the last ~5k requests errored): raw archived as `nemo782k_regen_glm53_shardB3.pp2raw_20261104.jsonl`,
+  73,119 clean rows kept, 52,280 (41.7%) dropped; follow-up job **15689624**
+  `glm53_regen_shardB3_c131` queued on c131 after B1. cp83/cp86 are free. No B200 pair jobs
+  remain. Clean totals at 18:14: A 211,365 + B 208,804 (B1 77,728 / B2 57,957 / B3 73,119)
+  = 420,169 rows (53.7% of 782,413); c131 queue B2 → B1 → B3 is ~184k prompts.
 - Reservation renamed `sn50-hdi-0` → `sn50-hdi-1` today; launchers updated (cc55a07).
 - Standing check from now on: every output file is scanned for `!{32,}` at each progress report.
 PR #64458 itself is not the fix for 0.26 (no MRV2 there); 0.33 is the candidate because it
