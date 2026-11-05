@@ -990,6 +990,43 @@ When c131 has produced ≥10k B2 rows (expected 2026-11-05 morning), compare tru
 looping within prompt-length buckets: equal → keep all clean pair rows; worse on the pair side →
 discard every pair row (`*.pp2raw_*` archives + the filtered files) and regenerate.
 
+**Result (2026-11-05 09:50): pair-clean rows ARE degraded (mildly).** Same pool (B2 ids), same
+settings; group 1 = the 54,632 pair-clean rows, group 2 = the 20,275 ids c131 had regenerated
+single-node by 09:48 (18.5 h of job 15663156). Looping = zlib ratio of the last 6k chars < 0.15.
+
+| prompt chars (human turns) | group | n | truncated | looping | finish=stop | mean / median compl. tok |
+|---|---|---|---|---|---|---|
+| <500 | pair-clean | 21,736 | 14.1% | 0.41% | 85.9% | 3,983 / 888 |
+| <500 | single-node c131 | 10,966 | 13.2% | 0.15% | 86.8% | 4,377 / 1,363 |
+| <2000 | pair-clean | 30,737 | 13.5% | 0.71% | 86.5% | 4,036 / 1,079 |
+| <2000 | single-node c131 | 8,207 | 9.2% | 0.05% | 90.8% | 4,817 / 2,896 |
+| <8000 | pair-clean | 2,127 | 40.2% | 0.42% | 59.8% | 8,962 / 8,507 |
+| <8000 | single-node c131 | 1,007 | 20.3% | 0.00% | 79.7% | 7,379 / 5,537 |
+| 8000+ | pair-clean | 32 | 21.9% | 0.00% | 78.1% | 5,712 / 2,988 |
+| 8000+ | single-node c131 | 95 | 1.1% | 0.00% | 98.9% | 3,327 / 2,461 |
+| **all** | **pair-clean** | **54,632** | **14.8%** | **0.58%** | **85.2%** | **4,208 / 1,070** |
+| **all** | **single-node c131** | **20,275** | **11.9%** | **0.10%** | **88.1%** | **4,699 / 2,139** |
+
+Controls: the gap holds within turn-count groups (1-turn 15.1% / 0.61% pair vs 13.4% / 0.12%
+single; 2–3 turns 8.3% / 0.04% vs 4.4% / 0.00%), and the single-node rates are flat across write
+order (5k-row blocks: 11.4–12.5% truncated, 0.04–0.14% looping), so they are not a
+"short replies finish first" artefact. Single-node B2 matches shard A (truncated 9.7%, looping
+0.10%); the pair-clean rows do not. Against the agreed judge: truncation differs by 3 points
+overall (0.9 in <500, 4.3 in <2000, 20 in 2k–8k) and looping by 0.48 points (6×) → **degraded**.
+Reading: the PP2 fault is not only the binary `!` collapse; a further ~0.5% of pair rows are
+silent non-`!` repetition loops that run to the 16k cap, pair rows are truncated ~3 points more
+often, and pair replies are shorter (median 1,070 vs 2,139 tokens). Caveat: the two groups are
+complementary id sets (garbage was prompt-dependent), so a prompt-mix component in the length and
+truncation gap cannot be excluded; the looping gap is the robust signal. A paired check
+(regenerate ~2k of the *same* pair-clean ids on a B300, ~1.5 h) would settle the residual doubt.
+
+Options for the ~205k clean pair rows (B1 77,728 + B2 54,632 + B3 73,119): (a) discard all and
+regenerate, ~137 h more on one B300 (B finishes ~Nov 16–17 instead of ~Nov 10–11); (b) keep the
+stop-finished pair rows and regenerate only the truncated ones (~31k ids, ~21 h), which removes
+every row the metrics can flag; (c) (b) plus the 2k paired check before deciding on (a). Nothing
+has been deleted; the user decides. Until then, training runs should prefer A + single-node rows
+(snapshot `nemo782k_regen_glm53_snap20pct_shardA_20261104.jsonl` is unaffected).
+
 
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
