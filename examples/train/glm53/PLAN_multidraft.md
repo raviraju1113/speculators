@@ -6,9 +6,9 @@ Companion to README §9 (data generation). Nothing here has run yet.
 ## 0. Summary
 
 **Scope decision (2026-11-05):** no sweep and no Draft-OPD until a working recipe
-exists. Phase 1 is two drafts with zero new code (§6): ravir's Kimi recipe from
-scratch on the cleaned on-policy regen data, and the same recipe warm-started from
-ravir's off-policy checkpoint, evaluated every half epoch. §3–§5 describe the
+exists. Phase 1 is the from-scratch on-policy recipe (§2a) run exactly as ravir runs
+the trainer, plus a warm-started twin if the verifier has headroom (§6), evaluated
+every half epoch. §3–§5 describe the
 capacity and the multi-draft mechanism for phase 2, once one of the two beats the
 incoai release. "On-policy" here means SFT on GLM-5.3's own regenerated answers;
 Draft-OPD (the rollout objective, negative on Gemma) is a separate, later question.
@@ -68,6 +68,41 @@ Decode (on-policy rollouts, OPD-style) is a different budget: ~3.4k tok/s per B3
 so a 16k-prompt round is 6–7 h of verifier time. The Gemma OPD line was negative on a
 converged seed (opd/README.md §6); plan at most one pilot, late.
 
+## 2a. Phase-1 hyperparameters — from scratch, on-policy
+
+Anchor = ravir's mapping of the Kimi K3 recipe, changed only where our data differs.
+
+| | value | why |
+|---|---|---|
+| data | full cleaned regen (`nemo782k_regen_glm53_all.jsonl` after the §9.v `!{32,}` filter), `prepare_glm53_data.sh` with `SEQ_LENGTH=16384`; keep rows truncated at the 16k cap (they are cut at 16k, README §9.x); loss mask = `<think>…</think>answer` of every assistant turn, non-final-turn thinking blanked | the served distribution, whole |
+| validation | `train_ratio 0.998` (~1.3k held-out rows) → val accept_len every half epoch | Gemma practice |
+| draft | ravir's `glm53_dflash2_draft_config.json`: 5 layers, hidden 6144, 64 q / 16 kv × 64, MLP 12288, SWA 2048 all layers, full vocab, `sample_from_anchor=False` | parity with ravir and the incoai class; proven serving path |
+| aux layers | `--target-layer-ids 7 20 44 57 71` (+78 appended by launch_vllm) | Kimi relative depths |
+| block / anchors | `--block-size 7 --max-anchors 512` (k=6 at serve) | Kimi |
+| loss | `--loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4`, selector α 1, `--loss-implementation fused` | Kimi |
+| optimiser | `--optimizer adamw --lr 5e-5 --weight-decay 0 --scheduler-type cosine --scheduler-warmup-ratio 0.04`, grad clip 1.0 (hard-coded) | Kimi; AdamW must be pinned, the branch default is Muon |
+| batch | 8 ranks × 1 packed 16k sequence = 131k tokens/step, no accumulation (~25 conversations/step at 5.3k tok/row vs ~120 on gemma782k) | same tokens/step as ravir |
+| epochs | **3** (≈7.5B tokens ≈ Kimi's 10 × 776M budget), cosine over 3 epochs, checkpoint every 0.5 epoch; extend if val accept_len is still rising at the end | token budget, not epoch count |
+| precision | bf16 hidden states, fp32 master weights, DDP | ravir |
+| launch | ravir's `run_glm53_dflash2_3node.sh` trainer role unchanged; verifier role = one B300, vLLM 0.33 TP8, same Mooncake producer flags | reuse |
+
+Known risk: 5e-5 is a fine-tune-sized LR for a from-scratch run of only 3 epochs. If
+val accept_len is still climbing steeply at epoch 1, the first contrast (§2b) is
+LR 2e-4, not a block-size change.
+
+## 2b. Contrast drafts (planned after the recipe is launched, run in parallel per §5)
+
+| contrast | data | init | what it isolates | shares the stream? |
+|---|---|---|---|---|
+| recipe (§2a) | on-policy | scratch | the candidate | leader |
+| warm start | on-policy | ravir's off-policy checkpoint | does the Gemma-answer prior help or hurt | yes |
+| off-policy from scratch | gemma782k | scratch | = ravir's existing run; **not rerun** | n/a |
+| block 12 | on-policy | scratch | the Gemma block-size win on this class | yes |
+| LR 2e-4 | on-policy | scratch | LR headroom for scratch | yes |
+
+Three parallel drafts at first (recipe, warm start, block 12); the full §4 list only
+once the recipe clears the bar.
+
 ## 3. How many drafts fit on one B200 node
 
 Per-draft footprint, ravir's config, one rank, no sharding (estimate):
@@ -87,12 +122,11 @@ Reference point: the Gemma DSpark draft (2.4B, 32k vocab, FSDP over 4 ranks) sit
 full-vocab verifier distribution too.
 
 Plan:
-- **8 drafts, one per GPU — safe.** 183 GB per GPU vs ~65 GB.
-- **16 drafts, two per GPU — likely.** Two processes per GPU with `CUDA_VISIBLE_DEVICES`
-  pinned; needs the measured footprint ≤ ~85 GB. Compute margin drops from 3× to
-  1.5× per draft, still enough.
-- 24 (three per GPU) only with anchors 256 and `--loss-implementation fused` verified
-  under 55 GB; not planned.
+- **Design point: 8 drafts, one per GPU.** 183 GB per GPU vs ~65 GB, and each GPU
+  carries a full-recipe draft (131k tokens per optimiser step via accumulation, §5.2)
+  with ~2.5× compute margin over the stream.
+- 16 (two per GPU) is possible for light variants (anchors 256) if the measured
+  footprint is ≤ ~85 GB, at ~1.3× margin; not the plan.
 
 **Measure before deciding (no verifier needed):** run one trainer rank on the H200
 sc3-c127 against cached hidden states (`--on-missing skip`, a few hundred rows cached
@@ -155,37 +189,75 @@ own consumer, so N independent trainers = N verifier passes per row. Mooncake's
 transfer has no cache at all (`get_cached` returns None) — the handle comes back in
 the vLLM response, so only the requester knows it.
 
-### 5.2 Option A — N processes, one shared stream (plan)
+### 5.2 The solution: one stream, one leader, followers in lockstep (plan)
 
-One trainer process per draft (`torchrun --nproc_per_node 1`, `CUDA_VISIBLE_DEVICES`
-pinned), all reading the same dataset with the same seed, so the multipack sampler
-(seeded by `seed + epoch`, lengths only) gives every process the same row order.
-Changes, all in `src/speculators/train/data.py` and `hs_connectors`:
+Goal: a draft trained inside a group gets **the same batches, the same hidden-state
+bytes and the same optimiser steps** it would get alone. Then sharing cannot change
+the result, only the wall-clock, and that is checked by the test in 5.2.4.
 
-1. **Deterministic key per row.** The vLLM connector already honours a client-supplied
-   `hidden_states_path` (file backend) / key (Mooncake) in `kv_transfer_params`.
-   Use `hs_<epoch>_<file_idx>` so every process can compute the key without talking
-   to the requester.
-2. **One requester.** `--hs-role leader|follower`. The leader generates on a miss as
-   today but keeps the result (`on_generate cache`). Followers get a new
-   `--on-missing wait`: poll the key (file exists and is complete / Mooncake `exists`)
-   with a timeout, never request.
-3. **Refcounted delete.** Each reader drops a marker (`<key>.done.<slot>` on the file
-   backend; a counter key in Mooncake). A small sweeper in the leader deletes a row
-   once `N` markers exist, and refuses to run more than `CACHE_ROWS` rows ahead of
-   the slowest follower. `/dev/shm` on a B200 node is 1.2 TB ≈ 14M tokens ≈ 2,600
-   rows of buffer; Mooncake's segment is sized the same way.
-4. **Union of aux layers** (only if §4's aux-layer variant is in the sweep): the
-   verifier dumps the union; a per-process index-select in the transform.
+**5.2.1 Group rules.** Every draft in a group uses the same dataset, seed,
+`--total-seq-len` and sampler world size. The multipack sampler is seeded by
+`seed + epoch` and depends only on row lengths, so every process then walks the
+identical row order. Each draft is **one process on one GPU** (`torchrun
+--nproc_per_node 1`, `CUDA_VISIBLE_DEVICES` pinned). The recipe's global batch is
+kept by gradient accumulation: 1 rank × accum 8 is the same mean gradient as 8
+ranks × accum 1. This costs no wall-clock, because the stream (~3.8 rows/s), not the
+GPU (~10 rows/s per draft), is the bottleneck. Things that may differ per draft:
+block size, loss, γ, anchors, LR, schedule, init, optimiser, selector/conv settings
+(§4). Things that may not: data, seed, sequence length, world size, truncated-row policy.
 
-Properties: independent wandb runs, independent crashes (a follower can restart and
-resume at its own step; only the leader's death stops the stream), different batch
-sizes and LRs are free, and the verifier sees exactly one request per row. The
-whole group runs at the pace of its slowest member, which is fine because every
-member has ≥1.5× compute margin over the stream.
+**5.2.2 Leader and followers** (changes in `src/speculators/train/data.py` and
+`hs_connectors`):
 
-Estimated effort: 1–2 days, including a two-process test on the H200 with the file
-backend (no verifier: pre-generated rows + a fake leader that copies files in).
+1. *Deterministic key per row.* The vLLM connector already honours a
+   client-supplied `hidden_states_path` / key in `kv_transfer_params`; use
+   `hs_<epoch>_<file_idx>` so every process computes the key itself.
+2. *One requester.* `--hs-role leader|follower`. The leader generates on a miss as
+   today but keeps the result. Followers get `--on-missing wait`: poll the key
+   (complete file on the file backend, `exists` on Mooncake) with a timeout; if the
+   key is gone (they fell behind the buffer, see 4), they fall back to
+   `generate` for that row — still the same row, just one extra verifier pass.
+3. *Refcounted delete.* Each reader drops a marker (`<key>.done.<slot>` on the file
+   backend, a counter key on Mooncake); the leader's sweeper deletes a row once all
+   `N` markers exist.
+4. *Bounded buffer.* The leader does not run more than `CACHE_ROWS` rows ahead of
+   the slowest live follower; a follower silent for `T` seconds is declared dead
+   and no longer holds the buffer (it catches up via the fallback in 2 when it
+   restarts). `/dev/shm` on a B200 node is 1.2 TB ≈ 14M tokens ≈ 2,600 rows; a
+   Mooncake segment is sized the same way.
+5. *Stream rate is the leader's in-flight request count.* Ravir's run had ~11
+   requests running and the verifier idle; set the leader's `num_workers ×
+   prefetch_factor` so ≥32 requests are in flight and watch `Running:` / `Waiting:`
+   in the vLLM log.
+6. *Union of aux layers* only if an aux-layer variant is in the group: the verifier
+   dumps the union, each process index-selects in the transform.
+7. *Validation:* `check_hidden_states` (shape/token check) already runs per row in
+   every process; add a content checksum written by the leader and verified by
+   followers so a torn read can never train on partial tensors.
+
+Isolation: each draft has its own process, wandb run, checkpoint dir and log. A
+follower crash stalls nobody (rule 4) and resumes at its own step; only the leader's
+death stops the stream, and restarting the leader restarts it.
+
+**5.2.3 Launch shape** — see 5.5.
+
+**5.2.4 Acceptance test, before any run that matters uses group mode.** Train the
+§2a recipe for 300 optimiser steps three ways from the same seed:
+
+| run | launch |
+|---|---|
+| A | alone, 8 ranks × accum 1 (ravir's launch, the reference) |
+| B | alone, 1 rank × accum 8 |
+| C | as a follower in a 3-draft group, 1 rank × accum 8 |
+
+Pass = the loss, `train/accept_len` curves and the step-300 val accept_len of B and C
+agree with A within the noise measured by two A runs with different seeds, and the
+hidden-state checksums read by C match the leader's. Fail = group mode is not used
+for anything that feeds the SOTA candidate; contrasts then run as independent
+trainers (§5.4) at the verifier's expense.
+
+Estimated effort: 1–2 days for the code, plus the test (it needs the verifier, so
+it runs on the phase-1 setup during a checkpoint gap or on the second B300).
 
 ### 5.3 Option B — one process, N drafts
 
@@ -227,12 +299,14 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    top-1 agreement, NaN scan). Needs a B300 free of regen (shard A ends ~Nov 9;
    c131 is on shard B2). Data: the full cleaned regen set, tokenized with
    `prepare_glm53_data.sh` (truncated-row policy decided once, README §9.x).
-2. **Two drafts on one B200 node, ravir's trainer unchanged** (two independent
-   trainers, §5.4; the verifier absorbs the 2× load):
-   - **scratch:** Kimi recipe (block 7, kl_div γ 4, AdamW 5e-5 cosine, anchors 512)
-     from random init on the on-policy data — the candidate recipe;
-   - **warm:** identical flags, initialised from ravir's off-policy checkpoint —
-     the cheap comparison and a check on whether the Gemma-answer prior helps or hurts.
+2. **The recipe run, ravir's launch unchanged**: one B200 node, 8 ranks, §2a flags,
+   from scratch on the on-policy data. This is the SOTA candidate and it never
+   shares a process or a GPU with anything else.
+   - If the vLLM log shows `Waiting: 0` with the trainer at full pace (ravir saw
+     ~11 running, 0 waiting), start the warm-start twin (§2b) as a second,
+     independent 8-rank trainer on a second B200 node against the same verifier
+     (§5.4; the verifier does 2× the work). If the verifier saturates, the twin
+     waits for group mode (§5.2).
 3. **Evaluate every half epoch** on the short set (`glm53-short-v033-b300.yaml`,
    greedy + sampled, README §9.w). Stop a run when it plateaus. Bar: beat the incoai
    release (short set greedy 5.03 / 3.66 / 4.27, sampled 4.44 / 2.73 / 3.98) and
