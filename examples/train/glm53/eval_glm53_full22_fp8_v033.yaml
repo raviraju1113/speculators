@@ -95,4 +95,9 @@ experiments:
 
   - name: baseline                      # speedup denominator (~9.5 h; run last)
 
-  # Clean on-policy FT checkpoints (shard-A data) get appended here as they land.
+  # Clean on-policy FT checkpoints (shard-A data; one epoch = 3,648 steps), snapshotted to
+  # output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots/<tag> and exported to snapshots_vllm/<tag>.
+  - name: ftA_ep0.5_k6                  # half epoch (step 1,824)
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots_vllm/ep0_step1824
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
