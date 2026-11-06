@@ -86,10 +86,14 @@ Anchor = ravir's mapping of the Kimi K3 recipe, changed only where our data diff
 | precision | bf16 hidden states, fp32 master weights, DDP | ravir |
 | launch | ravir's `run_glm53_dflash2_3node.sh` trainer role unchanged; verifier role = one B300, vLLM 0.33 TP8, same Mooncake producer flags | reuse |
 
-Open before launch: ask ravir for the wandb validation curve of
-`glm53_dflash2_gemma782k_kimirecipe_v2` (the logs only hold train metrics) — if epoch 9
-was still rising, the off-policy draft was under-trained and the LR contrast matters
-more; if it had plateaued, shape is the whole story.
+Resolved 2026-11-06 (ravir): the validation curve of
+`glm53_dflash2_gemma782k_kimirecipe_v2` had converged by epoch 9. So the 2.83 is what
+the Kimi shape reaches on off-policy data at 5e-5 given unlimited epochs: the gap to
+incoai is shape and data, not training length. Consequences: the incoai shape stays
+the phase-1 default; 3 epochs of on-policy data is a budget, not a convergence
+promise — watch val accept_len at every half epoch and extend only while it rises;
+5e-5 remains a contrast slot (it converged to a plateau, which does not say the
+plateau is the best reachable one).
 
 **What ravir's results (their `examples/train/glm53/results/README.md`, 2026-11-06)
 fix as the floor:** Kimi-shape off-policy epoch 9 = 2.83 mean sampled accept_len on the
