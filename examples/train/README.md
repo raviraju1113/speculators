@@ -961,6 +961,12 @@ is proven clean (shard A), and smoke-test 0.33 on a pair in parallel.
   = 420,169 rows (53.7% of 782,413); c131 queue B2 → B1 → B3 is ~184k prompts.
 - Reservation renamed `sn50-hdi-0` → `sn50-hdi-1` today; launchers updated (cc55a07).
 - Standing check from now on: every output file is scanned for `!{32,}` at each progress report.
+- 2026-11-06 09:47 shard A job 14564206 (c130) died after 7 days: vLLM engine hang, `TimeoutError:
+  RPC call to sample_tokens timed out` (throughput fell to 0 at 09:46:30, no earlier warning, no CUDA
+  or NCCL error). The client then errored the remaining 120,507 prompts as HTTP 500 within seconds
+  and exited with `Done: ok=251401 errors=120507`; the file is intact at 270,700 clean rows.
+  Resubmitted 10:30 as job **16101840** (same input/output/settings, `--resume`), ~80 h for the
+  120,507 missing ids → A done ~Nov 9 evening. Clean total at the restart: 525,274 (67.1%).
 PR #64458 itself is not the fix for 0.26 (no MRV2 there); 0.33 is the candidate because it
 rewrote the PP broadcast path.
 
