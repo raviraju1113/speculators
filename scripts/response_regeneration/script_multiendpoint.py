@@ -149,6 +149,43 @@ def parse_args():
         help="Skip rows already in outfile (by uuid or idx)",
     )
     parser.add_argument(
+        "--api-key-env",
+        default=None,
+        metavar="ENV_VAR",
+        help=(
+            "Name of an environment variable holding a bearer token; when set, "
+            "every request carries 'Authorization: Bearer <value>' (hosted "
+            "OpenAI-compatible APIs such as SambaCloud)."
+        ),
+    )
+    parser.add_argument(
+        "--inline-reasoning",
+        action="store_true",
+        help=(
+            "If the server returns reasoning in a separate 'reasoning_content' / "
+            "'reasoning' field, prepend it to the content as "
+            "'<reasoning></think><answer>' so rows match a vLLM server that has "
+            "no reasoning parser (GLM-5.3 layout). No-op when the content already "
+            "contains '</think>'."
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=0,
+        help=(
+            "Retry a request this many times on HTTP 429/5xx or connection "
+            "errors (exponential backoff, honours Retry-After). Default 0 = "
+            "fail fast, as before."
+        ),
+    )
+    parser.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=5.0,
+        help="Base backoff in seconds for --max-retries (doubles per attempt).",
+    )
+    parser.add_argument(
         "--language-filter",
         default=None,
         help="Only process rows where language==this (e.g., EN)",
@@ -307,6 +344,48 @@ def _choice_content(data: dict) -> str:
     return choices[0]["message"]["content"]
 
 
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+async def _post_json(session, endpoint, payload, args) -> dict:
+    """POST and decode JSON, retrying on 429/5xx or connection errors.
+
+    With --max-retries 0 (default) this is a plain post + json(), identical to
+    the previous behaviour.
+    """
+    max_retries = getattr(args, "max_retries", 0) or 0
+    backoff = getattr(args, "retry_backoff", 5.0) or 5.0
+    attempt = 0
+    while True:
+        try:
+            async with session.post(endpoint, json=payload) as response:
+                if response.status in _RETRY_STATUSES and attempt < max_retries:
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after) if retry_after else backoff * (2**attempt)
+                    except ValueError:
+                        delay = backoff * (2**attempt)
+                    attempt += 1
+                    await asyncio.sleep(min(delay, 300.0))
+                    continue
+                return await response.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            if attempt >= max_retries:
+                raise
+            attempt += 1
+            await asyncio.sleep(min(backoff * (2**attempt), 300.0))
+
+
+def _inline_reasoning(message: dict, content: str) -> str:
+    """Rebuild GLM-5.3's '<reasoning></think><answer>' layout from a split reply."""
+    reasoning = message.get("reasoning_content")
+    if reasoning is None:
+        reasoning = message.get("reasoning")
+    if reasoning and "</think>" not in (content or ""):
+        return f"{reasoning}</think>{content or ''}"
+    return content
+
+
 async def regenerate_conversation(
     sem, session, endpoint, args, messages
 ) -> tuple[list[dict[str, str]], dict | None]:
@@ -333,9 +412,11 @@ async def regenerate_conversation(
         }
         if args.extra_body:
             payload.update(args.extra_body)
-        async with sem, session.post(endpoint, json=payload) as response:
-            data = await response.json()
+        async with sem:
+            data = await _post_json(session, endpoint, payload, args)
         content = _choice_content(data)
+        if getattr(args, "inline_reasoning", False):
+            content = _inline_reasoning(data["choices"][0]["message"], content)
         finish_reasons.append(data["choices"][0].get("finish_reason"))
         regenerated.append({"role": "assistant", "content": content})
         last_usage = data.get("usage")
@@ -590,6 +671,11 @@ async def main():
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+    if args.api_key_env:
+        token = os.environ.get(args.api_key_env)
+        if not token:
+            raise ValueError(f"--api-key-env {args.api_key_env}: variable is empty or unset")
+        headers["Authorization"] = f"Bearer {token}"
 
     async with aiohttp.ClientSession(
         timeout=timeout, connector=connector, headers=headers
