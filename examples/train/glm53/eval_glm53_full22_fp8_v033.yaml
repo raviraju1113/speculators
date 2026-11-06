@@ -106,3 +106,8 @@ experiments:
     draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots_vllm/ep1_end
     speculative_config: {method: dflash}
     num_speculative_tokens: 6
+
+  - name: ftA_ep2best_k6                # checkpoint_best = end of epoch 2 (step 7,296; val 2.630; ep3 val 2.615)
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots_vllm/ep2_end_best
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
