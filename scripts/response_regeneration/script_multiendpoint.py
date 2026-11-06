@@ -127,6 +127,36 @@ def parse_args():
         help="max_tokens for generation",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help=(
+            "Sampling temperature. Passing nothing leaves it unset, which lets the "
+            "server choose: vLLM fills unset fields from the model's "
+            "generation_config.json, falling back to 1.0. That silently produced the "
+            "whole on-policy corpus at temperature 1.0. Pass 0 for greedy."
+        ),
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Nucleus sampling cutoff. Unset means the server decides (see --temperature).",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Top-k cutoff; -1 disables it. Unset means the server decides.",
+    )
+    parser.add_argument(
+        "--no-thinking",
+        action="store_true",
+        help=("Send chat_template_kwargs={'enable_thinking': False}. Required "
+              "for targets whose template leaves a <think> block open under "
+              "add_generation_prompt, which makes generation start mid-answer."),
+    )
+    parser.add_argument(
         "--outfile",
         default=None,
         help="Output JSONL path (auto-generated if not specified)",
@@ -316,6 +346,7 @@ async def regenerate_conversation(
             "model": args.model,
             "messages": regenerated,
             "max_tokens": args.max_tokens,
+            **_sampling_params(args),
         }
         async with sem, session.post(endpoint, json=payload) as response:
             data = await response.json()
@@ -323,6 +354,31 @@ async def regenerate_conversation(
         regenerated.append({"role": "assistant", "content": content})
         last_usage = data.get("usage")
     return regenerated, last_usage
+
+
+def _sampling_params(args) -> dict:
+    """Sampling fields to send, omitting any the caller left unset.
+
+    An omitted field is NOT a neutral default: vLLM fills it from the model's
+    generation_config.json and falls back to temperature 1.0 / top_p 1.0 when
+    that file carries no sampling params. Be explicit.
+    """
+    out = {}
+    if getattr(args, "no_thinking", False):
+        # This target's chat template appends a bare "<think>\n" under
+        # add_generation_prompt. Generation then starts INSIDE an open think
+        # block and the model continues as though part of the answer had
+        # already been emitted: output begins mid-string and never parses.
+        # Measured on the eval prompts: default -> 0/200 valid JSON;
+        # enable_thinking=False -> valid JSON starting at "{".
+        out["chat_template_kwargs"] = {"enable_thinking": False}
+    if args.temperature is not None:
+        out["temperature"] = args.temperature
+    if args.top_p is not None:
+        out["top_p"] = args.top_p
+    if args.top_k is not None:
+        out["top_k"] = args.top_k
+    return out
 
 
 async def _regenerate_conversation_item(
@@ -399,6 +455,7 @@ async def worker(
             "model": args.model,
             "messages": [{"role": "user", "content": item["prompt"]}],
             "max_tokens": args.max_tokens,
+            **_sampling_params(args),
         }
 
         start_time = time.time()

@@ -91,6 +91,44 @@ native vs converted).
 
 ---
 
+## qwen35-l1234-v25-step6000 — Qwen3.5 SLM reproduction, 32 layers
+
+A JSON-extraction finetune (`Qwen3_5ForConditionalGeneration`, hidden 2560,
+vocab 248320), shipping **its own co-trained MTP module** in a separate
+`model-mtp.safetensors`. The only target here whose baseline draft was trained
+on the target's full pipeline, so it is the strongest in-domain comparison in
+this directory — and must be labelled that way, not as a vendor baseline.
+
+**[qwen35_l1234_v25_results.md](qwen35_l1234_v25_results.md)** — 7 sections. MTP
+k-sweep vs two from-scratch DSpark drafts, the training-corpus thread that took
+a draft from 0.879× to 1.074×, four measurement bugs (§5), and the
+weight/cost decomposition (§7). **Read §1 before any number** — it states the
+protocol and the matched control that licenses reading §3's two halves as one
+table.
+
+**Current best draft:** the target's own MTP head at k=5 — **1.172×**. Our best
+from-scratch DSpark reaches **1.074×** at k=7 (§3).
+
+**Key finding:** here **acceptance decides the ordering and Ω does not** — the
+exact inverse of the Gemma-4-26B result (26B doc §15). §7.5 sharpens it: our
+per-draft-token cost is 20% *below* MTP's, the two denominators cross at k ≈ 6.16,
+and at the served depth k=7 ours is already cheaper (D 4.059 vs 4.122). The
+entire remaining deficit is AL, 4.359 vs 4.826.
+
+**Second finding — the draft's live weight is not its file size (§7.1).** The
+draft's `embed_tokens` and `lm_head` are bit-identical to the target's tied
+embedding, so vLLM's `_should_share` aliases them at zero cost: 2.54 GB of a
+4.07 GB file is never resident. That one fact closes two optimisations as
+negative results — stripping `embed_tokens` (§7.3, no-op) and pruning
+`draft_vocab_size` (§7.4, a regression) — and it reframes §4.5's overhead claim.
+
+**Every Qwen3.5 number measured before 2026-10-28 is invalid** (§5.1): the chat
+template left a `<think>` block open and the target emitted 0/2000 valid JSON
+while inflating every arm's throughput. Nothing from before that date is
+reproduced in the doc, and nothing from before it should be quoted.
+
+---
+
 ## Cross-target material
 
 One doc per target model, so cross-target material lives in the doc for the

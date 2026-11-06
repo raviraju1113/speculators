@@ -1,0 +1,244 @@
+--- a/vllm/model_executor/models/qwen3_dspark.py
++++ b/vllm/model_executor/models/qwen3_dspark.py
+@@ -66,8 +66,20 @@
+         prefix: str,
+         quant_config: QuantizationConfig | None = None,
+         retain_weight_for_gather: bool = False,
++        head_type: str = "vanilla",
++        hidden_size: int = 0,
+     ) -> None:
+         super().__init__()
++        # Fail loudly on a head type this file does not implement. Loading it as
++        # vanilla would run a different function than the one trained.
++        if head_type not in ("vanilla", "rnn"):
++            raise ValueError(
++                f"DSpark serving implements markov_head_type 'vanilla' and 'rnn'; "
++                f"got {head_type!r}. A checkpoint trained with another head type "
++                f"would be served with a different bias function than it learned."
++            )
++        self.head_type = head_type
++        self.markov_rank = markov_rank
+         self.markov_w1 = nn.Embedding(vocab_size, markov_rank)
+         self.markov_w2 = ParallelLMHead(
+             draft_vocab_size,
+@@ -79,11 +91,46 @@
+         )
+         self.markov_w2._retain_weight_for_gather = retain_weight_for_gather
+         self.markov_w2.is_w4a16_nvfp4 = False
++        if head_type == "rnn":
++            if hidden_size <= 0:
++                raise ValueError(
++                    "markov_head_type='rnn' needs the draft hidden_size to size "
++                    f"joint_proj; got {hidden_size}."
++                )
++            # Joint [gate; candidate; output] over [state; prev_emb; hidden],
++            # replicated like markov_w1/w2 because it runs per draft position.
++            self.joint_proj = nn.Linear(
++                2 * markov_rank + hidden_size, 3 * markov_rank
++            )
+ 
+     def embed(self, token_ids: torch.Tensor) -> torch.Tensor:
+         """r-dim Markov embedding of ``token_ids`` ([B] -> [B, r])."""
+         return self.markov_w1(token_ids)
+ 
++    def rnn_step(
++        self,
++        state: torch.Tensor,  # [B, r]
++        prev_emb: torch.Tensor,  # [B, r]
++        hidden: torch.Tensor,  # [B, hidden]
++        ) -> tuple[torch.Tensor, torch.Tensor]:
++        """Advance the recurrent state one draft position.
++
++        Mirrors speculators MarkovHead.block_bias head_type=="rnn": the bias is
++        taken from ``tanh(out)``, NOT from ``prev_emb``, so the caller must feed
++        the returned embedding to ``bias``/``apply_bias_gathered``.
++        """
++        dtype = self.markov_w2.weight.dtype
++        # Training takes the state from prev_emb.new_zeros after prev_emb was
++        # cast to the markov_w2 dtype, so cast all three the same way here --
++        # otherwise torch.cat would fail on a mixed-precision state buffer.
++        z = torch.cat(
++            [state.to(dtype), prev_emb.to(dtype), hidden.to(dtype)], dim=-1
++        )
++        gate_raw, cand_raw, out_raw = self.joint_proj(z).chunk(3, dim=-1)
++        gate = torch.sigmoid(gate_raw)
++        state = gate * state + (1.0 - gate) * torch.tanh(cand_raw)
++        return state, torch.tanh(out_raw)
++
+     def bias(
+         self,
+         markov_embed: torch.Tensor,
+@@ -215,6 +262,8 @@
+             retain_weight_for_gather=(
+                 getattr(config, "dspark_draft_topk", None) is not None
+             ),
++            head_type=getattr(config, "markov_head_type", "vanilla"),
++            hidden_size=config.hidden_size,
+         )
+         self.confidence_head: DSparkConfidenceHead | None = None
+         if getattr(config, "enable_confidence_head", False):
+@@ -281,9 +330,21 @@
+             return draft_ids
+         return draft_ids + self.draft_id_to_target_id[draft_ids]
+ 
++    @property
++    def markov_head_type(self) -> str:
++        return self.model.markov_head.head_type
++
+     def markov_embed(self, token_ids: torch.Tensor) -> torch.Tensor:
+         return self.model.markov_head.embed(token_ids)
+ 
++    def markov_rnn_step(
++        self,
++        state: torch.Tensor,
++        prev_emb: torch.Tensor,
++        hidden: torch.Tensor,
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++        return self.model.markov_head.rnn_step(state, prev_emb, hidden)
++
+     def markov_bias(self, markov_embed: torch.Tensor) -> torch.Tensor:
+         return self.model.markov_head.bias(markov_embed, self.logits_processor)
+ 
+--- a/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
+@@ -81,6 +81,27 @@
+ 
+         self.use_confidence_head: bool = False
+ 
++        # markov_head_type="rnn" carries a recurrent state across the block's
++        # positions, so every position's bias sees the whole sampled prefix
++        # rather than just the previous token. Preallocated and zeroed per step
++        # so FULL CUDA-graph capture sees a static shape and a deterministic
++        # initial state.
++        self._markov_head_type: str = getattr(
++            self.draft_model_config.hf_config, "markov_head_type", "vanilla"
++        )
++        self._markov_state: torch.Tensor | None = None
++        if self._markov_head_type == "rnn":
++            markov_rank = getattr(
++                self.draft_model_config.hf_config, "markov_rank", 0
++            )
++            if not markov_rank:
++                raise ValueError(
++                    "markov_head_type='rnn' requires a positive markov_rank."
++                )
++            self._markov_state = torch.zeros(
++                self.max_num_reqs, markov_rank, dtype=self.dtype, device=device
++            )
++
+     def load_draft_model(
+         self,
+         target_model: torch.nn.Module,
+@@ -176,12 +197,29 @@
+         # read via the precomputed persistent index (fixed buffer for capture).
+         prev = self.input_buffers.input_ids[self._anchor_idx[:num_reqs]]
+ 
++        # rnn head: zero the carried state and expose per-position hidden.
++        state = None
++        rnn_hidden = None
++        if self._markov_state is not None:
++            state = self._markov_state[:num_reqs]
++            state.zero_()
++            rnn_hidden = sample_hidden.view(num_reqs, n_spec, -1)
++            state = self._prime_markov_state(state, prev, head_hidden, num_reqs)
++
+         for i in range(n_spec):
+             # Sequential stage: Markov bias from the previously sampled token.
+             markov_embed = self.model.markov_embed(prev)
+             if self.use_confidence_head:
++                # The confidence head is trained on the RAW prev-token
++                # embedding for every head type (core.py:373), so it keeps
++                # getting markov_embed even when the bias comes from the state.
+                 confidence_markov_embeds.append(markov_embed)
+-            bias = self.model.markov_bias(markov_embed)
++            bias_emb = markov_embed
++            if state is not None:
++                state, bias_emb = self.model.markov_rnn_step(
++                    state, markov_embed, rnn_hidden[:, i]
++                )
++            bias = self.model.markov_bias(bias_emb)
+             logits_i = base_logits[:, i] + bias
+             draft_sampled_i = self._sample_logits(
+                 logits_i, idx_map[:, i], sample_pos[:, i], i
+@@ -198,6 +236,39 @@
+                 num_reqs, n_spec
+             )
+ 
++    def _prime_markov_state(
++        self,
++        state: torch.Tensor,
++        anchor_tokens: torch.Tensor,
++        head_hidden: torch.Tensor,
++        num_reqs: int,
++    ) -> torch.Tensor:
++        """Advance the rnn state over the block slot that serving never samples.
++
++        Training (``core.py`` -> ``MarkovHead.block_bias``) runs the recurrent
++        state over ALL ``block_size`` slots, starting from zero at slot 0. With
++        ``sample_from_anchor=False`` slot 0 is the anchor, whose prediction is
++        the bonus token the verifier already produced, so vLLM samples only
++        slots 1..N. Without this step, served slot 1 would run with a zero
++        state instead of slot 0's output, and EVERY served position would see a
++        state one recurrence behind the one it was trained with.
++
++        Training's shifted conditioning gives slot 0 and slot 1 the same
++        previous token (the anchor), so the priming step reuses
++        ``anchor_tokens`` and the anchor slot's backbone hidden, and discards
++        the bias it produces.
++
++        With ``sample_from_anchor=True`` there is no unsampled slot -- served
++        step 0 IS training slot 0 -- so the zero state is already correct.
++        """
++        if self.sample_from_anchor:
++            return state
++        anchor_hidden = head_hidden[self._anchor_idx[:num_reqs]]
++        state, _ = self.model.markov_rnn_step(
++            state, self.model.markov_embed(anchor_tokens), anchor_hidden
++        )
++        return state
++
+     def _sample_sequential_topk(self, num_reqs: int, head_hidden: torch.Tensor) -> None:
+         """Apply the sequential Markov head only to top-k base-logit candidates.
+ 
+@@ -222,12 +293,26 @@
+         confidence_markov_embeds = []
+         prev = self.input_buffers.input_ids[self._anchor_idx[:num_reqs]]
+ 
++        # rnn head: zero the carried state and expose per-position hidden.
++        state = None
++        rnn_hidden = None
++        if self._markov_state is not None:
++            state = self._markov_state[:num_reqs]
++            state.zero_()
++            rnn_hidden = sample_hidden.view(num_reqs, n_spec, -1)
++            state = self._prime_markov_state(state, prev, head_hidden, num_reqs)
++
+         for i in range(n_spec):
+             markov_embed = self.model.markov_embed(prev)
+             if self.use_confidence_head:
+                 confidence_markov_embeds.append(markov_embed)
++            bias_emb = markov_embed
++            if state is not None:
++                state, bias_emb = self.model.markov_rnn_step(
++                    state, markov_embed, rnn_hidden[:, i]
++                )
+             logits_i = self.model.apply_markov_bias_gathered(
+-                markov_embed,
++                bias_emb,
+                 base_logits[:, i],
+                 base_values[:, i],
+                 draft_indices[:, i],
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -291,9 +291,9 @@
+             "draft config."
+         )
+     markov_head_type = getattr(draft_hf_config, "markov_head_type", None)
+-    if markov_head_type != "vanilla":
++    if markov_head_type not in ("vanilla", "rnn"):
+         raise ValueError(
+-            "Qwen3-Omni DSpark currently requires markov_head_type='vanilla'; "
++            "Qwen3-Omni DSpark supports markov_head_type 'vanilla' and 'rnn'; "
+             f"got {markov_head_type!r}."
+         )
+ 

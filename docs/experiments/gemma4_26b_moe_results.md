@@ -3641,30 +3641,19 @@ and the only symptom is a parameter that quietly does not train.
 
 ---
 
-## 35. The n=512 suite ran on a vLLM version that corrupts speculative output (2026-10-26)
+## 35. The n=512 suite's headline is invalid -- but NOT because of the vLLM version (2026-10-26, corrected 2026-10-30)
 
-**Sections 30-31 and the published model card are affected.** The whole n=512
-suite was served on **vLLM 0.28.0**, and this repo already documents that
-version as broken for live speculative decoding.
+**Sections 30-31 and the published model card are affected.** The defect is real
+and is described below. The *explanation* this section originally gave --- that
+the suite had been served on vLLM 0.28.0, a version this repo documents as
+broken for live speculative decoding --- **is disproven**. The identical suite
+re-run on vLLM 0.31.0 reproduces the defect and the headline numbers alike.
 
-### The bug was already written down
-
-`docs/experiments/kimi_k3_draft_eval.md`, "Bug 2 -- live speculative decoding
-corrupts Kimi K3's output on vLLM 0.28.0":
-
-> attaching **any** draft to Kimi K3 via vLLM 0.28.0's real
-> `--speculative-config` (not just `extract_hidden_states`) corrupted the
-> target's actual output -- greedy decoding degenerated into repetition loops
-> after ~10-12 tokens [...] Confirmed **method- and checkpoint-independent**
-
-and "Confirmation: vLLM 0.29.0 fixes it". That investigation found the bug,
-fixed its own numbers by upgrading, and recorded both. The Gemma suite then ran
-on 0.28.0 anyway.
-
-### How it shows up here
+### What is real: asymmetric token inflation
 
 Repetition loops that never terminate = requests running to the `--max-tokens`
-4096 cap. Measured over the 4,661 common requests, greedy:
+cap. Measured on the original 0.28.0 suite over the 4,661 common requests,
+greedy:
 
 | arm | exact match vs no-draft | tok/req | vs baseline | runaways |
 |---|--:|--:|--:|--:|
@@ -3678,46 +3667,121 @@ The three non-DSpark arms are **symmetric** -- ~31% of requests longer, ~30%
 shorter, averaging to 0.99-1.01x. That is vLLM's continuous batching, which is
 not bitwise deterministic, and it costs nothing. DSpark is **asymmetric**: 41.8%
 longer against 26.1% shorter, 1.577x the tokens, and 530 runaways against
-27-43. Noise is symmetric; this is not noise.
+27-43. Noise is symmetric; this is not noise. All of that still stands.
 
-### What it did to the headline number
+### The vLLM-version theory is disproven (2026-10-30)
+
+Jobs 330/331 re-ran the identical suite on **vLLM 0.31.0** into
+`results/suite-v031`: same six draft arms, same 4,661 prompts over 26
+benchmarks, greedy, single stream, `--no-enable-prefix-caching`, `load_local`
+seeded at 42, each arm scored against its own group's in-run baseline. Measured
+on the 4,661 requests present in all seven arms:
+
+| arm | tok/req | vs own baseline | longer | shorter | runaways | mean AL |
+|---|--:|--:|--:|--:|--:|--:|
+| `A_baseline` | 666.9 | 1.000x | — | — | 139 | — |
+| **`A_ours_b16`** (dspark k=7) | **1020.2** | **1.530x** | **39.3%** | **25.0%** | **608** | 4.593 |
+| `A_assistant` (MTP k=7) | 668.7 | 1.003x | 28.8% | 27.5% | 142 | 4.792 |
+| `B_baseline` | 663.9 | 1.000x | — | — | 128 | — |
+| `B_dflash_k15` | 667.7 | 1.006x | 30.1% | 29.3% | 141 | 4.255 |
+| `B_eagle3_k5` | 674.2 | 1.016x | 31.3% | 28.5% | 154 | 2.708 |
+| **`B_makora_k7`** (dspark k=7) | **877.9** | **1.322x** | **39.6%** | **25.5%** | **402** | 3.542 |
+
+**Nothing was fixed by the upgrade.** Our arm inflates 1.530x on 0.31.0 against
+1.577x on 0.28.0, with 608 runaways against 530, and the same asymmetry
+(39.3% longer vs 25.0% shorter).
+
+The headline reproduces too, which is the other half of the disproof:
+
+| | 0.28.0 (section 30.2) | 0.31.0 re-run |
+|---|--:|--:|
+| our mean decode tok/s over 26 benchmarks | 275 | **275.4** |
+| assistant mean decode tok/s | 236 | 242.5 |
+| our mean AL | 4.609 | **4.593** |
+| assistant mean AL | 4.804 | 4.792 |
+| our per-benchmark mean speedup | **2.126x** | **2.118x** |
+
+So **the 2.126x was never a 0.28.0 artefact.** It is reproducible to 0.4% on a
+version with no such bug, and it is still invalid --- for the reason in the next
+two subsections, which is about the metric, not the serving stack.
+
+### What actually tracks the defect: `method='dspark'` on this target
+
+Both DSpark arms inflate. The three non-DSpark arms, on the same target, same
+prompts, same version, do not:
+
+- ours --- `method='dspark'`, 262,144-entry vocab, `dspark_draft_topk=64`:
+  **1.530x**, 608 runaways.
+- makora-ai --- `method='dspark'`, 32,000-entry vocab, **`dspark_draft_topk`
+  never set**: **1.322x**, 402 runaways.
+- MTP assistant / DFlash k=15 / EAGLE3 k=5: 1.003x / 1.006x / 1.016x, 141-154
+  runaways against the baselines' 128-139.
+
+Two unrelated checkpoints with different vocabularies, one with topk and one
+without, both inflate; three non-DSpark drafts do not. That revises the
+rule-out list:
+
+- **vLLM version --- ruled out.** Reproduces on 0.28.0 and on 0.31.0.
+- **`dspark_draft_topk=64` --- ruled out, and now directly:** the makora arm
+  never sets it and inflates anyway.
+- **`enable_adaptive_verification` --- still ruled out.** Defaults to `False`
+  (`speculative.py:241`) and was never set. It is the only path that would make
+  DSpark lossy by design.
+- **The DSpark method --- NOT ruled out. This is where this section was wrong.**
+  The earlier version cleared the method because Qwen3.5 DSpark on vLLM 0.31
+  shows no inflation at any depth. That observation is correct --- see
+  [`qwen35_l1234_v25_results.md` section 4.4](qwen35_l1234_v25_results.md),
+  where 14 arms sit within 0.3% of baseline mean tokens --- but it only refutes
+  "DSpark always inflates". It says nothing about DSpark on *this* target. The
+  defect is a **target x method** interaction, and Gemma-4-26B-A4B is the
+  target that has it.
+- **A stop-token/EOS misconfiguration** remains unlikely for the original
+  reason --- it would not spare three other drafts on the same target --- but
+  nothing measured here excludes it.
+
+### What it does to the headline
 
 The card leads with decode tok/s, which is **inflated by generating tokens that
-are then discarded**. On QPS and latency -- what a deployment experiences -- the
-advantage disappears. Runaways excluded, so tok/req is comparable:
+are then discarded**. On QPS and latency --- what a deployment experiences ---
+the advantage disappears. Measured on the 0.31.0 re-run over the 3,846 requests
+that terminate normally in **every** arm, so tok/req is comparable:
 
-| arm | mean e2e | tok/req | latency vs base | QPS vs base |
-|---|--:|--:|--:|--:|
-| no draft | 4.762 s | 604.4 | 1.000x | 1.000x |
-| DSparkFlash k=7 | 2.593 s | 647.4 | 0.544x | **1.837x** |
-| MTP assistant k=7 | 2.602 s | 594.7 | 0.547x | **1.830x** |
+| arm | mean e2e | tok/req | vs own base | latency vs base | QPS vs base |
+|---|--:|--:|--:|--:|--:|
+| `A_baseline` | 3.736 s | 478.6 | 1.000x | 1.000x | 1.000x |
+| `A_ours_b16` | 2.114 s | 527.0 | 1.101x | 0.566x | **1.768x** |
+| `A_assistant` | 2.048 s | 478.6 | 1.000x | 0.548x | **1.825x** |
+| `B_baseline` | 3.710 s | 480.8 | 1.000x | 1.000x | 1.000x |
+| `B_dflash_k15` | 2.194 s | 479.7 | 0.998x | 0.591x | 1.691x |
+| `B_eagle3_k5` | 2.655 s | 480.3 | 0.999x | 0.716x | 1.397x |
+| `B_makora_k7` | 2.279 s | 516.3 | 1.074x | 0.614x | 1.628x |
 
-**1.837x vs 1.830x -- a tie, not the +17% the card implies.** Two separate
-effects account for the difference: the published tok/s averages per-benchmark
-(equal weight to a 30-row and a 512-row benchmark), which overstates the gap as
-+16.7% where request-weighting gives +9.0%; and that remaining 9% is spent
-emitting 8.9% more tokens, so decode time lands at 2.530 s vs 2.532 s.
+**1.768x vs 1.825x --- the assistant is ahead, not 17% behind.** The same
+analysis on the 0.28.0 suite gave 1.837x vs 1.830x, a tie; on 0.31.0, with the
+larger runaway set excluded, it tips to the assistant. Either way the +17% the
+card implies does not exist, and the mechanism is unchanged: the published tok/s
+averages per-benchmark (equal weight to a 30-row and a 512-row benchmark), which
+overstates the gap; what remains is spent emitting **10.1% more tokens than the
+baseline on requests that all terminate normally**, against the assistant's
+0.0%.
 
-### What is ruled out
+### Status
 
-- **`dspark_draft_topk=64`** -- the Qwen3.5 DSpark arms use it and sit at
-  0.970-0.997x of baseline.
-- **`enable_adaptive_verification`** -- defaults to `False` (speculative.py:241)
-  and was never set. It is the only path that would make DSpark lossy by design.
-- **The DSpark method** -- Qwen3.5 DSpark on vLLM 0.31 shows no inflation at any
-  depth k=1..15 (0.973-1.010x).
-- **A stop-token/EOS misconfiguration** -- would not be target-specific.
-
-The one variable that tracks the defect is the vLLM version: 0.28.0 inflates,
-0.31.0 does not.
-
-### Remediation
-
-Jobs 330/331 re-run the identical suite -- same arms, same prompts, same flags,
-verified byte-identical except the env, results dir and port -- on vLLM 0.31,
-into `results/suite-v031`. Job 320 is the fast confirmation on the four
-512-row benchmarks.
-
-**Do not quote sections 30-31, or the card's 2.126x, until those land.** And
-report QPS/latency alongside tok/s: a per-token metric cannot distinguish "fast"
-from "generating more tokens", which is exactly how this went unnoticed.
+- **Do not quote sections 30-31, or the card's 2.126x.** Not "until jobs 330/331
+  land" --- they landed, into `results/suite-v031`, and they confirm that those
+  numbers are reproducible *and* that the metric behind them is wrong. What the
+  card needs is a QPS/latency headline, not a re-measurement.
+- **Report QPS and latency alongside tok/s.** A per-token metric cannot
+  distinguish "fast" from "generating more tokens", which is exactly how this
+  went unnoticed.
+- The Kimi K3 bug --- `docs/experiments/kimi_k3_draft_eval.md`, "Bug 2 -- live
+  speculative decoding corrupts Kimi K3's output on vLLM 0.28.0", with
+  "Confirmation: vLLM 0.29.0 fixes it" --- is still a real bug and 0.29.0 still
+  fixes it for that target. It is simply not what happened here. Running the
+  Gemma suite on 0.28.0 was avoidable, but it cost nothing: 0.31.0 gives the
+  same answer.
+- **Open, and the actual question:** why DSpark drafting changes this target's
+  own output at all. Greedy speculative decoding should be output-equivalent to
+  no draft; 402-608 runaways against 128-154 is not a batching artefact. Nothing
+  in this section explains it, and no DSpark number on this target should be
+  published until something does.
