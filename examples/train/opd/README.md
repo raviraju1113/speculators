@@ -313,8 +313,8 @@ or just annealing a high-LR checkpoint is exactly what arm f decides. Arm f
 (15958487) died in the dataset build: the rollout-reuse path in
 `run_rounds.sh` skipped the block that activates the serving env, so
 `rollouts_to_dataset.py` had no `datasets` module and the pipe hid the
-failure (fixed, commit 82b3a50). Resubmitted as job 16091568 on the same
-reused rollouts; `f9_k8` eval follows automatically.
+failure (fixed, commit 82b3a50). Resubmitted as job 16091747 (every B200 outside the excluded set
+was busy, so on the idle H200 sc3-c127) on the same reused rollouts; `f9_k8` eval follows automatically.
 
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
