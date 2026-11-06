@@ -1,5 +1,4 @@
 import logging
-from copy import deepcopy
 from typing import ClassVar
 
 import torch
@@ -22,7 +21,12 @@ from speculators.models.dflash.utils import (
     get_base_indices_for_anchored_blocks,
     select_anchors,
 )
-from speculators.models.utils import conditional_torch_compile, resolve_target_layer_ids
+from speculators.models.utils import (
+    conditional_torch_compile,
+    flatten_rope_parameters,
+    resolve_target_layer_ids,
+    resolve_verifier_norm_class,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +38,15 @@ _compiled_create_block_mask = torch.compile(create_block_mask)
 @SpeculatorModel.register("dflash")
 class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
     config_class: ClassVar[type[DFlashSpeculatorConfig]] = DFlashSpeculatorConfig  # type: ignore[misc]
+    supports_gradient_checkpointing = True  # noqa: D003  # Qwen3DFlashDecoderLayer inherits GradientCheckpointingLayer
     _no_split_modules = ["Qwen3DFlashDecoderLayer"]
     _keys_to_ignore_on_load_missing: ClassVar[list[str]] = [  # type: ignore[misc]
         "embed_tokens.weight",
         "verifier_norm.weight",
         # verifier_lm_head is reloaded from the verifier (see load_verifier_weights)
         # and excluded on save, so it is expected to be absent from checkpoints.
+        # lm_head is handled per-instance in __init__: omitted only for full-vocab
+        # drafts, where it is the exact frozen verifier projection.
         "verifier_lm_head.weight",
         "t2d",
         "d2t",
@@ -51,6 +58,16 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
 
     t2d: torch.Tensor | None
     d2t: torch.Tensor | None
+
+    def _make_decoder_layer(
+        self, config: DFlashSpeculatorConfig, layer_idx: int
+    ) -> nn.Module:
+        """Build one draft decoder layer.
+
+        DFlash-family variants override this factory when they wrap the shared
+        attention and MLP with additional modules.
+        """
+        return Qwen3DFlashDecoderLayer(config.transformer_layer_config, layer_idx)  # type: ignore[arg-type]
 
     def __init__(
         self,
@@ -78,14 +95,17 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         num_draft_layers = tl_config.num_hidden_layers
         self.layers = nn.ModuleList(
             [
-                Qwen3DFlashDecoderLayer(config.transformer_layer_config, layer_idx)  # type: ignore[arg-type]
+                self._make_decoder_layer(config, layer_idx)
                 for layer_idx in range(num_draft_layers)
             ]
         )
-        self.sliding_window = tl_config.sliding_window
+        # Both are optional: declared only for alternating/sliding attention.
+        self.sliding_window = getattr(tl_config, "sliding_window", None)
         self.sliding_window_indices = [
             i
-            for i, layer_type in enumerate(tl_config.layer_types)
+            for i, layer_type in enumerate(
+                getattr(tl_config, "layer_types", None) or []
+            )
             if layer_type == "sliding_attention"
         ]
         self.uses_sliding_window_attn = bool(self.sliding_window_indices)
@@ -96,18 +116,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             config.transformer_layer_config.hidden_size,
             eps=config.transformer_layer_config.rms_norm_eps,  # type: ignore[arg-type]
         )
-        rotary_config = config.transformer_layer_config
-        rope_params = getattr(rotary_config, "rope_parameters", None)
-        if rope_params and "sliding_attention" in rope_params:
-            if self.uses_full_attn:
-                logger.warning(
-                    "Flattening nested rope_parameters to the sliding_attention "
-                    "variant, but this model has %d full-attention layer(s). "
-                    "Full-attention layers may use incorrect rope scaling.",
-                    num_draft_layers - len(self.sliding_window_indices),
-                )
-            rotary_config = deepcopy(rotary_config)
-            rotary_config.rope_parameters = rope_params["sliding_attention"]
+        rotary_config = flatten_rope_parameters(config.transformer_layer_config)
         self.rotary_emb = Qwen3RotaryEmbedding(rotary_config)  # type: ignore[arg-type]
 
         self.fc = nn.Linear(
@@ -119,7 +128,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             config.transformer_layer_config.hidden_size,
             eps=config.transformer_layer_config.rms_norm_eps,  # type: ignore[arg-type]
         )
-        self.verifier_norm = Qwen3RMSNorm(
+        self.verifier_norm = resolve_verifier_norm_class(config)(
             config.transformer_layer_config.hidden_size,
             eps=config.transformer_layer_config.rms_norm_eps,  # type: ignore[arg-type]
         )
@@ -135,11 +144,36 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             )
 
         self.post_init()
+        # Verifier-owned weights are reconstructed on load. Keep a reduced-vocab
+        # lm_head serialized because current runtimes cannot derive it from the
+        # full verifier head.
+        #
+        # Shadow the ClassVar lists with per-instance copies so full- and
+        # reduced-vocabulary siblings cannot mutate each other's save rules.
+        keys_to_ignore_on_save = list(type(self)._keys_to_ignore_on_save)  # noqa: SLF001
+        keys_to_ignore_on_load_missing = list(
+            type(self)._keys_to_ignore_on_load_missing  # noqa: SLF001
+        )
+        keys_to_ignore_on_save.append("embed_tokens.weight")
+        if not self.use_draft_vocab:
+            keys_to_ignore_on_save.append("lm_head.weight")
+            keys_to_ignore_on_load_missing.append("lm_head.weight")
+        self.__dict__["_keys_to_ignore_on_save"] = keys_to_ignore_on_save
+        self.__dict__["_keys_to_ignore_on_load_missing"] = (
+            keys_to_ignore_on_load_missing
+        )
 
     @property
     def target_layer_ids(self) -> list[int]:
         """Target layer IDs for auxiliary hidden states."""
         return self.config.aux_hidden_state_layer_ids
+
+    def load_verifier_weights(self):
+        """Reconstruct weights intentionally omitted from DFlash checkpoints."""
+        self._load_verifier_weights(
+            overwrite_embed_tokens=True,
+            overwrite_lm_head=not self.use_draft_vocab,
+        )
 
     @classmethod
     def from_training_args(
@@ -213,6 +247,11 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             if sample_from_anchor_arg is None
             else sample_from_anchor_arg
         )
+        default_non_causal = algorithm == "dflash2"
+        non_causal_arg = kwargs.get("sliding_window_non_causal")
+        sliding_window_non_causal = (
+            default_non_causal if non_causal_arg is None else non_causal_arg
+        )
 
         # Calculate speculative tokens based on sample_from_anchor
         # False: anchor is bonus token (block_size - 1 tokens)
@@ -225,7 +264,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             "block_size": block_size,
             "aux_hidden_state_layer_ids": target_layer_ids,
             "mask_token_id": kwargs.get("mask_token_id"),
-            "sliding_window_non_causal": kwargs.get("sliding_window_non_causal", False),
+            "sliding_window_non_causal": sliding_window_non_causal,
             "sample_from_anchor": sample_from_anchor,
             "speculators_config": SpeculatorsConfig(
                 algorithm=algorithm,

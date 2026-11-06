@@ -4,7 +4,11 @@ Step-by-step tutorials to guide you through complete workflows, from data prepar
 
 ## [Train a Speculator](train.md)
 
-The main end-to-end walkthrough: prepare data, generate hidden states, train, and serve. Covers Eagle-3, P-EAGLE, DFlash, DSpark, and MTP, in online, offline, or hybrid mode -- pick your algorithm and mode at the top of the page.
+The main end-to-end walkthrough: prepare data, generate hidden states, train, and serve. Covers Eagle-3, P-EAGLE, DFlash, DFlash2, DSpark, and MTP in online or offline mode -- pick your algorithm and mode at the top of the page.
+
+## [Multi-Node Training](multi_node_training.md)
+
+Stream hidden states between separate extraction and training nodes with the Mooncake backend when the target model does not fit on one node or shared storage is unavailable.
 
 ## [Train Eagle-3 for Gemma-4-31B-it (Online, Disaggregated)](train_eagle3_online_gemma4_31b.md)
 
@@ -15,6 +19,10 @@ End-to-end Gemma-4-31B-it recipe, including running the CUDA-13 vLLM stack on an
 ## [Response Regeneration](response_regeneration.md)
 
 Regenerate dataset responses using your target model for improved drafter alignment. Recommended before training.
+
+## [RAG Training Data](rag.md)
+
+Prepare retrieved context and target-model answers for training, budget sequence lengths, and inspect the resulting loss masks.
 
 ## [Evaluating Model Performance](evaluating_performance.md)
 
@@ -35,6 +43,10 @@ Speculative-decoding results for Gemma-4-31B-it with the official assistant draf
 ## [Gemma-4-31B Assistant k=5: RDU vs GPU Acceptance](gemma4_31b_assistant_rdu_vs_gpu.md)
 
 Same Gemma-4-31B-it + Google Assistant (MTP) k=5 configuration on 4× A100 (vLLM) and 16× SN40 RDU (CoE): per-benchmark accept_len / accept_rate agree within 0.17 on all 25 benchmarks. Launch details for the RDU harness.
+
+## [Throughput vs. Interactivity](throughput_interactivity.md)
+
+Measure output-token throughput against per-user speed for a server with one or more speculators, the way InferenceX does, on real prompts.
 
 ## [Serve in vLLM](serve_vllm.md)
 

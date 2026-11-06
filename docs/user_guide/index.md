@@ -18,3 +18,4 @@ Speculators provides a comprehensive framework for:
 - [Algorithms](algorithms/index.md) - Overview of supported algorithms
 - [Tutorials](tutorials/index.md) - Step-by-step guides
 - [Speculator Evaluation Runbook (SambaNova)](speculator_eval_runbook_sn.md) - The 25-benchmark acceptance suite: data, protocol and metrics for evaluating any speculator on any backbone
+- [Kimi K3 + CSplash Serving Runbook](kimi_k3_csplash_runbook.md) - Porting CSplash to vLLM and launching it (single-node and two-node), with validation results

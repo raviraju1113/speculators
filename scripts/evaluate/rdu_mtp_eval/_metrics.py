@@ -41,8 +41,7 @@ def summarize_rows(rows: list[dict], bench: str) -> dict:
             tot_decode_time += rec["decode_time_s"]
         if rec.get("ttft_s"):
             ttfts.append(rec["ttft_s"])
-        if "k" in rec:
-            k = rec["k"]
+        k = rec.get("k") or k
         tot_drafts += rec.get("num_drafts") or 0
         tot_accepted += rec.get("num_accepted_tokens") or 0
 

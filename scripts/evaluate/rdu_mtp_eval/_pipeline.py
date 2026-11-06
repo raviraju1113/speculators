@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 
 from _metrics import vllm_accept_stats
@@ -24,6 +26,54 @@ DEFAULT_CKPT = "/import/mlcp-sc-nlp/gemma-4/gemma-4-31b-it-pad5632-kv8-prefix"
 DEFAULT_ASSISTANT = (
     "/import/ml-sc-nlpcheckpoints-scratch3/weip/gemma-4-31b-it-assistant-pad5632-prefix-split"
 )
+
+
+def load_eos_token_ids(ckpt: str, fallback: list[int]) -> list[int]:
+    """Load all model termination IDs, matching Transformers generation."""
+    config_path = os.path.join(ckpt, "generation_config.json")
+    try:
+        with open(config_path) as f:
+            eos_ids = json.load(f).get("eos_token_id")
+    except (OSError, TypeError, ValueError):
+        eos_ids = None
+    if isinstance(eos_ids, int):
+        return [eos_ids]
+    if isinstance(eos_ids, list) and eos_ids and all(isinstance(x, int) for x in eos_ids):
+        return eos_ids
+    return fallback
+
+
+def stats_through_stop(
+    chunks: list[tuple[int, list[int]]], eos_ids: list[int], max_new_tokens: int
+) -> tuple[int, int, int, int | None]:
+    """Return completion length and draft stats through the first stop token."""
+    generated = 0
+    num_drafts = 0
+    num_accepted = 0
+    stop_token_id = None
+    eos_set = set(eos_ids)
+    for accepted, tokens in chunks:
+        remaining = max_new_tokens - generated
+        if remaining <= 0:
+            break
+        visible = tokens[:remaining]
+        stop_index = next((i for i, token in enumerate(visible) if token in eos_set), None)
+        emitted = len(visible) if stop_index is None else stop_index + 1
+        generated += emitted
+        if accepted >= 0:
+            num_drafts += 1
+            # ``accepted`` is the inclusive end index of this verification chunk
+            # (tokens[:accepted+1]). The last token is the target/bonus; the
+            # preceding ``accepted`` tokens are accepted drafts. Counting
+            # ``accepted+1`` would treat the bonus as a draft and inflate
+            # accept_length by +1 per step vs the vLLM formula
+            # (1 + accepted_drafts / num_drafts). Cap by ``emitted`` when EOS
+            # truncates mid-chunk.
+            num_accepted += min(accepted, emitted)
+        if stop_index is not None:
+            stop_token_id = visible[stop_index]
+            break
+    return generated, num_drafts, num_accepted, stop_token_id
 
 
 def disable_rdu_profiler() -> None:
@@ -71,14 +121,93 @@ def build_pipeline(pef: str, ckpt: str, assistant: str, profiler_dir: str):
     )
     pipeline.reset_dynamic_shapes(dict(DYT_VALUES))
     pipeline.batch_size = 2
-    print(f"DYT reset to {DYT_VALUES}; chosen_length={pipeline.chosen_length}", flush=True)
+    if not isinstance(pipeline.sn_model_config.max_seq_length, int):
+        pipeline.sn_model_config.max_seq_length = SS
+    if not hasattr(pipeline.config, "page_aligned_sliding_page_size"):
+        import sambanova_modelzoo.generation.clm_runtime as clm_runtime
+
+        orig_flatten_paged_kv = clm_runtime.flatten_paged_kv
+
+        def flatten_paged_kv_compat(config, k_cache, v_cache, *, layer_idx):
+            sliding_window = config.sliding_window
+            config.sliding_window = int(k_cache.shape[-2])
+            try:
+                return orig_flatten_paged_kv(
+                    config, k_cache, v_cache, layer_idx=layer_idx
+                )
+            finally:
+                config.sliding_window = sliding_window
+
+        clm_runtime.flatten_paged_kv = flatten_paged_kv_compat
+    dynamic_consume_symbol = "input_ids_consume_cache_True_max_seq_length_SS_KV"
+    if any(
+        dynamic_consume_symbol in inputs for inputs in pipeline.graph_inputs.values()
+    ):
+        orig_get_sampling_keys = pipeline._get_mtp_sampling_keys
+        orig_sample_mtp = pipeline._sample_mtp
+
+        def get_sampling_keys_dynamic_symbol(*args, **kwargs):
+            keys = orig_get_sampling_keys(*args, **kwargs)
+            keys.input_ids_key = dynamic_consume_symbol
+            return keys
+
+        def sample_mtp_dynamic_symbol(*args, **kwargs):
+            max_pef_len = pipeline.max_pef_len
+            pipeline.max_pef_len = "SS_KV"
+            try:
+                return orig_sample_mtp(*args, **kwargs)
+            finally:
+                pipeline.max_pef_len = max_pef_len
+
+        pipeline._get_mtp_sampling_keys = get_sampling_keys_dynamic_symbol
+        pipeline._sample_mtp = sample_mtp_dynamic_symbol
+    compiled_max_lens = [
+        int(match.group(1))
+        for inputs in pipeline.graph_inputs.values()
+        for name in inputs
+        if (
+            match := re.fullmatch(
+                r"input_ids_consume_cache_True_max_seq_length_(\d+)", name
+            )
+        )
+    ]
+    if compiled_max_lens:
+        pipeline.max_pef_len = max(compiled_max_lens)
+    orig_coe_run = pipeline._coe_run
+
+    def coe_run_with_declared_inputs(inputs, graph_name, *args, **kwargs):
+        # Split graphs in the surviving k=5 PEF accept only a subset of the
+        # tensors produced by this newer host pipeline.
+        observed_max_lens = [
+            int(match.group(1))
+            for name in inputs
+            if (match := re.search(r"max_seq_length_(\d+)", name))
+        ]
+        if observed_max_lens:
+            pipeline.max_pef_len = max(pipeline.max_pef_len, *observed_max_lens)
+        declared = set(pipeline.graph_inputs[graph_name])
+        inputs = {key: value for key, value in inputs.items() if key in declared}
+        return orig_coe_run(inputs, graph_name, *args, **kwargs)
+
+    pipeline._coe_run = coe_run_with_declared_inputs
+    tokenizer_eos = pipeline._get_eos_token_ids()
+    eos_ids = load_eos_token_ids(ckpt, tokenizer_eos)
+    pipeline._get_eos_token_ids = lambda: eos_ids
+    pipeline.eval_eos_token_ids = eos_ids
+    print(f"generation EOS token IDs={eos_ids} (tokenizer default={tokenizer_eos})", flush=True)
+    print(
+        f"DYT reset to {DYT_VALUES}; chosen_length={pipeline.chosen_length}; "
+        f"max_pef_len={pipeline.max_pef_len}",
+        flush=True,
+    )
     return pipeline, k
 
 
 def run_one(pipeline, prompt: str, max_new_tokens: int, k: int) -> dict:
     """Duplicate prompt to BS=2. Count decode drafts like vLLM counters."""
     ttft_box = {"t": None}
-    draft_counts: list[int] = []
+    # accepted=-1 marks the prefill token, which is emitted but is not a draft.
+    generated_chunks: list[tuple[int, list[int]]] = []
     orig_prefill = pipeline._prefill
     orig_sample = pipeline._sample_mtp
 
@@ -91,8 +220,18 @@ def run_one(pipeline, prompt: str, max_new_tokens: int, k: int) -> dict:
     def counting_sample(is_prefill: bool = False, **kwargs):
         out = orig_sample(is_prefill=is_prefill, **kwargs)
         if not is_prefill:
-            idx = out.accepted_token_index
-            draft_counts.append(int(idx[0] if isinstance(idx, (list, tuple)) else idx))
+            accepted = out.accepted_token_index
+            while isinstance(accepted, (list, tuple)):
+                accepted = accepted[0]
+            if hasattr(accepted, "reshape"):
+                accepted = accepted.reshape(-1)[0]
+            if hasattr(accepted, "item"):
+                accepted = accepted.item()
+            accepted = int(accepted)
+        else:
+            accepted = -1
+        tokens = out.generated_tokens[0, : max(1, accepted + 1)].tolist()
+        generated_chunks.append((accepted, [int(token) for token in tokens]))
         return out
 
     pipeline._prefill = timed_prefill
@@ -133,11 +272,12 @@ def run_one(pipeline, prompt: str, max_new_tokens: int, k: int) -> dict:
     tok = getattr(pipeline.processor, "tokenizer", pipeline.processor)
     pad_id = getattr(tok, "pad_token_id", None)
     prompt_tokens = int((in_ids != pad_id).sum().item()) if pad_id is not None else int(in_ids.shape[0])
-    completion_tokens = max(0, int(seq.shape[0] - in_ids.shape[0]))
+    eos_ids = list(pipeline.eval_eos_token_ids)
+    completion_tokens, n_drafts, n_accepted, stop_token_id = stats_through_stop(
+        generated_chunks, eos_ids, gen_budget
+    )
     ttft = ttft_box["t"]
     e2e = t_end - t0
-    n_drafts = len(draft_counts)
-    n_accepted = int(sum(draft_counts))
     accept_length, accept_rate = vllm_accept_stats(n_drafts, n_accepted, k)
     return {
         "prompt_tokens": prompt_tokens,
@@ -151,4 +291,7 @@ def run_one(pipeline, prompt: str, max_new_tokens: int, k: int) -> dict:
         "accept_length": accept_length,
         "accept_rate": accept_rate,
         "max_new_tokens": gen_budget,
+        "finish_reason": "stop" if stop_token_id is not None else "length",
+        "stop_token_id": stop_token_id,
+        "eos_token_ids": eos_ids,
     }
