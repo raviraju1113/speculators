@@ -6,9 +6,9 @@ Companion to README §9 (data generation). Nothing here has run yet.
 ## 0. Summary
 
 **Scope decision (2026-11-05):** no sweep and no Draft-OPD until a working recipe
-exists. Phase 1 is the from-scratch on-policy recipe (§2a: incoai shape, LR 2e-4) run exactly
-as ravir runs the trainer, plus a warm-started twin if the verifier has headroom (§6), evaluated
-every half epoch. §3–§5 describe the
+exists. Phase 1 is the from-scratch on-policy recipe (§2a: incoai shape, LR from a one-day
+pilot), run as the leader of an 8-slot group if group mode passes its acceptance test
+in time, otherwise alone (§6); validation every half epoch. §3–§5 describe the
 capacity and the multi-draft mechanism for phase 2, once one of the two beats the
 incoai release. "On-policy" here means SFT on GLM-5.3's own regenerated answers;
 Draft-OPD (the rollout objective, negative on Gemma) is a separate, later question.
@@ -392,14 +392,21 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    500/1000/1500 and take the highest LR that still improves without instability.
    This is also the end-to-end check of layout A (B300 verifier, Mooncake, B200
    trainers) before the long run. Group mode (§5.2) is not needed for this.
-2. **The recipe run, ravir's launch unchanged**: one B200 node, 8 ranks, §2a flags,
-   from scratch on the on-policy data. This is the SOTA candidate and it never
-   shares a process or a GPU with anything else.
-   - If the vLLM log shows `Waiting: 0` with the trainer at full pace (ravir saw
-     ~11 running, 0 waiting), start the warm-start twin (§2b) as a second,
-     independent 8-rank trainer on a second B200 node against the same verifier
-     (§5.4; the verifier does 2× the work). If the verifier saturates, the twin
-     waits for group mode (§5.2).
+2. **The full run: 8 slots if group mode has passed its test, else 1.** Group mode
+   (§5.2) is ~1 day of code on top of chenw's launcher and needs no GPU to write, so it
+   is built while the B300s are still on regen; its acceptance test (§5.2.4) runs on
+   the verifier right after the LR pilot. Then:
+   - *test passed:* one B200 node, 8 single-GPU trainers (1 rank × accum 8 each,
+     131k tokens/step), the candidate (§2a, pilot LR) as **leader** and 7 contrasts
+     as followers — Kimi shape scratch, Kimi warm start, block 12, the pilot's
+     second-best LR, `ce 0.1 + tv 0.9`, γ 12, anchors 1024. One verifier pass feeds
+     all 8; the contrasts cost nothing on the verifier. If the candidate ever looks
+     wrong it restarts standalone from its own checkpoint.
+   - *test failed or not ready:* the candidate alone, ravir's 8-rank launch
+     unchanged; the contrasts follow on the second B300 verifier (layout B) when
+     it is free.
+   Evaluation budget: half-epoch checks are the in-trainer val accept_len for all
+   8; the short set runs only at epoch ends for the top 3 (≈1 h each on a B300).
 3. **Evaluate every half epoch** on the short set (`glm53-short-v033-b300.yaml`,
    greedy + sampled, README §9.w). Stop a run when it plateaus. Bar: beat the incoai
    release (short set greedy 5.03 / 3.66 / 4.27, sampled 4.44 / 2.73 / 3.98) and
