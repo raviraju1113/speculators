@@ -270,8 +270,52 @@ hidden-state checksums read by C match the leader's. Fail = group mode is not us
 for anything that feeds the SOTA candidate; contrasts then run as independent
 trainers (§5.4) at the verifier's expense.
 
-Estimated effort: 1–2 days for the code, plus the test (it needs the verifier, so
-it runs on the phase-1 setup during a checkpoint gap or on the second B300).
+Estimated effort: about a day on top of chenw's launcher pattern (§5.2.5), plus the
+test (it needs the verifier, so it runs on the phase-1 setup during a checkpoint gap
+or on the second B300).
+
+### 5.2.5 Prior art we build on (reviewed 2026-11-06)
+
+**chenw's multi-draft pipeline on `origin/main`** (`examples/train/gemma4_26b_penta_draft_online.sh`,
+`docs/TRAINING.md` "Simultaneous multi-draft training", commits da62bd76 / 88e3a3eb):
+N independent `scripts/train.py` processes, one per draft, on one vLLM hidden-states
+server, all with `--on-generate cache --on-missing generate` and one shared
+`--hidden-states-path`. Each sample's features are generated once and kept on disk for
+every trainer and epoch; launches are staggered 90 s so later trainers hit the cache.
+Validated on Gemma4-26B (4 GPUs, five draft types, trainer GPUs at 100 %, fetch wait
+2–5 %). It is exactly rules 1–2 of §5.2.2 using code that is already in our `data.py`
+(the `cache` path is upstream), so **the launcher pattern is reused as-is**. What it
+lacks for our scale: it keeps everything (26 MB/sample at Gemma-26B seq 4096; for GLM
+at 16k it is ~1.4 GB/sample, ~450 MB/row at the 5.3k mean → ~300 TB per epoch), and
+nothing stops a follower from overtaking the leader and regenerating. So for ≤ ~20k
+rows on node-local NVMe (11 TB) his script works unchanged — that is the §5.2.4
+acceptance test and any pilot — and the full-data run needs only the two additions:
+`--on-missing wait` for followers and the refcounted delete / bounded buffer (rules
+2–4). Effort drops to about a day. (`train_online.py`'s YAML `drafts:` mode is the
+Gemma4-MTP trainer and runs drafts sequentially; not relevant.)
+
+**ASpec** (`github.com/inclusionAI/ASpec`, Ant/Ling, built on TorchSpec): a full
+training framework with the same shared-Target design already implemented —
+`aspec/multi_draft.py` runs independent drafts over one bounded Target stream (layer
+*union* captured once, each consumer reads its ordered view, bounded backpressure,
+fenced readers), `aspec/transfer/mooncake/deferred_delete.py` is the lease-based
+refcounted delete, plus draft-side kernels (DSpark QK-norm/RoPE CuTeDSL, FA4 sparse,
+cuDNN THD packing, context parallelism) giving ~2× draft-only throughput vs TorchSpec.
+Not directly usable for GLM-5.3 today:
+
+| blocker | detail |
+|---|---|
+| target support | capture runs inside **SGLang 0.5.21** with per-target contracts; recipes cover Qwen3 family and Ling only. GLM-5.3 (`glm_moe_dsa`, 744B) would need a new target contract |
+| topology | shared-Target mode is **single-node** (Target + Drafts on one NVLink node); cross-node Target TP and multi-node multi-draft are explicitly out of scope / roadmap. A bf16 GLM-5.3 target fills all 8 GPUs of a B300, leaving no draft GPU. Only an fp8 TP4 target (4 + 4 on one B300) would fit their contract, and ravir rejected fp8 target numerics |
+| algorithm | DFlash2 is marked **experimental**, "no claim to reproduce an official recipe" |
+| export / eval | native and SGLang assets; our eval and serving are vLLM (`export_dflash2_vllm.py`) |
+| bottleneck | their speedups are draft-side; our epoch time is set by the 744B verifier, where the draft already has ~2.5× margin |
+
+What we take from it: the design confirmation (union capture + ordered views + bounded
+backpressure + deferred delete is what a shipped framework does), and
+`deferred_delete.py` as the template for the refcounted delete in `hs_connectors`.
+Revisit if ASpec adds a GLM/K3 target contract (a `kimi_k3` data renderer already
+exists) and multi-node shared mode.
 
 ### 5.3 Option B — one process, N drafts
 
