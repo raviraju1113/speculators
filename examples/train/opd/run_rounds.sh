@@ -192,11 +192,16 @@ PY
   # (full run v2 forgot math/code on an off-domain pool, 2026-10-28).
   # AS_SFT=1: the paper's "training data" control -- same rollouts, same
   # anchors, ordinary loss instead of the OPD one.
+  # The dataset builder needs the serving env (datasets, transformers); the
+  # rollout-reuse path above skips the rollout block that activated it
+  # (arm f 15958487 died with "No module named datasets").
+  conda activate "$EVAL_ENV"
   python scripts/opd/rollouts_to_dataset.py --rollouts "$RDIR/rollouts.jsonl" --model "$MODEL" \
     --token-freq "$VOCAB_DATA/token_freq.pt" --output "$RDIR/dataset" \
     $( [ "${KEEP_FULL:-1}" = "1" ] && echo --keep-full-accept ) \
     $( [ "${AS_SFT:-0}" = "1" ] && echo --as-sft ) \
     $( [ "${REPLAY_ROWS:-0}" -gt 0 ] && echo --replay-dataset "${REPLAY_DATA:-$VOCAB_DATA}" --replay-rows "$REPLAY_ROWS" --replay-anchor-stride "${REPLAY_STRIDE:-4}" --replay-seed "$r" ) | tail -3
+  [ -f "$RDIR/dataset/state.json" ] || { echo "!! round $r: dataset build failed ($RDIR/dataset missing)" >&2; exit 1; }
   fi
 
   echo "=== round $r: train one epoch on $RDIR/dataset $(date '+%T') ==="
