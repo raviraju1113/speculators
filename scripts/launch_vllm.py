@@ -4,12 +4,49 @@ import os
 import sys
 import warnings
 
+try:
+    from hs_connectors import HiddenStatesBackend
+
+    _backend_registry: dict[str, type[HiddenStatesBackend]] = dict(
+        HiddenStatesBackend.registry  # type: ignore[misc]
+    )
+except ImportError:
+    _backend_registry = {}  # type: ignore[assignment]
+
+
+if "file" not in _backend_registry:
+    # Vendored File backend in case hs_connectors is not available
+    class _InlineFileBackend:
+        @staticmethod
+        def add_launch_args(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument(
+                "--hidden-states-path",
+                type=str,
+                default="/tmp/hidden_states",  # noqa: S108
+                help=(
+                    "The directory to save hidden states to. "
+                    "Default '/tmp/hidden_states'"
+                ),
+            )
+
+        @staticmethod
+        def build_kv_transfer_config(args: argparse.Namespace) -> dict:
+            return {
+                "kv_connector": "ExampleHiddenStatesConnector",
+                "kv_role": "kv_producer",
+                "kv_connector_extra_config": {
+                    "shared_storage_path": args.hidden_states_path,
+                },
+            }
+
+    _backend_registry["file"] = _InlineFileBackend  # type: ignore[assignment]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Launch vLLM for hidden states extraction",
         usage=(
-            "launch_vllm.py [-h] MODEL [--hidden-states-path HIDDEN_STATES_PATH] "
+            "launch_vllm.py [-h] MODEL [--hidden-states-backend BACKEND] "
             "[--target-layer-ids TARGET_LAYER_IDS [TARGET_LAYER_IDS ...]] -- *VLLM_ARGS"
         ),
     )
@@ -17,11 +54,27 @@ def parse_args():
         "model", type=str, help="Model name or path to extract hidden states from"
     )
     parser.add_argument(
-        "--hidden-states-path",
-        type=str,
-        default="/tmp/hidden_states",  # noqa: S108
-        help="The directory to save hidden states to. Default '/tmp/hidden_states'.",
+        "--trust-remote-code",
+        action="store_true",
+        help=(
+            "Trust remote code when reading the model config (required for "
+            "models with custom modeling code, e.g. Kimi K3). Also forwarded "
+            "to the spawned `vllm serve`."
+        ),
     )
+
+    parser.add_argument(
+        "--hidden-states-backend",
+        choices=list(_backend_registry.keys()),
+        default="file",
+        help=(
+            "Hidden states transfer backend. Each backend may add its own "
+            "CLI arguments (see below). Default: 'file'."
+        ),
+    )
+    for backend_cls in _backend_registry.values():
+        backend_cls.add_launch_args(parser)
+
     parser.add_argument(
         "--target-layer-ids",
         type=int,
@@ -56,7 +109,9 @@ def main():
 
     from transformers import AutoConfig  # noqa: PLC0415
 
-    config = AutoConfig.from_pretrained(args.model)
+    config = AutoConfig.from_pretrained(
+        args.model, trust_remote_code=args.trust_remote_code
+    )
     if hasattr(config, "text_config"):
         config = config.text_config
     num_hidden_layers = config.num_hidden_layers
@@ -82,14 +137,18 @@ def main():
         "method": "extract_hidden_states",
         "num_speculative_tokens": 1,
         "draft_model_config": {
+            # "eagle_aux_hidden_state_layer_ids" is vLLM's own field name
+            # (vllm/v1/worker/gpu/spec_decode/eagle/eagle3_utils.py), inherited
+            # from EAGLE/EAGLE3 being the first method to need multi-layer aux
+            # hidden states. vLLM reuses this same field to configure aux-layer
+            # capture for every downstream algorithm trained on the dump
+            # (dflash, dspark, mtp, ...) -- it is NOT eagle-specific and must
+            # keep this exact key or vLLM will silently fall back to defaults.
             "hf_config": {"eagle_aux_hidden_state_layer_ids": target_layer_ids}
         },
     }
-    kv_transfer_config = {
-        "kv_connector": "ExampleHiddenStatesConnector",
-        "kv_role": "kv_producer",
-        "kv_connector_extra_config": {"shared_storage_path": args.hidden_states_path},
-    }
+    backend_cls = _backend_registry[args.hidden_states_backend]
+    kv_transfer_config = backend_cls.build_kv_transfer_config(args)
 
     cmd = [
         sys.executable,
@@ -101,12 +160,9 @@ def main():
         json.dumps(speculative_config),
         "--kv_transfer_config",
         json.dumps(kv_transfer_config),
+        *(["--trust-remote-code"] if args.trust_remote_code else []),
         *vllm_args,
     ]
-
-    disable_cp_arg = "--no-enable-chunked-prefill"
-    if disable_cp_arg not in cmd:
-        cmd.append(disable_cp_arg)
 
     print("Running command:")
     print(" ".join(cmd))
