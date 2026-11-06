@@ -194,14 +194,27 @@ Evaluation of every slot: `glm53-full-v033-b300.yaml` entries with `ONLY=<name>`
 
 ## 5. How to train them at the same time
 
-### 5.1 The problem in the current code
+### 5.1 The problem in the current code, and how much chenw's pipeline already solves
 
-`ArrowDataset._get_raw_data` asks the transfer backend for a cached row, and on a
-miss (`--on-missing generate`) sends the row to vLLM, loads the hidden states by
-handle, then **deletes** them (`--on-generate delete`). Every trainer process is its
-own consumer, so N independent trainers = N verifier passes per row. Mooncake's
-transfer has no cache at all (`get_cached` returns None) — the handle comes back in
-the vLLM response, so only the requester knows it.
+`ArrowDataset._get_raw_data` asks the transfer backend for a cached row, and on a miss
+(`--on-missing generate`) sends the row to vLLM, loads the hidden states by handle,
+then either deletes them (`--on-generate delete`, our Gemma runs) or keeps them
+(`--on-generate cache`). Mooncake's transfer has no cache lookup at all (`get_cached`
+returns None): the handle comes back in the vLLM response, so only the requester can
+read the row.
+
+chenw's penta-draft pipeline (§5.2.5) uses the `cache` path with one shared
+`--hidden-states-path` and staggered launches. Against the three sub-problems:
+
+| sub-problem | chenw's pipeline | what remains for us |
+|---|---|---|
+| N trainers = N verifier passes | **solved** on the file backend: the first trainer to reach a row generates it, every later trainer finds it in the cache | only while the later trainers stay behind the first; a follower that overtakes regenerates. Needs `--on-missing wait` |
+| rows are never freed | not addressed: the cache keeps everything (fine at 26 MB/sample on Gemma-26B, 30k samples ≈ 780 GB) | at ~450 MB/row for GLM the full data is ~300 TB/epoch; needs the refcounted delete + bounded buffer |
+| Mooncake (cross-node) has no shared read | not addressed: his verifier and trainers share one node and one filesystem | layout A puts the verifier on a B300 and trainers on a B200, so rows must cross nodes. NFS cannot carry it (verifier writes ~1.5 GB/s, 8 readers pull 8× that); Mooncake needs a deterministic key so followers can `get` what the leader requested |
+
+So his pipeline is the skeleton and solves the first point; the other two are the
+day of work in §5.2.2. For a same-node pilot with ≤ ~20k rows on node-local NVMe
+(§5.2.4 acceptance test, layout C) his script runs unchanged.
 
 ### 5.2 The solution: one stream, one leader, followers in lockstep (plan)
 
@@ -316,6 +329,16 @@ backpressure + deferred delete is what a shipped framework does), and
 `deferred_delete.py` as the template for the refcounted delete in `hs_connectors`.
 Revisit if ASpec adds a GLM/K3 target contract (a `kimi_k3` data renderer already
 exists) and multi-node shared mode.
+
+### 5.2.6 What adopting ASpec's ideas would cost us
+
+| idea | in our repo | effort | verdict |
+|---|---|---|---|
+| shared-Target stream (union capture, per-draft views, backpressure, refcounted delete) | the two additions in §5.2.2 on top of chenw's launcher; `deferred_delete.py` (MIT) as template | ~1 day + acceptance test | **do it** |
+| overlap feature generation with training; GPU-to-GPU transport | ravir's verifier sat idle at ~11 in-flight requests, so the fetch path paced the run: raise in-flight requests (`num_workers × prefetch_factor`) first; Mooncake already has an `rdma` protocol flag if the NICs allow it | hours (config); days if RDMA needs debugging | try the knob |
+| draft-side kernels (CuTeDSL QK-norm/RoPE, FA4 sparse block attention, cuDNN THD packing, CP) | tied to ASpec's model classes and attention layouts; a rewrite of our draft's attention path | weeks | **no** — the verifier bounds epoch time, the draft has ~2.5× margin |
+| sequence packing, selective head/loss computation | already have: multipack sampler at 16k, fused loss, logits only on anchor positions | 0 | nothing to do |
+| Plan/Evidence, exact recovery, strict export | checkpoint resume and ravir's vLLM export already cover our needs | days | not now |
 
 ### 5.3 Option B — one process, N drafts
 
