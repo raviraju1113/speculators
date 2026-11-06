@@ -3638,3 +3638,86 @@ closed.
 landing in a 10x-lower-LR group, with weight decay pulling it away from a
 correct initialisation of 1.0, will bite any future model carrying such weights,
 and the only symptom is a parameter that quietly does not train.
+
+---
+
+## 35. The n=512 suite ran on a vLLM version that corrupts speculative output (2026-10-26)
+
+**Sections 30-31 and the published model card are affected.** The whole n=512
+suite was served on **vLLM 0.28.0**, and this repo already documents that
+version as broken for live speculative decoding.
+
+### The bug was already written down
+
+`docs/experiments/kimi_k3_draft_eval.md`, "Bug 2 -- live speculative decoding
+corrupts Kimi K3's output on vLLM 0.28.0":
+
+> attaching **any** draft to Kimi K3 via vLLM 0.28.0's real
+> `--speculative-config` (not just `extract_hidden_states`) corrupted the
+> target's actual output -- greedy decoding degenerated into repetition loops
+> after ~10-12 tokens [...] Confirmed **method- and checkpoint-independent**
+
+and "Confirmation: vLLM 0.29.0 fixes it". That investigation found the bug,
+fixed its own numbers by upgrading, and recorded both. The Gemma suite then ran
+on 0.28.0 anyway.
+
+### How it shows up here
+
+Repetition loops that never terminate = requests running to the `--max-tokens`
+4096 cap. Measured over the 4,661 common requests, greedy:
+
+| arm | exact match vs no-draft | tok/req | vs baseline | runaways |
+|---|--:|--:|--:|--:|
+| no draft | — | 604.4 | 1.000x | — |
+| Google MTP assistant k=7 | 38.3% | 666.2 | 1.009x | 43 |
+| z-lab DFlash k=15 | 38.6% | 663.5 | 0.989x | 27 |
+| RedHatAI EAGLE3 k=5 | 40.4% | 671.1 | 1.000x | 37 |
+| **DSparkFlash k=7** | 32.2% | **1041.8** | **1.577x** | **530** |
+
+The three non-DSpark arms are **symmetric** -- ~31% of requests longer, ~30%
+shorter, averaging to 0.99-1.01x. That is vLLM's continuous batching, which is
+not bitwise deterministic, and it costs nothing. DSpark is **asymmetric**: 41.8%
+longer against 26.1% shorter, 1.577x the tokens, and 530 runaways against
+27-43. Noise is symmetric; this is not noise.
+
+### What it did to the headline number
+
+The card leads with decode tok/s, which is **inflated by generating tokens that
+are then discarded**. On QPS and latency -- what a deployment experiences -- the
+advantage disappears. Runaways excluded, so tok/req is comparable:
+
+| arm | mean e2e | tok/req | latency vs base | QPS vs base |
+|---|--:|--:|--:|--:|
+| no draft | 4.762 s | 604.4 | 1.000x | 1.000x |
+| DSparkFlash k=7 | 2.593 s | 647.4 | 0.544x | **1.837x** |
+| MTP assistant k=7 | 2.602 s | 594.7 | 0.547x | **1.830x** |
+
+**1.837x vs 1.830x -- a tie, not the +17% the card implies.** Two separate
+effects account for the difference: the published tok/s averages per-benchmark
+(equal weight to a 30-row and a 512-row benchmark), which overstates the gap as
++16.7% where request-weighting gives +9.0%; and that remaining 9% is spent
+emitting 8.9% more tokens, so decode time lands at 2.530 s vs 2.532 s.
+
+### What is ruled out
+
+- **`dspark_draft_topk=64`** -- the Qwen3.5 DSpark arms use it and sit at
+  0.970-0.997x of baseline.
+- **`enable_adaptive_verification`** -- defaults to `False` (speculative.py:241)
+  and was never set. It is the only path that would make DSpark lossy by design.
+- **The DSpark method** -- Qwen3.5 DSpark on vLLM 0.31 shows no inflation at any
+  depth k=1..15 (0.973-1.010x).
+- **A stop-token/EOS misconfiguration** -- would not be target-specific.
+
+The one variable that tracks the defect is the vLLM version: 0.28.0 inflates,
+0.31.0 does not.
+
+### Remediation
+
+Jobs 330/331 re-run the identical suite -- same arms, same prompts, same flags,
+verified byte-identical except the env, results dir and port -- on vLLM 0.31,
+into `results/suite-v031`. Job 320 is the fast confirmation on the four
+512-row benchmarks.
+
+**Do not quote sections 30-31, or the card's 2.126x, until those land.** And
+report QPS/latency alongside tok/s: a per-token metric cannot distinguish "fast"
+from "generating more tokens", which is exactly how this went unnoticed.
