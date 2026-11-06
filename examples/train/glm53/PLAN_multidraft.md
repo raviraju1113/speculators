@@ -6,8 +6,8 @@ Companion to README §9 (data generation). Nothing here has run yet.
 ## 0. Summary
 
 **Scope decision (2026-11-05):** no sweep and no Draft-OPD until a working recipe
-exists. Phase 1 is the from-scratch on-policy recipe (§2a) run exactly as ravir runs
-the trainer, plus a warm-started twin if the verifier has headroom (§6), evaluated
+exists. Phase 1 is the from-scratch on-policy recipe (§2a: incoai shape, LR 2e-4) run exactly
+as ravir runs the trainer, plus a warm-started twin if the verifier has headroom (§6), evaluated
 every half epoch. §3–§5 describe the
 capacity and the multi-draft mechanism for phase 2, once one of the two beats the
 incoai release. "On-policy" here means SFT on GLM-5.3's own regenerated answers;
@@ -38,7 +38,7 @@ recipe doc `examples/train/glm53/README_dflash2_kimi_recipe.md`, runs under
 | draft | `glm53_dflash2_draft_config.json`: 5 Qwen3-style layers, hidden 6144, 64 q / 16 kv heads × 64, MLP 12288, all-sliding 2048, full 154,880 vocab; aux layers 7/20/44/57/71 (+78). ≈1.7B trainable + 1.9B frozen embed/lm_head ≈ 3.6B |
 | recipe (Kimi K3) | AdamW 5e-5, cosine, warmup 0.04, 10 epochs, block 7, anchors 512, `kl_div` loss with exp decay γ 4, grad clip 1 |
 | measured | their on-policy fine-tune on our 20% snapshot: 2,905 steps/epoch in 5h39m. Verifier delivered mean 18.0k / p90 20.2k / max 24.7k prompt tok/s with ~11 requests running and 0 waiting — the verifier had headroom, the trainer side was pacing. KV 504,768 tokens. |
-| results | off-policy (gemma782k) draft: LCB accept_len 4.33 at fp8/v033 (≈ the incoai release). Their 3-epoch on-policy fine-tune is being evaluated. |
+| results | their `examples/train/glm53/results/README.md`: off-policy epoch 9 = 2.83 mean sampled accept_len (22 benchmarks), clean on-policy fine-tune ≈ 3.0, incoai 3.89; position-0 accuracy 0.68 vs 0.80; multilingual and tool_call worst |
 
 TP8 = tensor parallel over 8 GPUs: every weight matrix is split eight ways and all
 eight GPUs compute each token together. PP2 = the 78 layers are cut into two
@@ -76,32 +76,46 @@ Anchor = ravir's mapping of the Kimi K3 recipe, changed only where our data diff
 |---|---|---|
 | data | full cleaned regen (`nemo782k_regen_glm53_all.jsonl` after the §9.v `!{32,}` filter), `prepare_glm53_data.sh` with `SEQ_LENGTH=16384`; keep rows truncated at the 16k cap (they are cut at 16k, README §9.x); loss mask = `<think>…</think>answer` of every assistant turn, non-final-turn thinking blanked | the served distribution, whole |
 | validation | `train_ratio 0.998` (~1.3k held-out rows) → val accept_len every half epoch | Gemma practice |
-| draft | ravir's `glm53_dflash2_draft_config.json`: 5 layers, hidden 6144, 64 q / 16 kv × 64, MLP 12288, SWA 2048 all layers, full vocab, `sample_from_anchor=False` | parity with ravir and the incoai class; proven serving path |
-| aux layers | `--target-layer-ids 7 20 44 57 71` (+78 appended by launch_vllm) | Kimi relative depths |
-| block / anchors | `--block-size 7 --max-anchors 512` (k=6 at serve) | Kimi |
+| draft | **incoai shape** (2026-11-06): 6 layers, hidden 6144, 64 q / 8 kv heads × head_dim 128, MLP 12288, SWA 2048 all layers, full vocab, conv kernel 2 / group 16, selector rank 256 / top-16, `sample_from_anchor=False` (≈2.3B trainable + 1.9B frozen) | the shape that reaches 3.89 on this target; ravir's results put the gap at position 0 (0.68 vs 0.80), i.e. draft capacity — 5 layers × head_dim 64 is half the attention width |
+| aux layers | `--target-layer-ids 5 19 33 47 61 75` (+78 appended by launch_vllm) | incoai's set (0-based 5…75, matching its config); 6 layers incl. a deep one |
+| block / anchors | `--block-size 8 --max-anchors 512` (k=7 at serve) | incoai; same k as the bar |
 | loss | `--loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4`, selector α 1, `--loss-implementation fused` | Kimi |
-| optimiser | `--optimizer adamw --lr 5e-5 --weight-decay 0 --scheduler-type cosine --scheduler-warmup-ratio 0.04`, grad clip 1.0 (hard-coded) | Kimi; AdamW must be pinned, the branch default is Muon |
+| optimiser | `--optimizer adamw --lr 2e-4 --weight-decay 0 --scheduler-type cosine --scheduler-warmup-ratio 0.04`, grad clip 1.0 (hard-coded) | from-scratch LR; Kimi's 5e-5 produced 2.83 off-policy and its 2e-5 fine-tune saturated in half an epoch (ravir's results README), so 5e-5 becomes a contrast slot, not the default. Gemma drafts of this size trained stably at 3e-4–6e-4 |
 | batch | 8 ranks × 1 packed 16k sequence = 131k tokens/step, no accumulation (~25 conversations/step at 5.3k tok/row vs ~120 on gemma782k) | same tokens/step as ravir |
 | epochs | **3** (≈7.5B tokens ≈ Kimi's 10 × 776M budget), cosine over 3 epochs, checkpoint every 0.5 epoch; extend if val accept_len is still rising at the end | token budget, not epoch count |
 | precision | bf16 hidden states, fp32 master weights, DDP | ravir |
 | launch | ravir's `run_glm53_dflash2_3node.sh` trainer role unchanged; verifier role = one B300, vLLM 0.33 TP8, same Mooncake producer flags | reuse |
 
-Known risk: 5e-5 is a fine-tune-sized LR for a from-scratch run of only 3 epochs. If
-val accept_len is still climbing steeply at epoch 1, the first contrast (§2b) is
-LR 2e-4, not a block-size change.
+Open before launch: ask ravir for the wandb validation curve of
+`glm53_dflash2_gemma782k_kimirecipe_v2` (the logs only hold train metrics) — if epoch 9
+was still rising, the off-policy draft was under-trained and the LR contrast matters
+more; if it had plateaued, shape is the whole story.
+
+**What ravir's results (their `examples/train/glm53/results/README.md`, 2026-11-06)
+fix as the floor:** Kimi-shape off-policy epoch 9 = 2.83 mean sampled accept_len on the
+22-benchmark set (1.90x); + clean on-policy fine-tune on shard A (141k rows, LR 2e-5) =
+~3.0 (2.01x), saturating within half an epoch; incoai = 3.89 (2.53x). Largest gaps:
+speed-multilingual (0.61 of incoai) and tool_call (0.67) — a prompt-pool problem.
 
 ## 2b. Contrast drafts (planned after the recipe is launched, run in parallel per §5)
 
-| contrast | data | init | what it isolates | shares the stream? |
-|---|---|---|---|---|
-| recipe (§2a) | on-policy | scratch | the candidate | leader |
-| warm start | on-policy | ravir's off-policy checkpoint | does the Gemma-answer prior help or hurt | yes |
-| off-policy from scratch | gemma782k | scratch | = ravir's existing run; **not rerun** | n/a |
-| block 12 | on-policy | scratch | the Gemma block-size win on this class | yes |
-| LR 2e-4 | on-policy | scratch | LR headroom for scratch | yes |
+| contrast | shape | data | init | what it isolates | shares the stream? |
+|---|---|---|---|---|---|
+| recipe (§2a) | incoai | on-policy | scratch | the candidate | leader |
+| Kimi shape, scratch | Kimi (5L × hd64, block 7) | on-policy | scratch | shape vs data: direct comparison with ravir's 2.83 off-policy | yes |
+| Kimi shape, warm start | Kimi | on-policy | ravir's epoch-9 checkpoint | floor = their ftA ~3.0; does a real LR move it further | yes |
+| LR 5e-5 | incoai | on-policy | scratch | the Kimi LR on the new shape | yes |
+| block 12 | incoai | on-policy | scratch | the Gemma block-size win on this class | yes |
+| off-policy from scratch | Kimi | gemma782k | scratch | = ravir's existing run; **not rerun** | n/a |
 
-Three parallel drafts at first (recipe, warm start, block 12); the full §4 list only
-once the recipe clears the bar.
+Three parallel drafts at first (recipe, Kimi-shape scratch, Kimi-shape warm start);
+the rest once the recipe clears the bar.
+
+**Data action now (in the regen lane, before training starts):** add multilingual and
+function-calling prompts to the pool (own `--tag`, merged with
+`scripts/merge_dedup_jsonl.py`, regenerated with `--resume`; README §9 "Adding data
+later"). These are the two categories where every draft we have is furthest from
+incoai, and nemo782k barely covers them.
 
 ## 3. How many drafts fit on one B200 node
 
