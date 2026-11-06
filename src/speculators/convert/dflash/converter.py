@@ -98,6 +98,16 @@ class DFlashConverter:
         }
 
         verifier_config_dict, _ = PretrainedConfig.get_config_dict(base_model)
+        # Multimodal verifiers (e.g. gemma4) nest the decoder settings under
+        # text_config; read through to it so hidden_size/num_hidden_layers
+        # resolve for those too.
+        if "num_hidden_layers" not in verifier_config_dict and isinstance(
+            verifier_config_dict.get("text_config"), dict
+        ):
+            verifier_config_dict = {
+                **verifier_config_dict,
+                **verifier_config_dict["text_config"],
+            }
         source_hidden = transformer_config.get("hidden_size")
         target_hidden = verifier_config_dict.get("hidden_size")
         if source_hidden and target_hidden and source_hidden != target_hidden:

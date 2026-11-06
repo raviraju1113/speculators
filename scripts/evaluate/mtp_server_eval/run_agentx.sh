@@ -64,10 +64,18 @@ POLL_INTERVAL="${POLL_INTERVAL:-0.25}"
 # with. MODEL is usually the served path/alias; TOKENIZER defaults to it.
 MODEL="${MODEL:-}"
 TOKENIZER="${TOKENIZER:-${MODEL}}"
-# aiperf lives in its own venv so it cannot disturb the serving env's vllm/torch:
-#   python3.11 -m venv /sms-scratch/ravira/.venv-aiperf
-#   /sms-scratch/ravira/.venv-aiperf/bin/pip install aiperf
-AIPERF_BIN="${AIPERF_BIN:-/sms-scratch/ravira/.venv-aiperf/bin/aiperf}"
+# aiperf can live in its own venv so it cannot disturb the serving env's
+# vllm/torch:
+#   python3.11 -m venv ~/.venv-aiperf && ~/.venv-aiperf/bin/pip install aiperf
+# Resolution order: $AIPERF_BIN -> aiperf on $PATH (e.g. installed into the
+# active venv) -> a ~/.venv-aiperf venv. Set AIPERF_BIN to override.
+if [[ -z "${AIPERF_BIN:-}" ]]; then
+    if command -v aiperf > /dev/null 2>&1; then
+        AIPERF_BIN="$(command -v aiperf)"
+    else
+        AIPERF_BIN="$HOME/.venv-aiperf/bin/aiperf"
+    fi
+fi
 PYTHON="${PYTHON:-python3}"
 # Skip a cell if result.row already exists (set SKIP_EXISTING=0 to rerun).
 SKIP_EXISTING="${SKIP_EXISTING:-1}"

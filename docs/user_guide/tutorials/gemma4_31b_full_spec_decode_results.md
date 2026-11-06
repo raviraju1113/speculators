@@ -2,9 +2,11 @@
 
 Head-to-head acceptance + throughput eval of `gemma-4-31b-it` with four drafts
 on the same 25-benchmark suite (50 samples per bench; AIME / AIME26 = 30;
-speed-multilingual = 47). Skipped (no JSONL on this box): `aa-lcr`,
-`speed-low-entropy`. The same drafts were also run as an AgentX concurrency
-sweep (Claude-Code trace replay at 1 / 8 / 16 / 32 / 64 / 128 users).
+speed-multilingual = 47 on GPU). The Google Assistant k=5 configuration was
+also evaluated on 16× SN40 RDU chips for an acceptance-only comparison.
+Skipped (no JSONL on this box): `aa-lcr`, `speed-low-entropy`. The same drafts
+were also run as an AgentX concurrency sweep (Claude-Code trace replay at
+1 / 8 / 16 / 32 / 64 / 128 users).
 
 ## Setup
 
@@ -24,6 +26,7 @@ sweep (Claude-Code trace replay at 1 / 8 / 16 / 32 / 64 / 128 users).
 | Eagle-3 Qwen (Ravi) | `/nvmedata/hf_checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math` | 5 | 0.24.0+cu129 | `gemma4-31b-full-eagle3.yaml` |
 | Eagle-3 Llama (John) | `/nvmedata/hf_checkpoints/gemma4_redhat_draft_ft_2026-07-26_06-06-06` | 5 | 0.24.0+cu129 | `gemma4-31b-full-redhat-ft.yaml` |
 | DSpark Qwen (Mengmeng) | `/nvmedata/hf_checkpoints/gemma4_31b_dspark_nemo782k_scratch` | 8 | 0.28.0+cu129 | `gemma4-31b-full-dspark-nemo782k.yaml` |
+| Google Assistant (MTP), RDU | `/import/ml-sc-nlpcheckpoints-scratch3/weip/gemma-4-31b-it-assistant-pad5632-prefix-split` | 5 | CoE / SN40-16 | `rdu_mtp_eval` |
 
 DSpark Qwen (Mengmeng) was trained with `block_size=8` and `sample_from_anchor=True`.
 vLLM 0.24 cannot serve DSpark (`method=dspark` landed in 0.25; 0.28 is required so
@@ -112,6 +115,10 @@ Baseline has no speculation, so it is omitted here.
 | tool_call | 4.012 | 2.281 | 2.722 | 3.492 | 0.6024 | 0.2562 | 0.3444 | 0.3115 |
 | translation | 4.023 | 2.243 | 2.590 | 3.463 | 0.6045 | 0.2487 | 0.3181 | 0.3079 |
 | writing | 3.408 | 2.237 | 2.616 | 3.412 | 0.4817 | 0.2474 | 0.3231 | 0.3016 |
+
+### RDU vs GPU: Google Assistant (MTP) k=5
+
+Moved to its own doc: [Gemma-4-31B Google Assistant (MTP) k=5: RDU vs GPU Acceptance](gemma4_31b_assistant_rdu_vs_gpu.md). Summary: the same k=5 configuration on 16× SN40 RDU agrees with GPU to within 0.17 `accept_len` on every benchmark (macro average GPU 4.286 vs RDU 4.242).
 
 ## End-to-end throughput and TTFT
 
@@ -379,6 +386,7 @@ collapses (~1.4–1.8 tok/s). Combined matrix:
 | Eagle-3 Qwen (Ravi) | `scripts/evaluate/experiments/results/gemma4-31b-full-eagle3/eagle3_k5/` |
 | Eagle-3 Llama (John) | `scripts/evaluate/experiments/results/gemma4-31b-full-redhat-ft/redhat_ft_k5/` |
 | DSpark Qwen (Mengmeng) | `scripts/evaluate/experiments/results/gemma4-31b-full-dspark-nemo782k/dspark_nemo782k_k8/` |
+| Google Assistant (MTP), RDU | `scripts/evaluate/experiments/results/gemma4-31b-rdu-k5/` |
 | AgentX (all drafts) | `scripts/evaluate/experiments/results/gemma4-31b-agentx/` (`comparison.tsv`; per-draft `*/matrix.tsv`) |
 
 ## Re-running

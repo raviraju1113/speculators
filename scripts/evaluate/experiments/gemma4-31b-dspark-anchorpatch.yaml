@@ -1,0 +1,73 @@
+# CONTROLLED TEST of the sample_from_anchor diagnosis.
+#
+# Same checkpoint, same benchmarks, same k as the 2026-08-05 run that produced
+# accept_len 1.838 (aime) / 1.795 (livecodebench). The ONLY thing that changed is
+# a one-line local patch to vLLM:
+#
+#   vllm/transformers_utils/configs/speculators/algos.py:152
+#     -  pre_trained_config["dspark_bonus_anchor"] = True
+#     +  pre_trained_config["dspark_bonus_anchor"] = not config_dict.get(
+#     +      "sample_from_anchor", False)
+#   (original saved alongside as algos.py.orig)
+#
+# Upstream hardcoded True, i.e. "speculators DSpark always uses the 1+N fill-in
+# block". This checkpoint was trained with sample_from_anchor=True (the
+# speculators DEFAULT for dspark, dflash/core.py:194), so vLLM decoded slot k as
+# token k+1 while the weights had learned slot k -> token k. Off by one slot,
+# plus the Markov head conditioned on the wrong previous token.
+#
+# PREDICTION: accept_len should jump from ~1.8 to roughly 3.2 (what training
+# measured: position accs [0.781, 0.691, 0.659, 0.644, 0.584, 0.530, 0.492,
+# 0.455] chain to 3.161). If it lands there, the diagnosis is proven and the
+# relaunched --no-sample-from-anchor run is the right fix. If it stays ~1.8, the
+# diagnosis is wrong and something else is going on.
+#
+# k=8 because this checkpoint has sample_from_anchor=True ->
+# speculative_tokens = block_size = 8. (A False checkpoint ships 7.)
+#
+# Node MUST have driver 595.x.
+#
+# Run:
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark-anchorpatch.yaml
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/import/ml-sc-scratch5/chenw/models/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [gpqa]   # exactly the two with a pre-patch number
+  num_samples: 30
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-dspark-anchorpatch
+
+experiments:
+  # Pre-patch: accept_len 1.838 (aime) / 1.795 (lcb), 33.9 / 32.8 tok/s
+  - name: ours_dp_lr1e4_ep0_k8_patched
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 8
+    speculative_config:
+      method: dspark
+
+  # Pre-patch: accept_len 1.629 (aime) / 1.698 (lcb), 30.4 / 31.5 tok/s
+  - name: ours_dp_lr1e4_ep0_k3_patched
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_dp_lr1e4/checkpoints/interrupted
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

@@ -16,6 +16,13 @@ from torch.nn.attention.flex_attention import (
 )
 from transformers.modeling_utils import AttentionInterface
 
+# Flex attention must run compiled: executed eagerly it falls back to a dense
+# SDPA path that materialises the full [H, Q, KV] mask (12+ GiB at DFlash sizes)
+# and OOMs in backward. Model forwards are usually compiled as a whole, but a
+# graph break before the call (e.g. a mask built mid-layer-loop) would otherwise
+# leave this call eager, so compile it on its own as PyTorch recommends.
+_compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
+
 
 def flex_attention_forward(
     module: torch.nn.Module,  # noqa: ARG001
@@ -52,7 +59,7 @@ def flex_attention_forward(
     key = key.contiguous()
     value = value.contiguous()
 
-    flex_attention_output = flex_attention(
+    flex_attention_output = _compiled_flex_attention(
         query,
         key,
         value,

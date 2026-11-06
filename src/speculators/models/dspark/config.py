@@ -65,3 +65,36 @@ class DSparkSpeculatorConfig(DFlashSpeculatorConfig):
             "hidden state as the confidence-head input."
         ),
     )
+
+    # DSA-style top-k context selection (see models/dspark/topk.py).
+    topk_context: int = Field(
+        default=0,
+        description=(
+            "Number of context positions each draft block attends in the top-k "
+            "layers, chosen by a lightning indexer (DeepSeek Sparse Attention "
+            "style). 0 disables selection: every full-attention layer sees the "
+            "whole document prefix, as in DFlash. Serving a checkpoint with "
+            "topk_context > 0 needs engine support for the indexer."
+        ),
+    )
+    topk_layers: list[int] | None = Field(
+        default=None,
+        description=(
+            "Draft layer indices that use top-k context selection. Must be "
+            "full-attention layers. Default: every full-attention layer except "
+            "layer 0, whose queries are still bare anchor/mask embeddings."
+        ),
+    )
+    topk_local_window: int = Field(
+        default=128,
+        description=(
+            "Context positions immediately before the anchor that top-k layers "
+            "always attend, in addition to the ranked selection. 0 disables."
+        ),
+    )
+    indexer_heads: int = Field(
+        default=4, description="Query heads of each layer's lightning indexer."
+    )
+    indexer_head_dim: int = Field(
+        default=64, description="Head dimension of the lightning indexer."
+    )

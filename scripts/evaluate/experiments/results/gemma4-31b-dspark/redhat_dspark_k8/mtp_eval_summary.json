@@ -1,0 +1,26 @@
+[
+  {
+    "benchmark": "aime",
+    "n": 30,
+    "num_steps": null,
+    "total_completion_tokens": 45324,
+    "decode_tok_s": 83.7,
+    "e2e_tok_s": 83.1,
+    "mean_ttft_s": 0.145,
+    "accept_length": 4.562,
+    "accept_rate": 0.4452,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "livecodebench",
+    "n": 30,
+    "num_steps": null,
+    "total_completion_tokens": 19734,
+    "decode_tok_s": 70.7,
+    "e2e_tok_s": 69.0,
+    "mean_ttft_s": 0.246,
+    "accept_length": 3.876,
+    "accept_rate": 0.3595,
+    "metric_samples": null
+  }
+]
