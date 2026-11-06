@@ -252,6 +252,58 @@ distribution is far from the target's. Arm d closes the paper-exact
 question: no setting of λ, γ, pool, replay or seed epoch turned OPD
 positive on benchmarks.
 
+*Arm e / f (launched 2026-11-05 09:50): does OPD work on an under-trained
+seed?* The one hypothesis track A did not test. Arm d's "ep28" was not an
+early checkpoint: the block-12 run is a warm start from conv ep25, so ep28 is a
+draft that had already converged over 25 block-8 epochs, plus 3 epochs of
+block-12 settling (its 5% deficit vs ep33 is the new slots, not headroom).
+
+What the paper's seed is: the 6-epoch checkpoint of a run whose own SFT
+baseline peaks after 10 epochs (DFlash 5.51 vs Draft-OPD 5.96 on Qwen3-4B),
+described as "after an initial SFT warm-up, continued offline SFT quickly
+plateaus". No dataset size, LR or batch is given for the seed SFT ("same
+mixture as DFlash"), and the paper never varies the seed epoch. So epoch
+counts and data sizes cannot be matched across the two setups; the only
+usable comparison is *position on the draft's own validation curve*: how far
+below the run's final accept_len the checkpoint sits, and whether the curve
+is still rising there. The target model matters only through that curve.
+
+Our 26-epoch block-8 run (`gemma4_31b_dspark_nemo782k_conv`, job 11154700,
+val accept_len at 8 slots; checkpoint index = log epoch − 1):
+
+| checkpoint | epoch | val accept_len | % of final | saved |
+|---|---|---|---|---|
+| 1 | 2 | 3.97 | 83% | yes |
+| 2 | 3 | 4.07 | 85% | no |
+| **8** | 9 | **4.23** | **89%** | yes |
+| 9 | 10 | 4.26 | 89% | yes |
+| 16 | 17 | 4.43 | 93% | yes |
+| 20 | 21 | 4.59 | 96% | yes |
+| 25 | 26 | 4.78 | 100% | yes |
+
+Same shape as the paper's description: fast climb to epoch 3, then ~0.02 per
+epoch, the last 0.2 from the LR anneal (LR 6e-4 linear decay over 26 epochs).
+By the paper's own "on the plateau" criterion the analogue of their epoch-6
+seed is somewhere between our checkpoints 8 and 16, not ep28/33.
+
+Why checkpoint 8: past the warm-up, 0.55 below the final value with the curve
+still rising, and saved while the LR was still high — the maximum-headroom
+case. If OPD cannot beat plain SFT there, no seed will. Checkpoint 16 is the
+closer "epoch 6 of 10" analogue and is the follow-up only if 8 shows a gain.
+
+Design: one round each on the paper16k pool at k=8 (seed block 8), LR 5e-5
+cosine over 375 steps, λ_rej 0.05 + OOV mask, no replay.
+- arm **e** `opd_paper16k_ep8` (OPD) job 15955532, B200 sc3-cp84;
+- arm **f** `opd_paper16k_ep8_assft` (ordinary loss on arm e's round-0
+  rollouts, copied in) — submitted by the watcher as soon as e's rollouts
+  are assembled. **Required**: a checkpoint saved at high LR improves from
+  any low-LR training by annealing alone, so OPD must beat f, not the seed.
+- baseline: checkpoint 8 itself at k=8, eval job 15955534 (`e_seed8_k8`);
+  results `e9_k8`, `f9_k8` in `results/gemma4-31b-dspark-opd-v3`.
+Read-out: e9 > f9 on the benchmarks → OPD needs an un-converged seed and the
+GLM plan becomes "stop SFT early, then OPD"; e9 ≤ f9 → OPD is off the table
+for any seed.
+
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
 nothing we measured was on that class; a Gemma run is the cheap dress
