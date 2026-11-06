@@ -7,8 +7,9 @@ Companion to README §9 (data generation). Nothing here has run yet.
 
 **Scope decision (2026-11-05):** no sweep and no Draft-OPD until a working recipe
 exists. Phase 1 is the from-scratch on-policy recipe (§2a: incoai shape, LR from a one-day
-pilot), run as the leader of an 8-slot group if group mode passes its acceptance test
-in time, otherwise alone (§6); validation every half epoch. §3–§5 describe the
+pilot), run alone on one B200 node with ravir's launch, while a second B200 node runs an
+8-slot sweep in group mode against the same (or a second) verifier (§6); validation
+every half epoch. §3–§5 describe the
 capacity and the multi-draft mechanism for phase 2, once one of the two beats the
 incoai release. "On-policy" here means SFT on GLM-5.3's own regenerated answers;
 Draft-OPD (the rollout objective, negative on Gemma) is a separate, later question.
@@ -392,21 +393,27 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    500/1000/1500 and take the highest LR that still improves without instability.
    This is also the end-to-end check of layout A (B300 verifier, Mooncake, B200
    trainers) before the long run. Group mode (§5.2) is not needed for this.
-2. **The full run: 8 slots if group mode has passed its test, else 1.** Group mode
-   (§5.2) is ~1 day of code on top of chenw's launcher and needs no GPU to write, so it
-   is built while the B300s are still on regen; its acceptance test (§5.2.4) runs on
-   the verifier right after the LR pilot. Then:
-   - *test passed:* one B200 node, 8 single-GPU trainers (1 rank × accum 8 each,
-     131k tokens/step), the candidate (§2a, pilot LR) as **leader** and 7 contrasts
-     as followers — Kimi shape scratch, Kimi warm start, block 12, the pilot's
-     second-best LR, `ce 0.1 + tv 0.9`, γ 12, anchors 1024. One verifier pass feeds
-     all 8; the contrasts cost nothing on the verifier. If the candidate ever looks
-     wrong it restarts standalone from its own checkpoint.
-   - *test failed or not ready:* the candidate alone, ravir's 8-rank launch
-     unchanged; the contrasts follow on the second B300 verifier (layout B) when
-     it is free.
+2. **The full run: candidate alone on one node, 8-slot sweep on another (decided
+   2026-11-06).** Two independent streams against the verifier:
+   - *node A — the candidate:* §2a recipe at the pilot LR, ravir's 8-rank launch
+     unchanged, nothing shared with anything. This is the SOTA run.
+   - *node B — the sweep:* 8 single-GPU trainers in group mode (§5.2; 1 rank ×
+     accum 8 each, 131k tokens/step): a copy of the candidate config as leader
+     (a free standalone-vs-group parity check against node A) plus 7 contrasts —
+     Kimi shape scratch, Kimi warm start, block 12, the pilot's second-best LR,
+     `ce 0.1 + tv 0.9`, γ 12, anchors 1024. Group mode is built now (no GPU
+     needed) and passes its acceptance test (§5.2.4) before node B starts; if it
+     is not ready, node A does not wait.
+   - *verifier budget:* the two streams have different row orders, so the verifier
+     computes every row twice. With two B300s (after regen) each node gets its own
+     verifier and there is no interaction (layout B). With one B300, the LR pilot
+     (three streams) shows whether `Waiting:` stays 0; if the verifier saturates,
+     node A starts first and node B waits for the second B300.
+   - *why not one stream:* node A's 8 ranks consume rows in a partition that
+     single-GPU followers cannot reproduce, so cross-node followers would stall.
    Evaluation budget: half-epoch checks are the in-trainer val accept_len for all
-   8; the short set runs only at epoch ends for the top 3 (≈1 h each on a B300).
+   9; the short set runs at epoch ends for the candidate and the top 2 of the sweep
+   (≈1 h each on a B300).
 3. **Evaluate every half epoch** on the short set (`glm53-short-v033-b300.yaml`,
    greedy + sampled, README §9.w). Stop a run when it plateaus. Bar: beat the incoai
    release (short set greedy 5.03 / 3.66 / 4.27, sampled 4.44 / 2.73 / 3.98) and
