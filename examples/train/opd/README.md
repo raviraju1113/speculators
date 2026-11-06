@@ -252,7 +252,7 @@ distribution is far from the target's. Arm d closes the paper-exact
 question: no setting of λ, γ, pool, replay or seed epoch turned OPD
 positive on benchmarks.
 
-*Arm e / f (launched 2026-11-05 09:50): does OPD work on an under-trained
+*Arm e / f (launched 2026-11-05 20:30): does OPD work on an under-trained
 seed?* The one hypothesis track A did not test. Arm d's "ep28" was not an
 early checkpoint: the block-12 run is a warm start from conv ep25, so ep28 is a
 draft that had already converged over 25 block-8 epochs, plus 3 epochs of
