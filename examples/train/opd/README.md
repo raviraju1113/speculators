@@ -304,6 +304,18 @@ Read-out: e9 > f9 on the benchmarks → OPD needs an un-converged seed and the
 GLM plan becomes "stop SFT early, then OPD"; e9 ≤ f9 → OPD is off the table
 for any seed.
 
+*Status 2026-11-06 09:30.* Arm e finished in 27 min (round of 16k rollouts
+at k=8: pool accept_rate 0.4913, 3.93 accepted/step; the seed's own
+rollout). **Benchmarks k=8 (A100): seed ckpt 8 5.47 / 3.92 / 4.57 → e9
+5.60 / 3.93 / 4.63 (+2.4% / 0 / +1.2%)** — the first OPD arm that does not
+lose on benchmarks, with a small gain on AIME and LCB. Whether that is OPD
+or just annealing a high-LR checkpoint is exactly what arm f decides. Arm f
+(15958487) died in the dataset build: the rollout-reuse path in
+`run_rounds.sh` skipped the block that activates the serving env, so
+`rollouts_to_dataset.py` had no `datasets` module and the pipe hid the
+failure (fixed, commit 82b3a50). Resubmitted as job 16091568 on the same
+reused rollouts; `f9_k8` eval follows automatically.
+
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and
 nothing we measured was on that class; a Gemma run is the cheap dress
