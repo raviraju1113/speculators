@@ -302,7 +302,7 @@ cosine over 375 steps, λ_rej 0.05 + OOV mask, no replay.
   results `e9_k8`, `f9_k8` in `results/gemma4-31b-dspark-opd-v3`.
 Read-out: e9 > f9 on the benchmarks → OPD needs an un-converged seed and the
 GLM plan becomes "stop SFT early, then OPD"; e9 ≤ f9 → OPD is off the table
-for any seed.
+for any seed. **Outcome: e9 < f9 (below).**
 
 *Status 2026-11-06 09:30.* Arm e finished in 27 min (round of 16k rollouts
 at k=8: pool accept_rate 0.4913, 3.93 accepted/step; the seed's own
@@ -315,6 +315,31 @@ or just annealing a high-LR checkpoint is exactly what arm f decides. Arm f
 `rollouts_to_dataset.py` had no `datasets` module and the pipe hid the
 failure (fixed, commit 82b3a50). Resubmitted as job 16091747 (every B200 outside the excluded set
 was busy, so on the idle H200 sc3-c127) on the same reused rollouts; `f9_k8` eval follows automatically.
+
+**Result (2026-11-06 13:37; A100 evals, k=8, accept_len AIME / GPQA / LCB):**
+
+| checkpoint | AIME | GPQA | LCB | vs ckpt 8 |
+|---|---|---|---|---|
+| seed: conv ckpt 8 | 5.47 | 3.92 | 4.57 | |
+| e9: one OPD round (λ 0.05) | 5.60 | 3.93 | 4.63 | +2.4% / +0.3% / +1.2% |
+| **f9: one ordinary-loss round, same rollouts** | **5.67** | **3.96** | **4.67** | **+3.6% / +0.9% / +2.1%** |
+
+Both arms improve the under-trained seed, the control improves it more.
+The whole of arm e's gain is the low-LR anneal of a high-LR checkpoint
+plus one pass of on-policy text; the acceptance-aware objective subtracts
+from that (e9 is 1.2% / 0.6% / 0.8% below f9), the same sign and roughly
+the same size as the OPD-minus-SFT gap on the converged seed after one
+round (b34 vs c34: −2.8% / −1.1% / −0.7%). Seed convergence does not
+change the picture: on every seed we have, plain SFT on the same rollouts
+≥ OPD on the benchmarks.
+
+**Verdict (2026-11-06): Draft-OPD is closed for this draft at any seed
+epoch.** Across v2, track A (a/b/b1/c), arm d and arm e/f — three seeds
+(blk12 ep33, blk12 ep28, conv ep8), λ_rej 0.05 and 1, both decays, two
+pools, with and without replay — no OPD arm beat the ordinary-loss control
+on the benchmarks, and most lost outright. For GLM-5.3: do not budget an
+OPD stage. The one thing on-policy rollouts did buy is a mild gain on an
+*un-annealed* checkpoint (arm f), which a proper LR anneal gives for free.
 
 **Track B — a full DFlash2 draft on Gemma (if B200s are spare).** The GLM
 draft will be the DFlash2 class (full vocab, selector, DFlash loss) and

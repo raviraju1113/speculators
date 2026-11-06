@@ -525,11 +525,14 @@ python scripts/evaluate/experiments/plot_lcr_bins.py               # charts resu
   round. Arm d (paper's exact loss, λ_rej 1 with γ^(k−1) decay, on the
   less-converged blk12 ckpt 28): pool −13% in one round, benchmarks
   −12 / −8 / −8% vs ckpt 28 — the worst arm. Full table and reasoning:
-  `opd/README.md` §6. One hypothesis left untested there — that OPD needs an
-  un-converged seed like the paper's 6-of-10-epoch one — is running as arm
-  e/f (2026-11-05, jobs 15955532/…): one OPD round vs one ordinary-loss round
-  on conv **checkpoint 8** (val 4.23, 89% of ep25, curve still rising), k=8;
-  why that checkpoint: `opd/README.md` §6. Track B (Gemma DFlash2
+  `opd/README.md` §6. The last hypothesis — that OPD needs an un-converged
+  seed like the paper's 6-of-10-epoch one — was tested 2026-11-05/06 as arm
+  e/f on conv **checkpoint 8** (val 4.23, 89% of ep25, curve still rising),
+  one OPD round vs one ordinary-loss round on the same rollouts, k=8: seed
+  5.47 / 3.92 / 4.57 → OPD 5.60 / 3.93 / 4.63, plain SFT **5.67 / 3.96 /
+  4.67**. Both gain (it is the anneal of a high-LR checkpoint); the control
+  gains more. **Final verdict 2026-11-06: Draft-OPD closed at any seed
+  epoch; no OPD stage in the GLM plan.** Track B (Gemma DFlash2
   rehearsal) is next. Arm b's first
   attempt ran at the paper's λ_rej=1 by accident and lost 0.046 pool
   acceptance in one round (kept as arm b1, eval running); the preset now
