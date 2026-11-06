@@ -18,10 +18,12 @@ from transformers.models.qwen3.modeling_qwen3 import (
 )
 
 from speculators.models import base_components
+from speculators.models.utils import _DEEPSEEK_V3_MIN_TRANSFORMERS
 
 __all__ = ["MTPLayerMixin", "mtp_model_classes", "resolve_model_type"]
 
 _MIN_TRANSFORMERS_VERSION: dict[str, str] = {
+    "deepseek_v3": _DEEPSEEK_V3_MIN_TRANSFORMERS,
     "qwen3_next": "4.57.0",
     "qwen3_5_text": "5.2.0",
     "qwen3_5_moe_text": "5.2.0",
@@ -155,6 +157,26 @@ mtp_model_classes: dict[str, base_components.ModelComponents] = {
     ),
 }
 
+
+if "deepseek_v3" in base_components.model_classes:
+    from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
+        DeepseekV3DecoderLayer,
+        DeepseekV3RMSNorm,
+    )
+
+    # Used for MLA verifiers, including Kimi K3 (kimi_linear) after
+    # translate_verifier_config_for_draft maps its config to a dense
+    # single-layer DeepseekV3Config. The MTP layer is a plain full-attention
+    # MLA layer, so hybrid last-full-attention-index selection is not needed
+    # (the translated draft config has exactly one layer).
+    DeepseekV3MTPLayer = _create_mtp_layer_class(
+        "DeepseekV3MTPLayer",
+        DeepseekV3DecoderLayer,
+        DeepseekV3RMSNorm,
+    )
+    mtp_model_classes["deepseek_v3"] = base_components.override_components(
+        "deepseek_v3", first_layer_class=DeepseekV3MTPLayer
+    )
 
 if "qwen3_next" in base_components.model_classes:
     from transformers.models.qwen3_next.modeling_qwen3_next import (

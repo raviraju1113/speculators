@@ -8,7 +8,7 @@
 #   bash examples/train/eagle3_qwen3_8b_sharegpt_online_5k.sh
 #
 # For a detailed walkthrough, see 
-# https://docs.vllm.ai/projects/speculators/en/latest/user_guide/tutorials/train_eagle3_online/
+# https://docs.vllm.ai/projects/speculators/en/latest/user_guide/tutorials/train/
 
 ### Example E2E run for Qwen3-8B on 5k samples from ShareGPT ###
 
@@ -63,7 +63,7 @@ python scripts/prepare_data.py \
 # Step 2: Launch vLLM server in the background
 echo "=== Step 2: Launching vLLM server ==="
 CUDA_VISIBLE_DEVICES="$VLLM_GPUS" python scripts/launch_vllm.py "$MODEL" \
-    -- --data-parallel-size 2 --port "$VLLM_PORT" &
+    -- --data-parallel-size 2 --port "$VLLM_PORT" --gpu-memory-utilization 0.85 &
 VLLM_PID=$!
 
 # Ensure vLLM is cleaned up on exit

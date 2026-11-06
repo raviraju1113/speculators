@@ -4,9 +4,24 @@ This module contains attention functions and utilities shared across different
 speculator architectures (EAGLE3, DFlash, etc.) to avoid code duplication.
 """
 
+from collections.abc import Callable
+
 import torch
-from torch.nn.attention.flex_attention import BlockMask, flex_attention
+from torch.nn.attention.flex_attention import (
+    BlockMask,
+    flex_attention,
+)
+from torch.nn.attention.flex_attention import (
+    create_mask as _create_mask,
+)
 from transformers.modeling_utils import AttentionInterface
+
+# Flex attention must run compiled: executed eagerly it falls back to a dense
+# SDPA path that materialises the full [H, Q, KV] mask (12+ GiB at DFlash sizes)
+# and OOMs in backward. Model forwards are usually compiled as a whole, but a
+# graph break before the call (e.g. a mask built mid-layer-loop) would otherwise
+# leave this call eager, so compile it on its own as PyTorch recommends.
+_compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
 
 
 def flex_attention_forward(
@@ -44,7 +59,7 @@ def flex_attention_forward(
     key = key.contiguous()
     value = value.contiguous()
 
-    flex_attention_output = flex_attention(
+    flex_attention_output = _compiled_flex_attention(
         query,
         key,
         value,
@@ -56,6 +71,28 @@ def flex_attention_forward(
     attention_output: torch.Tensor = flex_attention_output
     attention_output = attention_output.transpose(1, 2).contiguous()
     return attention_output, None
+
+
+def create_float_mask(
+    mask_mod: Callable,
+    B: int | None = None,  # noqa: N803
+    H: int | None = None,  # noqa: N803
+    Q_LEN: int = 0,  # noqa: N803
+    KV_LEN: int = 0,  # noqa: N803
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> torch.Tensor:
+    """Wrap ``create_mask`` and convert the boolean result to a float mask.
+
+    Non-flex attention backends (eager, SDPA) add the mask numerically
+    (``scores + mask``) and need 0 for attended and ``-inf`` for masked.
+    """
+    bool_mask = _create_mask(
+        mask_mod, B=B, H=H, Q_LEN=Q_LEN, KV_LEN=KV_LEN, device=device
+    )
+    float_mask = torch.zeros(bool_mask.shape, dtype=dtype, device=device)
+    float_mask.masked_fill_(~bool_mask, float("-inf"))
+    return float_mask
 
 
 def block_mask_to_dense_attention_mask(

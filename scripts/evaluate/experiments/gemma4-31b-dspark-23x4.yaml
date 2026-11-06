@@ -1,0 +1,63 @@
+# accum23x4 run (B200 box, lr 6e-4, accum 23 x 4 ranks), checkpoint 3 =
+# epoch3_step3664 (mid-epoch save; NOT validated, so not necessarily best).
+# No baseline experiment here -- acceptance metrics (accept_length, accept_rate,
+# decode_tok_s) are measured per-experiment and stand on their own. NOTE the
+# runner's printed "speedup comparison" uses the FIRST experiment as denominator
+# -- that column is k=3-vs-k=7 here, meaningless; read accept_length/decode_tok_s.
+#
+# This box: 8x B200-183GB, driver 595 -- run inside the container image
+# localhost/mengmengj-vllm-official (its vllm carries the algos.py patch that
+# derives dspark_bonus_anchor from the checkpoint's sample_from_anchor; this
+# checkpoint is False-trained, so it serves identically to upstream anyway).
+#
+# Gemma-4 ships its chat template as a separate chat_template.jinja rather than in
+# tokenizer_config.json, so vLLM needs it passed explicitly or chat completions 400.
+#
+# Run (inside the container, venv active):
+#   cd scripts/evaluate/experiments
+#   python run_experiments.py --config gemma4-31b-dspark-23x4.yaml
+
+engine: vllm
+backbone: /sms-scratch/checkpoints/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8400
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.92
+  max_model_len: 4096
+  health_timeout: 1800
+  extra_args:
+    - "--enforce-eager"
+    - "--no-enable-prefix-caching"
+    - "--chat-template"
+    - "/sms-scratch/checkpoints/gemma-4-31B-it/chat_template.jinja"
+
+eval:
+  backend: vllm
+  benchmarks: [aime, gpqa, livecodebench]
+  num_samples: 30          # aime.jsonl has 30 rows; gpqa/lcb are sampled to this
+  max_tokens: 2048
+  temperature: 0.0         # greedy -> canonical, reproducible acceptance
+
+output_dir: ./results/gemma4-31b-23x4
+
+experiments:
+  # k=7 matches the checkpoint's own proposal_methods[0].speculative_tokens: 7 --
+  # this run trained with sample_from_anchor=FALSE, which ships block_size-1 = 7
+  # (a True-trained checkpoint would ship 8). Verified in checkpoints/3/config.json.
+  # `method: dspark` is required -- vLLM will not infer it from the config.
+  - name: 23x4_ep3_k7
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/3
+    num_speculative_tokens: 7
+    speculative_config:
+      method: dspark
+
+  # k=3, for apples-to-apples with the k=3 EAGLE-3 numbers Ravi reported
+  # (accept_len 2.4-2.8, speedup 1.47-1.8x) and Google's MTP assistant (~3.6).
+  - name: 23x4_ep3_k3
+    draft: /sms-scratch/mengmengj/output/gemma4_31b_dspark_accum23x4_lr6e4/checkpoints/3
+    num_speculative_tokens: 3
+    speculative_config:
+      method: dspark

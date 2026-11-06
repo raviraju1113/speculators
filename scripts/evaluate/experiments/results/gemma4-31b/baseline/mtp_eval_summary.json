@@ -1,0 +1,86 @@
+[
+  {
+    "benchmark": "aime",
+    "n": 30,
+    "num_steps": null,
+    "total_completion_tokens": 46143,
+    "decode_tok_s": 54.4,
+    "e2e_tok_s": 54.3,
+    "mean_ttft_s": 0.078,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "gpqa",
+    "n": 50,
+    "num_steps": null,
+    "total_completion_tokens": 38590,
+    "decode_tok_s": 54.8,
+    "e2e_tok_s": 54.5,
+    "mean_ttft_s": 0.104,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "livecodebench",
+    "n": 50,
+    "num_steps": null,
+    "total_completion_tokens": 38065,
+    "decode_tok_s": 54.4,
+    "e2e_tok_s": 53.9,
+    "mean_ttft_s": 0.143,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "gsm8k",
+    "n": 50,
+    "num_steps": null,
+    "total_completion_tokens": 15216,
+    "decode_tok_s": 55.6,
+    "e2e_tok_s": 55.1,
+    "mean_ttft_s": 0.063,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "math500",
+    "n": 50,
+    "num_steps": null,
+    "total_completion_tokens": 32704,
+    "decode_tok_s": 55.2,
+    "e2e_tok_s": 54.9,
+    "mean_ttft_s": 0.07,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "humaneval",
+    "n": 50,
+    "num_steps": null,
+    "total_completion_tokens": 14160,
+    "decode_tok_s": 55.4,
+    "e2e_tok_s": 54.7,
+    "mean_ttft_s": 0.079,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "mbpp",
+    "n": 50,
+    "num_steps": null,
+    "total_completion_tokens": 32915,
+    "decode_tok_s": 55.4,
+    "e2e_tok_s": 55.2,
+    "mean_ttft_s": 0.053,
+    "accept_length": null,
+    "accept_rate": null,
+    "metric_samples": null
+  }
+]

@@ -1,6 +1,6 @@
 import bisect
+import io
 import json
-import random
 import re
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -8,9 +8,12 @@ from pathlib import Path
 from re import Pattern
 from typing import cast
 
+import pyarrow as pa
+import pyarrow.json as paj
 import torch
 from datasets import Dataset as HFDataset
 from datasets import concatenate_datasets, load_dataset
+from datasets.exceptions import DatasetGenerationError
 from packaging.version import Version
 from transformers import (
     AutoProcessor,
@@ -34,6 +37,7 @@ __all__ = [
 
 log = PipelineLogger(__name__)
 
+_warned_roles: set[str] = set()
 
 ProcessorLike = PreTrainedTokenizerBase | ProcessorMixin
 
@@ -76,22 +80,17 @@ def _visualize_sample(preprocessed: HFDataset, processor: ProcessorLike, idx: in
 
 def _normalize_conversation(
     conv: list[dict],
-    turn_dropout: bool = False,
 ) -> list[dict]:
     """Normalize conversation to standard format with role/content keys.
 
     Args:
         conv: Raw conversation turns
-        turn_dropout: If True, randomly keeps first N consecutive turns (1 to len(conv))
 
     Returns:
-        Normalized conversation with optional turn dropout applied
+        Normalized conversation
     """
-    # Randomly pick how many consecutive turns to keep from the start
-    num_turns_to_keep = random.randint(1, len(conv)) if turn_dropout else len(conv)
-
     normalized = []
-    for i, turn in enumerate(conv):
+    for turn in conv:
         role = turn.get("from", turn.get("role", ""))
         content = turn.get("value") or turn.get("content") or ""
 
@@ -105,8 +104,11 @@ def _normalize_conversation(
         elif role == "tool":
             role = "tool"
         else:
-            log.warning(f"Unknown role '{role}', skipping turn")
-            continue
+            # Treat unknown roles (e.g. model names in on-policy data) as assistant.
+            if role not in _warned_roles:
+                _warned_roles.add(role)
+                log.warning(f"Mapping unknown role '{role}' → 'assistant'")
+            role = "assistant"
 
         # Build normalized turn with role and content
         normalized_turn = {"role": role, "content": content}
@@ -123,11 +125,6 @@ def _normalize_conversation(
             normalized_turn["reasoning_content"] = thinking
 
         normalized.append(normalized_turn)
-
-        # Stop if we've reached the truncation point
-        if i + 1 >= num_turns_to_keep and role == "assistant":
-            # Only break after an assistant turn
-            break
 
     return normalized
 
@@ -507,15 +504,50 @@ def _parse_conv_tools(conv_tools: object, idx: int) -> list | None:
         return None
 
 
+def _passthrough_pretokenized(
+    examples: dict, max_length: int, minimum_valid_tokens: int | None = None
+) -> dict[str, list]:
+    """Carry pre-tokenized ``(input_ids, loss_mask)`` rows through, truncated only.
+
+    On-policy regeneration already applied the boundary as the mask, so these rows
+    need no chat-template rendering or regex span detection.
+    """
+    results: dict[str, list] = {"input_ids": [], "loss_mask": [], "seq_len": []}
+    for ids, mask in zip(examples["input_ids"], examples["loss_mask"], strict=True):
+        # `strict=True` only pairs the columns; a per-row skew would survive it and
+        # the collator packs each key independently, silently shifting the mask
+        # against the ids for every sample packed after this one.
+        if len(ids) != len(mask):
+            raise ValueError(
+                f"Pre-tokenized row shape mismatch: "
+                f"input_ids={len(ids)}, loss_mask={len(mask)}"
+            )
+        trimmed_ids = ids[:max_length]
+        trimmed_mask = mask[:max_length]
+        if (
+            minimum_valid_tokens is not None
+            and sum(trimmed_mask) < minimum_valid_tokens
+        ):
+            continue
+        results["input_ids"].append(torch.tensor(trimmed_ids, dtype=torch.long))
+        results["loss_mask"].append(torch.tensor(trimmed_mask, dtype=torch.long))
+        results["seq_len"].append(len(trimmed_ids))
+    return results
+
+
 def _preprocess_batch(
     examples: dict,
     processor: ProcessorLike,
     max_length: int,
     assistant_pattern: str | Pattern[str] | None,
-    turn_dropout: bool = False,
     minimum_valid_tokens: int | None = None,
 ) -> dict[str, list]:
     """Process a batch of conversations into tokenized format with loss masks."""
+
+    # On-policy regeneration rows are already masked (boundary); pass them through
+    # instead of re-tokenizing and re-masking.
+    if "input_ids" in examples and "loss_mask" in examples:
+        return _passthrough_pretokenized(examples, max_length, minimum_valid_tokens)
 
     results: dict[str, list] = {"input_ids": [], "loss_mask": [], "seq_len": []}
     conversations: list[dict] = examples.get("conversations", [])
@@ -542,8 +574,8 @@ def _preprocess_batch(
         if not conv or not isinstance(conv, list):
             continue
 
-        # Normalize to standard format with optional turn dropout
-        normalized_conv = _normalize_conversation(conv, turn_dropout)
+        # Normalize to standard format
+        normalized_conv = _normalize_conversation(conv)
         if not normalized_conv:
             continue
 
@@ -558,10 +590,14 @@ def _preprocess_batch(
                 tools=parsed_tools,
                 conv_idx=idx,
             )
-        except (TypeError, ValueError, KeyError, AttributeError, RuntimeError) as e:
+        # Templates reject rows they cannot render with arbitrary types -- Mistral
+        # and Gemma raise jinja2's TemplateError, which subclasses Exception
+        # directly. One unrenderable row must not kill the run.
+        except Exception as e:
             log.error(
                 f"Failed to process conversation {idx} "
-                f"(assistant_pattern={assistant_pattern is not None}): {e}"
+                f"(assistant_pattern={assistant_pattern is not None}): "
+                f"{type(e).__name__}: {e}"
             )
             continue
 
@@ -569,6 +605,11 @@ def _preprocess_batch(
         assert len(input_ids) == len(loss_mask), (
             f"Shape mismatch: input_ids={len(input_ids)}, loss_mask={len(loss_mask)}"
         )
+
+        # Bound both to max_length: a turn running past the window keeps only its
+        # in-window tokens, and input_ids/loss_mask stay aligned and bounded.
+        input_ids = input_ids[:max_length]
+        loss_mask = loss_mask[:max_length]
 
         # Filtering samples out with too few valid tokens
         if minimum_valid_tokens is not None:
@@ -593,7 +634,6 @@ def build_eagle3_dataset(
     max_length: int = 2048,
     num_proc: int = 8,
     assistant_pattern: str | Pattern[str] | None = None,
-    turn_dropout: bool = False,
     minimum_valid_tokens: int | None = None,
 ) -> HFDataset:
     """Build EAGLE3 dataset by tokenizing conversations and creating loss masks.
@@ -608,12 +648,21 @@ def build_eagle3_dataset(
         assistant_pattern: Optional custom regex pattern for matching assistant
                           responses. If None, pattern will be auto-detected from
                           chat template.
-        turn_dropout: If True, randomly keeps first N consecutive turns per
-                     conversation
         minimum_valid_tokens: Number of tokens to consider for a valid sample
     """
+    original_cols = dataset.column_names
+    # These rows carry the generation boundary as their mask, so _preprocess_batch
+    # passes them through: no chat template, no span detection.
+    pretokenized = {"input_ids", "loss_mask"} <= set(original_cols)
+
+    if pretokenized:
+        log.info("Pre-tokenized rows: using their loss mask, skipping chat template")
+        if assistant_pattern is not None:
+            log.warning(
+                "assistant_pattern does not apply to pre-tokenized rows; ignoring"
+            )
     # Detect and use provided assistant message pattern
-    if assistant_pattern is not None:
+    elif assistant_pattern is not None:
         log.info(f"Using custom assistant pattern: {str(assistant_pattern)[:80]}...")
     elif _supports_assistant_mask(processor):
         assistant_pattern = None  # Signal to use HF mask in _preprocess_batch
@@ -621,8 +670,6 @@ def build_eagle3_dataset(
     else:
         assistant_pattern = _detect_assistant_pattern(processor)
         log.info(f"Detected assistant pattern: {str(assistant_pattern)[:80]}...")
-
-    original_cols = dataset.column_names
 
     # Avoid CPU contention for MM processing:
     # https://github.com/vllm-project/vllm/pull/31879
@@ -637,7 +684,6 @@ def build_eagle3_dataset(
                 processor,
                 max_length,
                 assistant_pattern,
-                turn_dropout,
                 minimum_valid_tokens,
             ),
             batched=True,
@@ -651,26 +697,144 @@ def build_eagle3_dataset(
     return dataset
 
 
+# Top-level columns consumed downstream by _preprocess_batch. Everything else in a
+# local JSON/JSONL record is dropped by build_eagle3_dataset anyway.
+_JSON_KEEP_COLUMNS = ("conversations", "tools")
+
+
+def _sniff_json_schema(
+    path: str,
+    keep_columns: tuple[str, ...],
+    sample_bytes: int = 8 << 20,
+    num_samples: int = 3,
+) -> pa.Schema:
+    """Infer an Arrow schema for `keep_columns` by sampling several file offsets.
+
+    Samples are taken from the start, middle and end of the file so that records
+    whose shape only appears in one region (e.g. appended data carrying extra
+    fields) still contribute to the inferred types.
+    """
+    file_size = Path(path).stat().st_size
+    offsets = [
+        (file_size // num_samples) * i for i in range(num_samples) if file_size > 0
+    ]
+
+    schemas: list[pa.Schema] = []
+    with Path(path).open("rb") as f:
+        for offset in offsets:
+            f.seek(offset)
+            if offset:
+                f.readline()  # discard the partial line we landed in
+            block = f.read(sample_bytes)
+            newline = block.rfind(b"\n")
+            if newline == -1:
+                continue
+            try:
+                table = paj.read_json(io.BytesIO(block[: newline + 1]))
+            except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+                continue
+            fields = [fld for fld in table.schema if fld.name in keep_columns]
+            if fields:
+                schemas.append(pa.schema(fields))
+
+    if not schemas:
+        raise ValueError(
+            f"Could not infer a schema for columns {list(keep_columns)} from {path}. "
+            "Expected JSON Lines records containing a 'conversations' field."
+        )
+
+    return pa.unify_schemas(schemas, promote_options="permissive")
+
+
+def _load_local_json_dataset(train_data_path: str) -> HFDataset:
+    """Load a local JSON/JSONL dataset, tolerating per-record schema drift.
+
+    The HuggingFace JSON loader infers one Arrow schema from the first ~10MB block
+    and casts every later block to it, so a file whose records do not all carry the
+    same top-level fields (for example data concatenated from several generation
+    runs, where only some records have a 'metadata' field) fails to load. On that
+    failure, re-read the file with an explicit schema limited to the columns we
+    actually use, ignoring any unexpected fields.
+    """
+    try:
+        return load_dataset("json", data_files=train_data_path, split="train")
+    except DatasetGenerationError:
+        log.warning(
+            f"Inconsistent record schema in {train_data_path}; reloading with only "
+            f"{list(_JSON_KEEP_COLUMNS)} and ignoring extra fields."
+        )
+
+    schema = _sniff_json_schema(train_data_path, _JSON_KEEP_COLUMNS)
+    table = paj.read_json(
+        train_data_path,
+        parse_options=paj.ParseOptions(
+            explicit_schema=schema,
+            unexpected_field_behavior="ignore",
+        ),
+    )
+    log.info(f"Loaded {table.num_rows} records with columns {table.schema.names}")
+
+    return HFDataset(table)
+
+
 def load_raw_dataset(
     train_data_path: str,
 ) -> tuple[HFDataset, Callable[[dict], dict] | None]:
-    """Load raw dataset from local file or HuggingFace."""
+    """Load a raw dataset from one of several source types.
+
+    Resolution order:
+        1. Local ``.json``/``.jsonl`` file.
+        2. Local directory: recursively load all ``*.json``/``*.jsonl`` files
+           as a single dataset.
+        3. Named preset from ``DATASET_CONFIGS``.
+        4. ``hf:<id>[:<subset>:<split>]`` for an arbitrary HuggingFace dataset.
+
+    Args:
+        train_data_path: File path, directory path, preset name, or ``hf:`` spec.
+
+    Returns:
+        Tuple of (raw_dataset, normalize_fn). normalize_fn is None for sources
+        already in conversations format.
+
+    Raises:
+        ValueError: If the source cannot be resolved or a local directory
+            contains no ``.json``/``.jsonl`` files.
+    """
+    # 1. Local file
     if train_data_path.endswith((".jsonl", ".json")):
-        return load_dataset("json", data_files=train_data_path, split="train"), None
+        return _load_local_json_dataset(train_data_path), None
 
-    if train_data_path not in DATASET_CONFIGS:
-        raise ValueError(
-            f"Unsupported dataset: {train_data_path}. "
-            f"Supported: local .json/.jsonl files or {list(DATASET_CONFIGS.keys())}"
+    # 2. Local directory
+    path = Path(train_data_path)
+    if path.is_dir():
+        data_files = sorted(
+            str(p) for p in (*path.rglob("*.json"), *path.rglob("*.jsonl"))
         )
+        if not data_files:
+            raise ValueError(
+                f"No .json/.jsonl files found in directory: {train_data_path}"
+            )
+        return load_dataset("json", data_files=data_files, split="train"), None
 
-    config = DATASET_CONFIGS[train_data_path]
-    raw_dataset = load_dataset(config.hf_path, name=config.subset, split=config.split)
+    # 3. Named preset
+    if train_data_path in DATASET_CONFIGS:
+        config = DATASET_CONFIGS[train_data_path]
+        raw_dataset = load_dataset(
+            config.hf_path, name=config.subset, split=config.split
+        )
+        if config.filter_fn is not None:
+            raw_dataset = raw_dataset.filter(config.filter_fn)
+        return raw_dataset, config.normalize_fn
 
-    if config.filter_fn is not None:
-        raw_dataset = raw_dataset.filter(config.filter_fn)
+    # 4. Arbitrary HuggingFace dataset
+    if train_data_path.startswith("hf:"):
+        return _load_hf_dataset(train_data_path)
 
-    return raw_dataset, config.normalize_fn
+    raise ValueError(
+        f"Unsupported dataset: {train_data_path}. Supported: local .json/.jsonl "
+        f"file, local directory of .json/.jsonl files, hf:<id>[:<subset>:<split>], "
+        f"or a preset {list(DATASET_CONFIGS.keys())}."
+    )
 
 
 def get_tokenizer(processor: ProcessorLike):
@@ -706,8 +870,8 @@ def load_and_preprocess_dataset(
     max_samples: int | None = None,
     token_freq_path: Path | str = "./token_freq.pt",  # noqa: S107
     assistant_pattern: str | None = None,
-    turn_dropout: bool = False,
     minimum_valid_tokens: int | None = None,
+    allow_empty_output: bool = False,
     trust_remote_code: bool = False,
 ) -> tuple[HFDataset, ProcessorLike]:
     """Load, tokenize, and preprocess a dataset for EAGLE3 training.
@@ -727,9 +891,9 @@ def load_and_preprocess_dataset(
         assistant_pattern: Optional custom regex pattern for matching assistant
                           responses. If None, pattern will be auto-detected from
                           chat template.
-        turn_dropout: If True, randomly keeps first N consecutive turns per
-                     conversation
         minimum_valid_tokens: Number of tokens to consider for a valid sample
+        allow_empty_output: If True, allow returning an empty dataset instead of
+                          raising when no samples survive preprocessing.
         trust_remote_code: If True, allows executing code from HF Hub.
 
     Returns:
@@ -746,10 +910,20 @@ def load_and_preprocess_dataset(
     log.subsection("Loading processor")
     processor = load_processor(target_model_path, trust_remote_code=trust_remote_code)
 
-    if not hasattr(processor, "apply_chat_template") or processor.chat_template is None:
+    # Some trust-remote-code tokenizers (e.g. Kimi K3) render their chat template
+    # in Python: apply_chat_template works but the chat_template attribute is None.
+    # Those require an explicit --assistant-pattern since HF assistant-token masks
+    # and template-based marker auto-detection both need the template source.
+    if not hasattr(processor, "apply_chat_template"):
         raise ValueError(
             f"Processor for {target_model_path} does not support chat templates. "
             "Please use a model with a pre-configured chat template."
+        )
+    if getattr(processor, "chat_template", None) is None and assistant_pattern is None:
+        raise ValueError(
+            f"Processor for {target_model_path} has a Python-rendered chat template "
+            "(no template source available), so the assistant-response pattern "
+            "cannot be auto-detected. Pass --assistant-pattern explicitly."
         )
 
     processed_datasets = []
@@ -773,26 +947,32 @@ def load_and_preprocess_dataset(
 
         log.info(f"Loaded {len(raw_dataset)} samples")
 
-        if turn_dropout:
-            log.info("Turn dropout enabled: randomly keeping N consecutive turns")
-
         preprocessed_dataset = build_eagle3_dataset(
             dataset=raw_dataset,
             processor=processor,
             max_length=seq_length,
             num_proc=build_dataset_num_proc,
             assistant_pattern=assistant_pattern,
-            turn_dropout=turn_dropout,
             minimum_valid_tokens=minimum_valid_tokens,
         )
-        if minimum_valid_tokens is not None:
-            log.info(f"Kept {len(preprocessed_dataset)} samples after filtering")
+        dropped = len(raw_dataset) - len(preprocessed_dataset)
+        if dropped:
+            log.warning(
+                f"Dropped {dropped}/{len(raw_dataset)} samples during preprocessing"
+            )
         processed_datasets.append(preprocessed_dataset)
 
     combined_dataset = concatenate_datasets(processed_datasets)
-    combined_dataset.shuffle(seed=seed)
+    combined_dataset = combined_dataset.shuffle(seed=seed)
     if max_samples is not None and len(combined_dataset) > max_samples:
         combined_dataset = combined_dataset.select(range(max_samples))
+
+    if len(combined_dataset) == 0 and not allow_empty_output:
+        raise ValueError(
+            "No samples remain after preprocessing. Check the dataset schema, "
+            "assistant masking, and --minimum-valid-tokens. Pass "
+            "--allow-empty-output if an empty dataset is intentional."
+        )
 
     log.subsection("Computing token frequency distribution")
     save_token_frequency_distribution(
@@ -800,8 +980,11 @@ def load_and_preprocess_dataset(
         output_path=token_freq_path,
     )
 
-    log.subsection("Visualizing sample")
-    _visualize_sample(combined_dataset, processor, idx=0)
+    if len(combined_dataset) == 0:
+        log.warning("No samples remain after preprocessing; skipping visualization")
+    else:
+        log.subsection("Visualizing sample")
+        _visualize_sample(combined_dataset, processor, idx=0)
 
     log.section("Dataset preprocessing complete")
 

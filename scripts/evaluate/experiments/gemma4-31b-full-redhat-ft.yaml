@@ -1,0 +1,67 @@
+# Full-suite eval: gemma-4-31B-it + RedHat Eagle-3 fine-tune draft (k=3 and k=5).
+# Same benches / sample budget / GPUs / server settings as gemma4-31b-full.yaml
+# so numbers are comparable. Baseline is skipped — reuse
+# results/gemma4-31b-full/baseline/mtp_eval_summary.json for speedup.
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks:
+    - aime
+    - gpqa
+    - livecodebench
+    - gsm8k
+    - humaneval
+    - mbpp
+    - math500
+    - mt-bench
+    - aime26
+    - bfcl
+    - swe-bench-pro
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - speed-qa
+    - speed-writing
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-full-redhat-ft
+
+experiments:
+  # Path name has no "eagle3", so vLLM would infer method=draft_model and
+  # crash (Eagle3Llama forward missing hidden_states). Force eagle3.
+  - name: redhat_ft_k5
+    draft: /nvmedata/hf_checkpoints/gemma4_redhat_draft_ft_2026-07-26_06-06-06
+    num_speculative_tokens: 5
+    speculative_config:
+      method: eagle3
+
+  - name: redhat_ft_k3
+    draft: /nvmedata/hf_checkpoints/gemma4_redhat_draft_ft_2026-07-26_06-06-06
+    num_speculative_tokens: 3
+    speculative_config:
+      method: eagle3
