@@ -80,7 +80,7 @@ Anchor = ravir's mapping of the Kimi K3 recipe, changed only where our data diff
 | aux layers | `--target-layer-ids 5 19 33 47 61 75` (+78 appended by launch_vllm) | incoai's set (0-based 5…75, matching its config); 6 layers incl. a deep one |
 | block / anchors | `--block-size 8 --max-anchors 512` (k=7 at serve) | incoai; same k as the bar |
 | loss | `--loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4`, selector α 1, `--loss-implementation fused` | Kimi |
-| optimiser | `--optimizer adamw --lr 2e-4 --weight-decay 0 --scheduler-type cosine --scheduler-warmup-ratio 0.04`, grad clip 1.0 (hard-coded) | from-scratch LR; Kimi's 5e-5 produced 2.83 off-policy and its 2e-5 fine-tune saturated in half an epoch (ravir's results README), so 5e-5 becomes a contrast slot, not the default. Gemma drafts of this size trained stably at 3e-4–6e-4 |
+| optimiser | `--optimizer adamw --lr <from the §6 step-1b pilot; prior 2e-4> --weight-decay 0 --scheduler-type cosine --scheduler-warmup-ratio 0.04`, grad clip 1.0 (hard-coded) | from-scratch LR; Kimi's 5e-5 produced 2.83 off-policy and its 2e-5 fine-tune saturated in half an epoch (ravir's results README), so 5e-5 becomes a contrast slot, not the default. Gemma drafts of this size trained stably at 3e-4–6e-4 |
 | batch | 8 ranks × 1 packed 16k sequence = 131k tokens/step, no accumulation (~25 conversations/step at 5.3k tok/row vs ~120 on gemma782k) | same tokens/step as ravir |
 | epochs | **3** (≈7.5B tokens ≈ Kimi's 10 × 776M budget), cosine over 3 epochs, checkpoint every 0.5 epoch; extend if val accept_len is still rising at the end | token budget, not epoch count |
 | precision | bf16 hidden states, fp32 master weights, DDP | ravir |
@@ -384,6 +384,14 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    top-1 agreement, NaN scan). Needs a B300 free of regen (shard A ends ~Nov 9;
    c131 is on shard B2). Data: the full cleaned regen set, tokenized with
    `prepare_glm53_data.sh` (truncated-row policy decided once, README §9.x).
+1b. **LR pilot, three independent trainers, no new code (~1 day).** LR 5e-5 / 2e-4 /
+   6e-4 on the first 40k cleaned rows, same seed, warmup 4 % then constant (cosine
+   only in the full run), three trainers on one B200 node with 2 ranks × accum 4
+   each (131k tokens/step kept), ~1,500 optimiser steps each; the verifier serves
+   each row three times (~120k row-passes ≈ 9 h). Read val accept_len at steps
+   500/1000/1500 and take the highest LR that still improves without instability.
+   This is also the end-to-end check of layout A (B300 verifier, Mooncake, B200
+   trainers) before the long run. Group mode (§5.2) is not needed for this.
 2. **The recipe run, ravir's launch unchanged**: one B200 node, 8 ranks, §2a flags,
    from scratch on the on-policy data. This is the SOTA candidate and it never
    shares a process or a GPU with anything else.
