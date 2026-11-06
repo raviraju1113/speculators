@@ -1,0 +1,38 @@
+[
+  {
+    "benchmark": "aime",
+    "n": 30,
+    "num_steps": null,
+    "total_completion_tokens": 47829,
+    "decode_tok_s": 208.3,
+    "e2e_tok_s": 207.2,
+    "mean_ttft_s": 0.048,
+    "accept_length": 3.809,
+    "accept_rate": 0.4013,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "gpqa",
+    "n": 30,
+    "num_steps": null,
+    "total_completion_tokens": 29851,
+    "decode_tok_s": 177.5,
+    "e2e_tok_s": 176.3,
+    "mean_ttft_s": 0.044,
+    "accept_length": 3.228,
+    "accept_rate": 0.3183,
+    "metric_samples": null
+  },
+  {
+    "benchmark": "livecodebench",
+    "n": 30,
+    "num_steps": null,
+    "total_completion_tokens": 23950,
+    "decode_tok_s": 214.6,
+    "e2e_tok_s": 211.9,
+    "mean_ttft_s": 0.051,
+    "accept_length": 3.919,
+    "accept_rate": 0.4169,
+    "metric_samples": null
+  }
+]

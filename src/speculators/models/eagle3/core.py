@@ -6,17 +6,23 @@ from torch.nn.attention.flex_attention import create_block_mask, create_mask
 from transformers import AutoConfig, DynamicCache, PretrainedConfig
 
 from speculators.config import SpeculatorsConfig, VerifierConfig
+from speculators.losses import LossConfig, resolve_loss_config
 from speculators.model import DraftVocabMixin, SpeculatorModel
+from speculators.models.attention import create_float_mask
 from speculators.models.eagle3 import Eagle3SpeculatorConfig
 from speculators.models.eagle3.attention import (
     create_combined_mask_mod,
     extend_dense_mask_for_draft_tokens,
     extend_mask_for_draft_tokens,
 )
+from speculators.models.eagle3.mamba2 import seq_idx_from_document_ids
 from speculators.models.eagle3.metrics import compute_metrics
 from speculators.models.eagle3.model_definitions import model_classes
-from speculators.models.metrics import kl_div_loss, resolve_loss_fn
-from speculators.models.utils import conditional_torch_compile, resolve_target_layer_ids
+from speculators.models.utils import (
+    conditional_torch_compile,
+    resolve_norm_eps,
+    resolve_target_layer_ids,
+)
 from speculators.proposals.greedy import GreedyTokenProposalConfig
 
 
@@ -40,6 +46,12 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
     d2t: torch.Tensor | None
 
     def __init__(self, config: Eagle3SpeculatorConfig):
+        # Recurrent draft mixers (e.g. mamba2) take no attention mask; they isolate
+        # packed documents with seq_idx instead. Skip all mask machinery for them.
+        self.uses_attention = model_classes[
+            config.transformer_layer_config.model_type
+        ].uses_attention
+
         # Forcibly override config settings
         if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001
             config.transformer_layer_config._attn_implementation = (  # noqa: SLF001
@@ -49,6 +61,8 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         self._create_mask_fn = (
             create_block_mask
             if self._attn_impl == "simple_flex_attention"
+            else create_float_mask
+            if self._attn_impl == "eager"
             else create_mask
         )
         super().__init__(config=config)
@@ -61,7 +75,14 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         self.embed_tokens.weight.requires_grad = self.config.embed_requires_grad
 
         # FC LAYER
-        self.fc = torch.nn.Linear(3 * self.hidden_size, self.hidden_size, bias=False)
+        num_aux = (
+            len(config.eagle_aux_hidden_state_layer_ids)
+            if config.eagle_aux_hidden_state_layer_ids
+            else 3
+        )
+        self.fc = torch.nn.Linear(
+            num_aux * self.hidden_size, self.hidden_size, bias=False
+        )
 
         # DECODER LAYERS
         num_layers = tl_config.num_hidden_layers
@@ -79,28 +100,61 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         )
         self.layers = torch.nn.ModuleList(layers)
 
+        # Sliding window attention support
+        self.sliding_window = getattr(tl_config, "sliding_window", None)
+        # Mamba2Config.layer_types is ["mamba"] * n, which is not an attention type.
+        layer_types = (
+            (getattr(tl_config, "layer_types", None) or [])
+            if self.uses_attention
+            else []
+        )
+        self.sliding_window_indices = [
+            i
+            for i, layer_type in enumerate(layer_types)
+            if layer_type == "sliding_attention"
+        ]
+        self.uses_sliding_window_attn = bool(self.sliding_window_indices)
+        self.uses_full_attn = self.uses_attention and bool(
+            num_layers - len(self.sliding_window_indices)
+        )
+
         # ROTARY EMBEDDINGS
         # Create a modified config for the rotary embedding to use 2x the hidden size
-        modified_tl_config = copy.copy(config.transformer_layer_config)
-        modified_tl_config.hidden_size *= 2
-        self.rotary_emb = self._model_definitions.rotary_emb_class(modified_tl_config)
+        rotary_emb_class = self._model_definitions.rotary_emb_class
+        if rotary_emb_class is None:
+            # Recurrent mixers encode position through scan order.
+            self.rotary_emb = None
+        else:
+            modified_tl_config = copy.copy(config.transformer_layer_config)
+            modified_tl_config.hidden_size *= 2
+            self.rotary_emb = rotary_emb_class(modified_tl_config)
 
         # LAYER NORMS
         norm_class = self._model_definitions.norm_class
-        self.norm = norm_class(
-            self.hidden_size, eps=config.transformer_layer_config.rms_norm_eps
-        )
-        self.verifier_norm = norm_class(self.hidden_size, eps=tl_config.rms_norm_eps)
+        norm_eps = resolve_norm_eps(tl_config)
+        self.norm = norm_class(self.hidden_size, eps=norm_eps)
+        self.verifier_norm = norm_class(self.hidden_size, eps=norm_eps)
         self.verifier_norm.weight.requires_grad = False
 
-        # Normalize draft path input (gpt-oss only)
         if config.norm_before_fc:
             self.input_norm = self._model_definitions.norm_class(
-                3 * self.hidden_size,
-                eps=config.transformer_layer_config.rms_norm_eps,
+                num_aux * self.hidden_size,
+                eps=norm_eps,
             )
         else:
             self.input_norm = None
+
+        self.fc_norm: torch.nn.ModuleList | None = None
+        if config.fc_norm:
+            self.fc_norm = torch.nn.ModuleList(
+                [
+                    self._model_definitions.norm_class(
+                        self.hidden_size,
+                        eps=norm_eps,
+                    )
+                    for _ in range(num_aux)
+                ]
+            )
 
         self.post_init()
 
@@ -108,6 +162,21 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
     def target_layer_ids(self) -> list[int]:
         """Target layer IDs for auxiliary hidden states."""
         return self.config.eagle_aux_hidden_state_layer_ids
+
+    def _build_attn_mask(self, doc_ids_1d, seq_len, device, sliding_window=None):
+        mask_mod = create_combined_mask_mod(
+            doc_ids_1d,
+            seq_len,
+            sliding_window=sliding_window,
+        )
+        return self._create_mask_fn(
+            mask_mod,
+            B=None,
+            H=None,
+            Q_LEN=seq_len,
+            KV_LEN=seq_len,
+            device=device,
+        )
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
@@ -140,7 +209,7 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
     @conditional_torch_compile
     def forward(  # noqa: C901
         self,
-        hidden_states: torch.Tensor,  # shape: [1, total_seq_len, 3 * hidden_size]
+        hidden_states: torch.Tensor,  # shape: [1, total_seq_len, num_aux * hidden_size]
         input_ids: torch.Tensor,  # shape: [1, total_seq_len]
         document_ids: torch.Tensor,  # shape: [1, total_seq_len]
         loss_mask: torch.Tensor | None = None,  # shape: [1, total_seq_len]
@@ -149,11 +218,9 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         | None = None,  # shape: [1, total_seq_len, hidden_size]
         ttt_steps: int = 3,
         ttt_step_loss_decay: float = 1.0,
-        use_off_policy_tokens: bool = False,
-        loss_fn=kl_div_loss,
+        loss_config: LossConfig | None = None,
         **kwargs,
     ):
-        loss_fn = loss_fn or kl_div_loss
         device = hidden_states.device
         total_seq_len = hidden_states.shape[1]
 
@@ -163,23 +230,40 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
             ).unsqueeze(0)
             # shape: [1, total_seq_len]
 
-        past_key_values = DynamicCache(config=self.config.transformer_layer_config)
+        past_key_values = DynamicCache()
 
-        combined_mask_mod = create_combined_mask_mod(
-            document_ids.squeeze(0).to(device), total_seq_len
+        doc_ids_1d = document_ids.squeeze(0).to(device)
+        # Recurrent mixers isolate packed documents with seq_idx rather than a mask.
+        seq_idx = (
+            None
+            if self.uses_attention
+            else seq_idx_from_document_ids(document_ids.to(device))
         )
-        # Note: Attention mask is stored as a BlockMask object
-        attention_mask = self._create_mask_fn(
-            combined_mask_mod,
-            B=None,
-            H=None,
-            Q_LEN=total_seq_len,
-            KV_LEN=total_seq_len,
-            device=device,
+
+        full_attn_mask = (
+            self._build_attn_mask(doc_ids_1d, total_seq_len, device)
+            if self.uses_full_attn
+            else None
+        )
+        sliding_window_attn_mask = (
+            self._build_attn_mask(
+                doc_ids_1d,
+                total_seq_len,
+                device,
+                self.sliding_window,
+            )
+            if self.uses_sliding_window_attn
+            else None
         )
 
         if self.input_norm is not None:
             hidden_states = self.input_norm(hidden_states)
+        if self.fc_norm is not None:
+            chunks = hidden_states.chunk(len(self.fc_norm), dim=-1)
+            hidden_states = torch.cat(
+                [norm(chunk) for norm, chunk in zip(self.fc_norm, chunks, strict=True)],
+                dim=-1,
+            )
         hidden_states = self.fc(hidden_states)
         # shape: [1, total_seq_len, hidden_size]
 
@@ -220,20 +304,36 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
             hidden_states = torch.cat([input_embeds, hidden_states], dim=-1)
             # shape: [1, total_seq_len, 2 * hidden_size]
 
-            position_embeddings = self.rotary_emb(hidden_states, position_ids)
+            position_embeddings = (
+                self.rotary_emb(hidden_states, position_ids)
+                if self.rotary_emb is not None
+                else None
+            )
 
-            for decoder_layer in self.layers:
+            for layer_idx, decoder_layer in enumerate(self.layers):
+                layer_mask = (
+                    sliding_window_attn_mask
+                    if layer_idx in self.sliding_window_indices
+                    else full_attn_mask
+                )
+                layer_kwargs = dict(kwargs)
+                if seq_idx is not None:
+                    layer_kwargs["seq_idx"] = seq_idx
                 hidden_states = decoder_layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=layer_mask,
                     position_ids=position_ids,
                     past_key_values=past_key_values,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
-                    **kwargs,
+                    **layer_kwargs,
                 )
 
-            logits = self.lm_head(self.norm(hidden_states))
+            if self.config.norm_output:
+                hidden_states = self.norm(hidden_states)
+                logits = self.lm_head(hidden_states)
+            else:
+                logits = self.lm_head(self.norm(hidden_states))
             # shape: [1, total_seq_len, draft_vocab_size]
 
             if return_loss:
@@ -244,7 +344,7 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
                     prev_correct,
                     ttt_step,
                     ttt_step_loss_decay,
-                    loss_fn=loss_fn,
+                    loss_config=loss_config,
                 )
                 loss += s_loss
                 metrics.update(s_metrics)
@@ -252,34 +352,38 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
             input_ids = torch.argmax(logits, dim=-1)
             draft_tokens.append(input_ids.detach().clone())
             # shape: [1, total_seq_len]
-            # Use d2t to map draft tokens to verifier tokens.
-            # Must be in verifier vocabulary space because we use the full verifier
-            # vocabulary in the embedding.
-            if self.d2t is not None:
-                input_ids = input_ids + self.d2t[input_ids]  # type: ignore[index]
 
-            if use_off_policy_tokens:
-                # Overwrite input_ids with ground truth tokens
-                # shift input_ids by 1 to the left and pad with 0
-                # note: inputs_ids no longer line up with verifier_last_hidden_states
-                # the draft logits generated from the padded tokens are ignored
-                # and sliced out for loss calculation
-                input_ids = torch.cat(
-                    [
-                        original_input_ids[:, 1 + ttt_step :],
-                        original_input_ids.new_zeros(1, 1 + ttt_step),
-                    ],
-                    dim=-1,
-                )
-                # shape: [1, total_seq_len]
+            # Teacher forcing: feed the ground-truth tokens (already in the verifier
+            # vocabulary) into the next TTT step instead of the draft's own
+            # predictions. Shift left by 1 + ttt_step and right-pad with 0; the padded
+            # positions produce logits that no longer line up with
+            # verifier_last_hidden_states and are sliced out of the loss (see
+            # align_for_step).
+            input_ids = torch.cat(
+                [
+                    original_input_ids[:, 1 + ttt_step :],
+                    original_input_ids.new_zeros(1, 1 + ttt_step),
+                ],
+                dim=-1,
+            )
+            # shape: [1, total_seq_len]
 
             if self._attn_impl == "simple_flex_attention":
-                attention_mask = extend_mask_for_draft_tokens(attention_mask)
+                if full_attn_mask is not None:
+                    full_attn_mask = extend_mask_for_draft_tokens(full_attn_mask)
+                if sliding_window_attn_mask is not None:
+                    sliding_window_attn_mask = extend_mask_for_draft_tokens(
+                        sliding_window_attn_mask
+                    )
             else:
-                attention_mask = extend_dense_mask_for_draft_tokens(
-                    attention_mask,  # type: ignore[arg-type]
-                    total_seq_len,
-                )
+                if full_attn_mask is not None:
+                    full_attn_mask = extend_dense_mask_for_draft_tokens(
+                        full_attn_mask, total_seq_len
+                    )
+                if sliding_window_attn_mask is not None:
+                    sliding_window_attn_mask = extend_dense_mask_for_draft_tokens(
+                        sliding_window_attn_mask, total_seq_len
+                    )
             position_ids = position_ids + 1
             # shape: [1, total_seq_len]
 
@@ -315,7 +419,9 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         """
         # Resolve target layer IDs if not provided
         target_layer_ids = resolve_target_layer_ids(
-            kwargs.get("target_layer_ids"), kwargs["verifier_name_or_path"]
+            kwargs.get("target_layer_ids"),
+            kwargs["verifier_name_or_path"],
+            trust_remote_code=kwargs.get("trust_remote_code", False),
         )
 
         verifier_config._attn_implementation = kwargs.get(  # noqa: SLF001
@@ -327,6 +433,8 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
             draft_vocab_size=kwargs["draft_vocab_size"],
             norm_before_residual=kwargs["norm_before_residual"],
             norm_before_fc=kwargs.get("norm_before_fc", False),
+            fc_norm=kwargs.get("fc_norm", False),
+            norm_output=kwargs.get("norm_output", False),
             embed_requires_grad=kwargs.get("embed_requires_grad", False),
             eagle_aux_hidden_state_layer_ids=target_layer_ids,
             speculators_config=SpeculatorsConfig(
@@ -357,17 +465,17 @@ class Eagle3DraftModel(DraftVocabMixin, SpeculatorModel):
         Returns:
             Tuple of (train_call_kwargs, val_call_kwargs)
         """
-        loss_fn = resolve_loss_fn(kwargs["loss_fn"])
+        loss_config = resolve_loss_config(
+            kwargs["loss_fn"], kwargs.get("loss_implementation", "fused")
+        )
         train_kwargs = {
-            "use_off_policy_tokens": kwargs["use_off_policy_tokens"],
             "ttt_steps": kwargs["ttt_steps"],
             "ttt_step_loss_decay": kwargs["ttt_step_loss_decay"],
-            "loss_fn": loss_fn,
+            "loss_config": loss_config,
         }
         val_kwargs = {
-            "use_off_policy_tokens": False,
             "ttt_steps": kwargs["ttt_steps"],
             "ttt_step_loss_decay": kwargs["ttt_step_loss_decay"],
-            "loss_fn": loss_fn,
+            "loss_config": loss_config,
         }
         return train_kwargs, val_kwargs

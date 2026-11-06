@@ -1,0 +1,37 @@
+# Head-to-head: our trained eagle-3 draft vs the official Google assistant draft
+# vs the official RedHat eagle-3 draft, on the single-GPU forward-compat node.
+# baseline is the speedup denominator. All drafts at k=3 for comparability.
+
+engine: vllm
+backbone: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it
+gpus: "0"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: ["--enforce-eager"]
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k]
+  num_samples: 20
+  max_tokens: 2048
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-compare-1gpu
+
+experiments:
+  - name: baseline
+  - name: ours_eagle3_regen_k3
+    draft: /import/ml-sc-scratch1/chenw/speculators/output/gemma4_31b_eagle3_regen/checkpoints/checkpoint_best
+    num_speculative_tokens: 3
+  - name: google_assistant_k3
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-assistant
+    num_speculative_tokens: 3
+  - name: redhat_eagle3_k3
+    draft: /import/ml-sc-scratch5/chenw/models/gemma-4-31B-it-speculator.eagle3
+    num_speculative_tokens: 3
