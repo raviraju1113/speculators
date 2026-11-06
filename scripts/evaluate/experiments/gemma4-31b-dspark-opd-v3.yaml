@@ -91,3 +91,19 @@ experiments:
     draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_ep28_paperloss/checkpoints/30
     num_speculative_tokens: 12
     speculative_config: {method: dspark}
+  # e/f (2026-11-05, opd/README.md §6 "arm e"): the under-trained-seed test.
+  # Seed = block-8 conv checkpoint 8 (val accept_len 4.23 = 89% of ep25's 4.78,
+  # saved at high LR, curve still rising). e = OPD lambda 0.05, f = ordinary loss
+  # on the same rollouts (the anneal control). One round each, k=8.
+  - name: e_seed8_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output/gemma4_31b_dspark_nemo782k_conv/checkpoints/8
+    num_speculative_tokens: 8
+    speculative_config: {method: dspark}
+  - name: e9_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_ep8/checkpoints/9
+    num_speculative_tokens: 8
+    speculative_config: {method: dspark}
+  - name: f9_k8
+    draft: /import/ml-sc-scratch1/mengmengj/output_opd/opd_paper16k_ep8_assft/checkpoints/9
+    num_speculative_tokens: 8
+    speculative_config: {method: dspark}
