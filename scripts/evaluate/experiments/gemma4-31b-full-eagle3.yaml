@@ -1,0 +1,61 @@
+# Full-suite eval: gemma-4-31B-it + local Eagle-3 draft (k=3 and k=5).
+# Same benches / sample budget / GPUs / server settings as gemma4-31b-full.yaml
+# so numbers are comparable to the assistant run. Baseline is skipped — reuse
+# results/gemma4-31b-full/baseline/mtp_eval_summary.json for speedup.
+
+engine: vllm
+backbone: /nvmedata/hf_checkpoints/gemma-4-31b-it
+gpus: "0,1,2,3"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 4
+  gpu_memory_utilization: 0.9
+  max_model_len: 8192
+  health_timeout: 1800
+  extra_args: []
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks:
+    - aime
+    - gpqa
+    - livecodebench
+    - gsm8k
+    - humaneval
+    - mbpp
+    - math500
+    - mt-bench
+    - aime26
+    - bfcl
+    - swe-bench-pro
+    - speed-coding
+    - speed-multilingual
+    - speed-rag
+    - speed-qa
+    - speed-writing
+    - HumanEval
+    - math_reasoning
+    - qa
+    - question
+    - rag
+    - summarization
+    - tool_call
+    - translation
+    - writing
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 0.0
+
+output_dir: ./results/gemma4-31b-full-eagle3
+
+experiments:
+  - name: eagle3_k5
+    draft: /nvmedata/hf_checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math
+    num_speculative_tokens: 5
+
+  - name: eagle3_k3
+    draft: /nvmedata/hf_checkpoints/gemma4_draft_model_900k_eagle3_kimi_mtp_stem_code_math
+    num_speculative_tokens: 3

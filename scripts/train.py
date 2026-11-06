@@ -10,46 +10,36 @@ import numpy as np
 import torch
 import transformers
 from packaging import version
-from torch.utils.data import DataLoader
 from transformers import LlamaConfig, PretrainedConfig
 from transformers.models.auto.configuration_auto import AutoConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from speculators.data_generation.vllm_client import (
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_REQUEST_TIMEOUT,
-)
+from hs_connectors import HiddenStatesBackend
 from speculators.model import SpeculatorModel
+from speculators.models.base_components import model_classes as base_model_classes
 from speculators.models.eagle3.data import shift_batch
-from speculators.models.metrics import resolve_loss_fn
+from speculators.models.eagle3.rotary_partial import install_partial_neox_rotary
 from speculators.models.mtp.data import shift_batch_mtp
 from speculators.models.utils import (
     get_verifier_config,
     resolve_draft_intermediate_size,
+    translate_verifier_config_for_draft,
 )
-from speculators.train.data import (
-    ArrowDataset,
-    BaseDataset,
-    SampleFileDataset,
-    create_collate_fn,
-    split_files,
-)
-from speculators.train.distributed_batch_sampler import (
-    MultipackDistributedBatchSamplerV2,
-)
-from speculators.train.logger import setup_metric_logger, setup_root_logger
-from speculators.train.noise_transforms import AddUniformNoise
-from speculators.train.trainer import Trainer, TrainerConfig
-from speculators.train.utils import (
+from speculators.train.config import TrainConfig
+from speculators.train.dataloader import create_train_val_loaders
+from speculators.train.distributed import (
+    get_rank,
+    is_distributed,
     maybe_destroy_distributed,
     maybe_setup_distributed,
-    resolve_mask_token_id,
 )
+from speculators.train.logger import setup_metric_logger, setup_root_logger
+from speculators.train.trainer import Trainer, TrainerConfig
+from speculators.train.utils import resolve_mask_token_id
 from speculators.train.vocab_mapping import (
     build_vocab_mappings_from_distribution,
     get_target_vocab_size,
 )
-from speculators.utils.argparse_utils import explicitly_provided_dests
 from speculators.utils.loading import is_config_only_dir
 
 logger = logging.getLogger(__name__)
@@ -58,6 +48,14 @@ DRAFT_ARCH_CONFIGS: dict[str, type] = {
     "llama": LlamaConfig,
     "qwen3": Qwen3Config,
 }
+
+try:
+    from transformers.models.mamba2.configuration_mamba2 import Mamba2Config
+
+    DRAFT_ARCH_CONFIGS["mamba2"] = Mamba2Config
+except ImportError:
+    pass
+MROPE_INVERSE_TOLERANCE = 1e-6
 
 
 def set_seed(seed: int, deterministic: bool = False):
@@ -73,50 +71,77 @@ def set_seed(seed: int, deterministic: bool = False):
         torch.backends.cudnn.benchmark = False
 
 
-def setup_dataloader(
-    dataset: BaseDataset,
-    world_size: int,
-    rank: int,
-    hidden_size: int,
-    num_workers: int = 12,
-    num_target_layers: int = 3,
-    prefetch_factor: int = 4,
-    preprocess=None,
-) -> DataLoader:
-    """Setup dataloader for training.
-    Args:
-        file_list: List of file paths to load data from.
-        world_size: Number of processes in the distributed training.
-        rank: Global rank of the current process (shards data across nodes).
-        add_noise: Whether to add noise to the data.
-        noise_std: Standard deviation for noise augmentation.
-        num_workers: Number of dataloader workers.
-        prefetch_factor: Dataloader prefetch factor.
-        preprocess: Optional per-sample preprocessing function applied
-            before collation (e.g. shift_batch for Eagle3).
-    Returns:
-        DataLoader: Dataloader for training.
+def _maybe_apply_mrope_full_head_hack(
+    rope_params: dict,
+    resolved_head_dim: int,
+    enabled: bool,
+) -> None:
+    """Optionally rescale partial MRoPE settings to full-head semantics."""
+    if "mrope_section" not in rope_params:
+        return
+
+    inherited_partial = float(rope_params.get("partial_rotary_factor", 1.0))
+    if enabled and inherited_partial < 1.0:
+        old_section = list(rope_params["mrope_section"])
+        inv = 1.0 / inherited_partial
+        if abs(inv - round(inv)) > MROPE_INVERSE_TOLERANCE:
+            raise ValueError(
+                "mrope_full_head_hack cannot rescale mrope_section because "
+                f"1/partial_rotary_factor={inv} is not an integer."
+            )
+        scale = int(round(inv))
+        new_section = [int(x) * scale for x in old_section]
+        if 2 * sum(new_section) != resolved_head_dim:
+            raise ValueError(
+                "mrope_full_head_hack rescaling produced inconsistent "
+                f"mrope_section {new_section}: 2*sum={2 * sum(new_section)} "
+                f"but head_dim={resolved_head_dim}."
+            )
+        rope_params["mrope_section"] = new_section
+        rope_params["partial_rotary_factor"] = 1.0
+        logger.warning(
+            "MRoPE full-head hack applied: partial_rotary_factor "
+            f"{inherited_partial} -> 1.0, mrope_section {old_section} -> "
+            f"{new_section}."
+        )
+    elif not enabled and inherited_partial < 1.0:
+        logger.warning(
+            "mrope_full_head_hack=False with partial_rotary_factor="
+            f"{inherited_partial} < 1.0 can cause HF trainer / vLLM "
+            "partial-rotation mismatch."
+        )
+
+
+def _create_mamba2_layer_config(
+    verifier_config: PretrainedConfig,
+    num_layers: int,
+    mamba2_args: dict,
+) -> PretrainedConfig:
+    """Build a Mamba2 draft-block config sized to the verifier.
+
+    :param mamba2_args: the ``--mamba-*`` CLI group; ``mamba_mlp`` selects the
+        capacity-matched arm by giving the block a SwiGLU MLP.
     """
-    batch_sampler = MultipackDistributedBatchSamplerV2(
-        batch_max_length=args.total_seq_len,
-        lengths=dataset.approx_lengths,
-        num_replicas=world_size,
-        rank=rank,
+    from speculators.models.eagle3.mamba2 import build_mamba2_draft_config
+
+    intermediate_size = (
+        resolve_draft_intermediate_size(verifier_config)
+        if mamba2_args.get("mamba_mlp")
+        else None
     )
-    return DataLoader(
-        dataset,
-        batch_sampler=batch_sampler,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        pin_memory=True,
-        collate_fn=create_collate_fn(
-            args.total_seq_len,
-            hidden_size,
-            num_target_layers=num_target_layers,
-            dtype=dataset.hidden_states_dtype,
-            preprocess=preprocess,
-        ),
-        persistent_workers=True,
+    return build_mamba2_draft_config(
+        hidden_size=verifier_config.hidden_size,
+        vocab_size=verifier_config.vocab_size,
+        num_hidden_layers=num_layers,
+        expand=mamba2_args.get("mamba_expand", 2),
+        head_dim=mamba2_args.get("mamba_head_dim", 64),
+        state_size=mamba2_args.get("mamba_state_size", 128),
+        n_groups=mamba2_args.get("mamba_n_groups", 8),
+        conv_kernel=mamba2_args.get("mamba_conv_kernel", 4),
+        chunk_size=mamba2_args.get("mamba_chunk_size", 256),
+        intermediate_size=intermediate_size,
+        initializer_range=verifier_config.initializer_range,
+        tie_word_embeddings=False,
     )
 
 
@@ -126,7 +151,10 @@ def create_transformer_layer_config(  # noqa: C901
     draft_arch: str,
     hidden_act: str | None,
     sliding_window: int,
-    sliding_window_indices: list[int],
+    full_attention_indices: list[int],
+    mrope_full_head_hack: bool = True,
+    mamba2_args: dict | None = None,
+    trust_remote_code: bool = False,
 ) -> PretrainedConfig:
     if draft_arch not in DRAFT_ARCH_CONFIGS:
         raise ValueError(
@@ -143,11 +171,20 @@ def create_transformer_layer_config(  # noqa: C901
         )
 
     config_class = DRAFT_ARCH_CONFIGS[draft_arch]
-    verifier_config = AutoConfig.from_pretrained(verifier_name_or_path)
+    verifier_config = AutoConfig.from_pretrained(
+        verifier_name_or_path, trust_remote_code=trust_remote_code
+    )
 
     # For multimodal models (Qwen3VL, etc.), extract text_config
     if hasattr(verifier_config, "text_config"):
         verifier_config = verifier_config.text_config
+
+    if draft_arch == "mamba2":
+        # A recurrent block shares none of the attention shaping below: no heads, no
+        # rotary, no sliding window. Build it from its own knobs instead.
+        return _create_mamba2_layer_config(
+            verifier_config, num_layers, mamba2_args or {}
+        )
 
     hidden_act = (
         hidden_act
@@ -172,16 +209,17 @@ def create_transformer_layer_config(  # noqa: C901
         num_attention_heads = verifier_config.hidden_size // head_dim
         if num_attention_heads % num_key_value_heads != 0:
             num_key_value_heads = num_attention_heads
+    resolved_head_dim = head_dim or verifier_config.hidden_size // num_attention_heads
 
-    if sliding_window_indices and (
-        min(sliding_window_indices) < 0 or max(sliding_window_indices) >= num_layers
+    if full_attention_indices and (
+        min(full_attention_indices) < 0 or max(full_attention_indices) >= num_layers
     ):
         raise ValueError(
-            "Sliding window indices must be validate draft layer ids "
+            "Full attention indices must be valid draft layer ids "
             "in range [0, num_layers)."
         )
     layer_types = [
-        "sliding_attention" if i in sliding_window_indices else "full_attention"
+        "full_attention" if i in full_attention_indices else "sliding_attention"
         for i in range(num_layers)
     ]
 
@@ -199,36 +237,60 @@ def create_transformer_layer_config(  # noqa: C901
         head_dim=head_dim,
         tie_word_embeddings=False,
         sliding_window=sliding_window,
+        use_sliding_window="sliding_attention" in layer_types,
         layer_types=layer_types,
     )
 
     # New rope parameters definition introduced in transformers 5.0
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         if hasattr(verifier_config, "rope_parameters"):
-            config.rope_parameters = deepcopy(verifier_config.rope_parameters)
-            _MROPE_KEYS = ("mrope_section", "mrope_interleaved", "type")  # noqa: N806
-            for key in _MROPE_KEYS:
-                config.rope_parameters.pop(key, None)
-            # Some verifiers (e.g. Gemma-4) use a nested, per-attention-type rope
-            # config ({"full_attention": {...}, "sliding_attention": {...}}) with
-            # no top-level "rope_type". The flat Qwen3/Llama draft can't consume
-            # that, so collapse it to a flat rope config derived from a
-            # full-attention (else any) sub-entry.
-            if "rope_type" not in config.rope_parameters:
-                _nested = config.rope_parameters
-                _base = _nested.get("full_attention") or next(
-                    (v for v in _nested.values() if isinstance(v, dict)), {}
+            rope_params = deepcopy(verifier_config.rope_parameters)
+            # Some verifiers (e.g. Laguna) use the nested per-layer-type rope format
+            # {"full_attention": {...}, "sliding_attention": {...}} with no top-level
+            # "rope_theta". The llama-style draft uses a single rope, so collapse it to
+            # a flat default rope (preferring the sliding-attention theta).
+            if isinstance(rope_params, dict) and "rope_theta" not in rope_params:
+                sub = (
+                    rope_params.get("sliding_attention")
+                    or rope_params.get("full_attention")
+                    or {}
                 )
-                # Force plain "default" rope: Gemma-4's "proportional" type needs
-                # partial_rotary_factor and isn't understood by Qwen3; a
-                # from-scratch draft doesn't need the target's exact rope scheme.
-                config.rope_parameters = {
-                    "rope_type": "default",
-                    "rope_theta": _base.get("rope_theta", 10000.0),
-                }
+                if isinstance(sub, dict):
+                    rope_params = dict(sub)
+                    rope_params.setdefault("rope_type", "default")
+                    rope_params.setdefault("rope_theta", 10000.0)
+                else:
+                    rope_params = {"rope_type": "default", "rope_theta": 10000.0}
+
+            if isinstance(rope_params, dict):
+                _maybe_apply_mrope_full_head_hack(
+                    rope_params, resolved_head_dim, mrope_full_head_hack
+                )
+                # ``type`` is a legacy alias (only "mrope" on VL models) that
+                # transformers strips during validation and that breaks vLLM's
+                # config checks; drop it while keeping the real MRoPE fields.
+                rope_params.pop("type", None)
+                rope_params.pop("mrope_interleaved", None)
+                # The verifier (e.g. Mistral) may use partial rotary embeddings,
+                # but the draft model doesn't support partial_rotary_factor.
+                # Only keep it for MRoPE configs that need it.
+                if "mrope_section" not in rope_params:
+                    rope_params.pop("partial_rotary_factor", None)
+            config.rope_parameters = rope_params
     else:
         if hasattr(verifier_config, "rope_scaling"):
-            config.rope_scaling = deepcopy(verifier_config.rope_scaling)
+            rope_scaling = deepcopy(verifier_config.rope_scaling)
+            if isinstance(rope_scaling, dict):
+                _maybe_apply_mrope_full_head_hack(
+                    rope_scaling, resolved_head_dim, mrope_full_head_hack
+                )
+                # Strip legacy fields for consistency with rope_parameters path
+                rope_scaling.pop("type", None)
+                rope_scaling.pop("mrope_interleaved", None)
+                # Same partial_rotary_factor guard as the rope_parameters path.
+                if "mrope_section" not in rope_scaling:
+                    rope_scaling.pop("partial_rotary_factor", None)
+            config.rope_scaling = rope_scaling
         config.rope_theta = getattr(verifier_config, "rope_theta", 10000.0)
 
     return config
@@ -237,6 +299,7 @@ def create_transformer_layer_config(  # noqa: C901
 def load_draft_transformer_layer_config(
     draft_config: str,
     verifier_name_or_path: str,
+    trust_remote_code: bool = False,
 ) -> PretrainedConfig:
     """Load the draft decoder ``transformer_layer_config`` from a config source.
 
@@ -266,7 +329,9 @@ def load_draft_transformer_layer_config(
     config_class: type[PretrainedConfig] = type(AutoConfig.for_model(model_type))
     draft_config_obj = config_class.from_dict(config_dict)
 
-    verifier_config = get_verifier_config(verifier_name_or_path)
+    verifier_config = get_verifier_config(
+        verifier_name_or_path, trust_remote_code=trust_remote_code
+    )
     if draft_config_obj.hidden_size != verifier_config.hidden_size:
         raise ValueError(
             f"--draft-config hidden_size ({draft_config_obj.hidden_size}) must match "
@@ -350,7 +415,9 @@ def parse_vocab_mappings(args: argparse.Namespace):
         "None. Using full verifier vocab"
     )
     # When vocab mapping is not provided, use the full verifier vocab
-    verifier_config = AutoConfig.from_pretrained(args.verifier_name_or_path)
+    verifier_config = AutoConfig.from_pretrained(
+        args.verifier_name_or_path, trust_remote_code=args.trust_remote_code
+    )
     if hasattr(verifier_config, "text_config"):
         verifier_config = verifier_config.text_config
     return None, None, verifier_config.vocab_size
@@ -362,6 +429,7 @@ def _build_from_config_only(
     t2d: torch.Tensor | None,
     d2t: torch.Tensor | None,
     verifier_name_or_path: str | None = None,
+    draft_attn_impl: str | None = None,
 ) -> SpeculatorModel:
     """Initialize a fresh draft from a saved speculator *config* (no weights).
 
@@ -370,6 +438,8 @@ def _build_from_config_only(
     no trained draft weights to restore (decoder weights are randomly initialized).
     """
     config = model_class.config_class.from_pretrained(path)
+    if draft_attn_impl is not None:
+        config.transformer_layer_config._attn_implementation = draft_attn_impl
     speculators_config = getattr(config, "speculators_config", None)
     # Fall back to the CLI --verifier-name-or-path only when the saved config has
     # no verifier path -- either null or blanked to "". A real path in the config
@@ -382,9 +452,9 @@ def _build_from_config_only(
         speculators_config.verifier.name_or_path = verifier_name_or_path
     model = model_class(config=config)
     if hasattr(model, "load_vocab_mappings"):
-        model.load_vocab_mappings(t2d, d2t)  # type: ignore[attr-defined]
+        model.load_vocab_mappings(t2d, d2t)  # type: ignore[attr-defined, operator]
     if hasattr(model, "load_verifier_weights"):
-        model.load_verifier_weights()  # type: ignore[attr-defined]
+        model.load_verifier_weights()  # type: ignore[attr-defined, operator]
     return model
 
 
@@ -422,28 +492,105 @@ def build_draft_model(
                 t2d=t2d,
                 d2t=d2t,
                 verifier_name_or_path=args.verifier_name_or_path,
+                draft_attn_impl=(
+                    args.draft_attn_impl if args.speculator_type != "mtp" else None
+                ),
             )
-        return model_class.from_pretrained(args.from_pretrained, t2d=t2d, d2t=d2t)
+        if args.speculator_type != "mtp":
+            # _attn_implementation is never serialized by HF configs, so re-apply
+            # the CLI selection before construction -- mirroring from_training_args.
+            # MTP is skipped: its from_training_args never sets the field and its
+            # __init__ resolves its own default ("sdpa") when it is absent.
+            config = model_class.config_class.from_pretrained(args.from_pretrained)
+            config.transformer_layer_config._attn_implementation = args.draft_attn_impl
+            if args.speculator_type == "dspark" and getattr(args, "topk_context", 0):
+                # Warm-start a dense DSpark checkpoint into a top-k variant: the
+                # indexers are new modules and initialise fresh (reported as
+                # missing keys); everything else loads as trained.
+                for key in (
+                    "topk_context",
+                    "topk_layers",
+                    "topk_local_window",
+                    "indexer_heads",
+                    "indexer_head_dim",
+                ):
+                    setattr(config, key, getattr(args, key))
+                logger.info(
+                    "Enabling DSA-style top-k context selection on the pretrained "
+                    "DSpark config: topk_context=%d, topk_layers=%s.",
+                    config.topk_context,
+                    config.topk_layers,
+                )
+            return model_class.from_pretrained(
+                args.from_pretrained,
+                config=config,
+                t2d=t2d,
+                d2t=d2t,
+                verifier=args.verifier_name_or_path,
+            )
+        return model_class.from_pretrained(
+            args.from_pretrained,
+            t2d=t2d,
+            d2t=d2t,
+            verifier=args.verifier_name_or_path,
+        )
 
     if args.speculator_type == "mtp":
         # MTP uses the verifier's own decoder config as the draft
         # transformer_layer_config and extracts the native MTP head weights from
         # the verifier; the decoder-shaping flags and --draft-config do not apply,
-        # and there is no draft mask token to resolve.
-        transformer_layer_config = get_verifier_config(args.verifier_name_or_path)
+        # and there is no draft mask token to resolve. Trust-remote-code verifiers
+        # whose decoder is not a registered transformers type (Kimi K3) are
+        # translated to an equivalent registered config (deepseek_v3 MLA).
+        transformer_layer_config = translate_verifier_config_for_draft(
+            get_verifier_config(
+                args.verifier_name_or_path,
+                trust_remote_code=args.trust_remote_code,
+            )
+        )
     else:
         if args.draft_config:
             transformer_layer_config = load_draft_transformer_layer_config(
-                args.draft_config, args.verifier_name_or_path
+                args.draft_config,
+                args.verifier_name_or_path,
+                trust_remote_code=args.trust_remote_code,
             )
         else:
+            full_attention_indices = args.full_attention_indices
+            # Recurrent draft mixers take no attention mask, so the sliding-window
+            # knobs do not apply to them and reporting them would mislead.
+            draft_uses_attention = base_model_classes[args.draft_arch].uses_attention
+            if not full_attention_indices and draft_uses_attention:
+                logger.info(
+                    "All %d draft layers using sliding window attention "
+                    "(window=%d). To use full attention on specific layers, "
+                    "pass '--full-attention-indices <layer_ids>'.",
+                    args.num_layers,
+                    args.sliding_window,
+                )
+
             transformer_layer_config = create_transformer_layer_config(
                 verifier_name_or_path=args.verifier_name_or_path,
                 num_layers=args.num_layers,
                 draft_arch=args.draft_arch,
                 hidden_act=args.draft_hidden_act,
                 sliding_window=args.sliding_window,
-                sliding_window_indices=args.sliding_window_indices,
+                full_attention_indices=full_attention_indices,
+                mrope_full_head_hack=args.draft_mrope_full_head_hack,
+                mamba2_args={
+                    k: getattr(args, k)
+                    for k in (
+                        "mamba_expand",
+                        "mamba_head_dim",
+                        "mamba_state_size",
+                        "mamba_n_groups",
+                        "mamba_conv_kernel",
+                        "mamba_chunk_size",
+                        "mamba_mlp",
+                    )
+                    if hasattr(args, k)
+                },
+                trust_remote_code=args.trust_remote_code,
             )
 
         args.mask_token_id = resolve_mask_token_id(
@@ -462,54 +609,13 @@ def build_draft_model(
     )
 
 
-def maybe_preprocess_from_raw(
-    args: argparse.Namespace, rank: int, is_distributed: bool
-) -> None:
-    """Tokenize a raw dataset into ``--data-path`` when ``--data`` is given.
+def main(cfg: TrainConfig):  # noqa: C901
+    # Phase-1 adapter: the model layer still consumes a flat vars(args)-shaped
+    # dict via **kwargs, so flatten the typed config back into a namespace here.
+    # New code should read cfg.<group>.<field> directly and must NOT add new
+    # args.* accesses below this line.
+    args = argparse.Namespace(**cfg.flatten())
 
-    Lets training consume a HuggingFace dataset / jsonl directly (download +
-    tokenize + loss-mask) instead of requiring a separate ``prepare_data.py``
-    run. This is the cheap step only (megabytes of token ids/masks); hidden
-    states are still generated on demand from the live vLLM endpoint, so no
-    offline hidden-state dump is produced. Rank 0 does the work; other ranks
-    wait on a barrier.
-    """
-    if not args.data:
-        return
-
-    from speculators.data_generation.preprocessing import (  # noqa: PLC0415
-        load_and_preprocess_dataset,
-    )
-
-    out = Path(args.data_path)
-    existing = out.exists() and list(out.glob("*.arrow"))
-    if existing and not args.overwrite_data:
-        if rank == 0:
-            logger.info(
-                f"Preprocessed dataset already present at '{out}'; skipping "
-                "tokenization (pass --overwrite-data to rebuild)."
-            )
-    elif rank == 0:
-        token_freq_path = args.token_freq_path or (out / "token_freq.pt")
-        out.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Tokenizing {args.data} -> '{out}' (loss-masked, no HS)")
-        dataset, _ = load_and_preprocess_dataset(
-            target_model_path=args.verifier_name_or_path,
-            train_data_paths=args.data,
-            seq_length=args.total_seq_len,
-            seed=args.seed,
-            max_samples=args.max_samples,
-            token_freq_path=token_freq_path,
-            trust_remote_code=args.trust_remote_code,
-        )
-        dataset.save_to_disk(str(out))
-        logger.info(f"Wrote preprocessed dataset ({len(dataset)} samples) to '{out}'")
-
-    if is_distributed:
-        torch.distributed.barrier()
-
-
-def main(args: argparse.Namespace):  # noqa: C901
     # Set random seed for reproducibility
     set_seed(args.seed, args.deterministic_cuda)
 
@@ -519,18 +625,35 @@ def main(args: argparse.Namespace):  # noqa: C901
         loggers=args.logger, run_name=args.run_name, output_dir=args.log_dir
     )
 
-    # Setup distributed training
-    local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
+    # Setup distributed training. This populates module-level topology state rather
+    # than returning it; read it back through the getters (is_distributed, get_rank).
+    # Rebinding the getters to locals would shadow the is_distributed() call below.
+    maybe_setup_distributed()
 
-    # Optionally tokenize a raw HF/jsonl dataset into --data-path on the fly, so
-    # training can run straight from a HuggingFace dataset (no separate
-    # prepare_data.py step; hidden states are still generated online).
-    maybe_preprocess_from_raw(args, rank, is_distributed)
+    # Record the run hyperparameters (e.g. to the wandb run config). The metric
+    # logger's rank0 filter ensures this only fires once in distributed runs.
+    metric_logger = logging.getLogger("speculators.metrics")
+    metric_logger.info(vars(args), extra={"hparams": True})
 
-    if not hasattr(torch, args.hidden_states_dtype):
+    if args.fsdp_shard and not is_distributed():
         raise ValueError(
-            "--hidden-states-dtype must be a dtype attribute of torch. e.g. `bfloat16`"
+            "--fsdp-shard requires launching with torchrun/distributed training; "
+            "otherwise parameters are not sharded."
         )
+
+    # Install partial-neox rotary patch if not using full-head hack
+    if not args.draft_mrope_full_head_hack:
+        install_partial_neox_rotary()
+        logger.info(
+            "Installed partial-neox rotary patch for HF/vLLM RoPE alignment "
+            "(draft_mrope_full_head_hack=False)"
+        )
+    # Write the reproducibility artifacts (run.yaml + train_command.txt) next to
+    # the checkpoints at rank 0 only, so every checkpoint carries the resolved
+    # config that produced it.
+    if get_rank() == 0:
+        cfg.save(args.save_path)
+
     hidden_states_dtype = getattr(torch, args.hidden_states_dtype)
 
     if args.speculator_type == "mtp":
@@ -550,11 +673,9 @@ def main(args: argparse.Namespace):  # noqa: C901
     else:
         d2t, t2d, draft_vocab_size = parse_vocab_mappings(args)
 
-        if args.sliding_window_indices and args.speculator_type != "dflash":
+        if args.full_attention_indices and args.speculator_type == "mtp":
             raise ValueError(
-                "Currently sliding window attention is only supported by dflash "
-                "draft models. Please open an issue/pr if you would like to use "
-                "sliding window attention with a different speculator type"
+                "--full-attention-indices is not supported for mtp draft models."
             )
 
     registry = SpeculatorModel.registry
@@ -569,7 +690,7 @@ def main(args: argparse.Namespace):  # noqa: C901
     draft_model = build_draft_model(args, model_class, t2d, d2t, draft_vocab_size)
 
     # Get target layer IDs from the model (resolved at model level)
-    num_target_layers = len(draft_model.target_layer_ids)
+    num_target_layers = len(draft_model.target_layer_ids)  # type: ignore[arg-type]
 
     if args.speculator_type == "mtp":
         args.num_speculative_steps = draft_model.config.num_speculative_steps
@@ -578,11 +699,9 @@ def main(args: argparse.Namespace):  # noqa: C901
     # config/weights can be validated (e.g. in vLLM). The saved checkpoint can be
     # fed straight back via --from-pretrained to start training.
     if args.dry_run:
-        # Match Trainer.setup_model: weights are (re)initialized in
-        # hidden_states_dtype, so save the dry-run checkpoint in that dtype too
-        # rather than the float32 the model is built in.
+        # Save in hidden_states_dtype (bf16) for compact checkpoints.
         draft_model.to(hidden_states_dtype)
-        if local_rank == 0:
+        if get_rank() == 0:
             logger.info(
                 "[dry-run] Saving initialized checkpoint (%s) to '%s'",
                 hidden_states_dtype,
@@ -607,73 +726,35 @@ def main(args: argparse.Namespace):  # noqa: C901
     }
     preprocess = preprocess_fns.get(args.speculator_type)
 
-    noise_transform = AddUniformNoise(std=args.noise_std)
-    if args.legacy_data:
-        warnings.warn(
-            "Using '--legacy-data' is deprecated and will be removed soon.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-        train_files, val_files = split_files(args.data_path, ratio=0.9)
-        train_dataset: BaseDataset = SampleFileDataset(
-            file_list=train_files,
-            max_len=args.total_seq_len,
-            transform=noise_transform,
-            hidden_states_dtype=hidden_states_dtype,
-        )
-        val_dataset: BaseDataset = SampleFileDataset(
-            file_list=val_files,
-            max_len=args.total_seq_len,
-            hidden_states_dtype=hidden_states_dtype,
-        )
-    else:
-        train_dataset = ArrowDataset(
-            datapath=args.data_path,
-            max_len=args.total_seq_len,
-            hidden_states_path=args.hidden_states_path,
-            vllm_endpoint=args.vllm_endpoint,
-            on_missing=args.on_missing,
-            on_generate=args.on_generate,
-            transform=noise_transform,
-            split_ratio=0.9,
-            model=args.verifier_name_or_path,
-            hidden_states_dtype=hidden_states_dtype,
-            request_timeout=args.request_timeout,
-            max_retries=args.max_retries,
-        )
-        val_dataset = ArrowDataset(
-            datapath=args.data_path,
-            max_len=args.total_seq_len,
-            hidden_states_path=args.hidden_states_path,
-            vllm_endpoint=args.vllm_endpoint,
-            on_missing=args.on_missing,
-            on_generate=args.on_generate,
-            split_ratio=-0.1,
-            model=args.verifier_name_or_path,
-            hidden_states_dtype=hidden_states_dtype,
-            request_timeout=args.request_timeout,
-            max_retries=args.max_retries,
-        )
+    backend_registry = HiddenStatesBackend.registry
+    backend_cls = backend_registry[args.hidden_states_backend]
+    # from_train_args is the live runtime consumer of the backend's (mirrored)
+    # train-args, read off the flattened namespace. hs_connectors stays
+    # argparse-based and standalone so vLLM can use it without speculators; that
+    # is why the backend's train-args are mirrored into the pydantic schema rather
+    # than the plugin depending on pydantic. test_backend_reconciliation.py keeps
+    # the mirror complete so nothing read here was dropped during resolution.
+    transfer = backend_cls.from_train_args(args, args.data_path)
 
-    train_loader = setup_dataloader(
-        train_dataset,
-        world_size,
-        rank,
-        hidden_size,
+    train_loader, val_loader = create_train_val_loaders(
+        data_path=args.data_path,
+        total_seq_len=args.total_seq_len,
+        hidden_states_dtype=hidden_states_dtype,
+        noise_std=args.noise_std,
+        legacy_data=args.legacy_data,
+        transfer=transfer,
+        vllm_endpoint=args.vllm_endpoint,
+        on_missing=args.on_missing,
+        on_generate=args.on_generate,
+        verifier_name_or_path=args.verifier_name_or_path,
+        request_timeout=args.request_timeout,
+        max_retries=args.max_retries,
+        hidden_size=hidden_size,
         num_target_layers=num_target_layers,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         preprocess=preprocess,
-    )
-    val_loader = setup_dataloader(
-        val_dataset,
-        world_size,
-        rank,
-        hidden_size,
-        num_target_layers=num_target_layers,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        preprocess=preprocess,
+        train_data_ratio=args.train_data_ratio,
     )
 
     # Get trainer kwargs from model class
@@ -684,9 +765,6 @@ def main(args: argparse.Namespace):  # noqa: C901
         save_path=args.save_path,
         lr=args.lr,
         resume_from_checkpoint=not args.no_resume_from_checkpoint,
-        is_distributed=is_distributed,
-        local_rank=local_rank,
-        rank=rank,
         train_call_kwargs=train_call_kwargs,
         val_call_kwargs=val_call_kwargs,
         optimizer=args.optimizer,
@@ -698,12 +776,17 @@ def main(args: argparse.Namespace):  # noqa: C901
         muon_adjust_lr_fn=args.muon_adjust_lr_fn,
         scheduler_type=args.scheduler_type,
         scheduler_warmup_steps=args.scheduler_warmup_steps,
+        scheduler_warmup_ratio=args.scheduler_warmup_ratio,
         scheduler_total_steps=args.scheduler_total_steps,
         scheduler_num_cosine_cycles=args.scheduler_num_cosine_cycles,
+        scheduler_wsd_decay_ratio=args.scheduler_wsd_decay_ratio,
         checkpoint_freq=args.checkpoint_freq,
         save_best=args.save_best,
+        early_stop_patience=args.early_stop_patience,
         hidden_states_dtype=hidden_states_dtype,
         log_freq=args.log_freq,
+        fsdp_shard=args.fsdp_shard,
+        max_steps=args.max_steps,
     )
     trainer = Trainer(draft_model, trainer_config, train_loader, val_loader)
 
@@ -1198,10 +1281,16 @@ def parse_args():
     )
 
     # lr scheduler
-    parser.add_argument("--scheduler-type", type=str, default="linear")
+    parser.add_argument(
+        "--scheduler-type",
+        type=str,
+        default="linear",
+        choices=["linear", "cosine", "constant", "wsd", "none"],
+    )
     parser.add_argument("--scheduler-warmup-steps", type=int, default=None)
     parser.add_argument("--scheduler-total-steps", type=int, default=None)
     parser.add_argument("--scheduler-num-cosine-cycles", type=float, default=0.5)
+    parser.add_argument("--scheduler-wsd-decay-ratio", type=float, default=0.15)
 
     # optimizer
     parser.add_argument(
@@ -1245,13 +1334,15 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    main(TrainConfig.resolve())
 
 
 # RUN WITH:
 # torchrun --standalone --nproc_per_node=<num_gpus>  scripts/train.py
-# for FSDP training
+# for multi-GPU training (DDP by default)
+# OR
+# torchrun --standalone --nproc_per_node=<num_gpus>  scripts/train.py --fsdp-shard
+# for FSDP sharded training (when model doesn't fit in a single GPU)
 # OR
 # python scripts/train.py
 # for single GPU training

@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import shutil
@@ -15,8 +16,10 @@ from torch.distributed.checkpoint.state_dict import (
     set_model_state_dict,
     set_optimizer_state_dict,
 )
+from torch.nn.parallel import DistributedDataParallel
 from transformers.modeling_utils import PreTrainedModel
 
+from speculators.train.distributed import get_rank, is_distributed
 from speculators.utils.util import get_current_device
 
 logger = logging.getLogger("speculators")
@@ -31,6 +34,21 @@ SchedulerOrList = (
 def _as_list(value):
     """Normalize a single object or a list/tuple of objects into a list."""
     return list(value) if isinstance(value, (list, tuple)) else [value]
+
+
+def _rank0_only(fn):
+    """Execute *fn* only on rank 0, then barrier (no-op when not distributed)."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        result = None
+        if get_rank() == 0:
+            result = fn(*args, **kwargs)
+        if is_distributed():
+            dist.barrier()
+        return result
+
+    return wrapper
 
 
 class BaseCheckpointer:
@@ -83,6 +101,7 @@ class BaseCheckpointer:
         for sched, state_dict in zip(schedulers, loaded_list, strict=True):
             sched.load_state_dict(state_dict)
 
+    @_rank0_only
     def save_scheduler_state_dict(self, scheduler: SchedulerOrList, epoch: int | str):
         schedulers = _as_list(scheduler)
         state_dicts = [sched.state_dict() for sched in schedulers]
@@ -105,6 +124,8 @@ class BaseCheckpointer:
             return -1
         last_checkpoint_num = -1
         for d in self.path.iterdir():
+            if d.is_symlink():
+                continue  # skip descriptive symlinks like epoch0_step16626
             if d.is_dir():
                 if d.name == "interrupted":
                     logger.warning(
@@ -137,6 +158,14 @@ class BaseCheckpointer:
     def val_metrics_path(self, epoch: int) -> Path:
         return self.path / str(epoch) / "val_metrics.json"
 
+    TRAIN_COMMAND_FILENAME = "train_command.txt"
+
+    def _copy_train_command(self, epoch: int | str) -> None:
+        src = self.path / self.TRAIN_COMMAND_FILENAME
+        if src.exists():
+            shutil.copy2(src, self.path / str(epoch) / self.TRAIN_COMMAND_FILENAME)
+
+    @_rank0_only
     def save_val_metrics(self, epoch: int, val_metrics: dict[str, float]):
         path = self.val_metrics_path(epoch)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,6 +209,7 @@ class BaseCheckpointer:
         finally:
             self.previous_epoch = old_epoch
 
+    @_rank0_only
     def update_best_symlink(self, epoch: int):
         best_path = self.best_path()
         target = Path(str(epoch))  # relative symlink inside checkpoint root
@@ -192,6 +222,7 @@ class BaseCheckpointer:
 
         best_path.symlink_to(target, target_is_directory=True)
 
+    @_rank0_only
     def cleanup_keep_only_best(self, best_epoch: int) -> None:
         """
         Delete all epoch dir. except best_epoch, and keep best_checkpoint symlink.
@@ -203,6 +234,8 @@ class BaseCheckpointer:
         if not keep_dir.exists() or not keep_dir.is_dir():
             raise FileNotFoundError(f"Best epoch dir does not exist: {keep_dir}")
 
+        train_cmd_file = self.path / self.TRAIN_COMMAND_FILENAME
+
         for child in self.path.iterdir():
             # Keep the symlink itself
             if child == best_link:
@@ -210,6 +243,9 @@ class BaseCheckpointer:
 
             # Keep the best epoch directory
             if child == keep_dir:
+                continue
+
+            if child == train_cmd_file:
                 continue
 
             # Delete numbered epoch directories and any other stray dirs/files
@@ -237,6 +273,26 @@ def load_safetensors_state_dict(path: Path, device: str) -> dict[str, torch.Tens
         for key in f.keys():  # noqa: SIM118
             full_state_dict[key] = f.get_tensor(key)
     return full_state_dict
+
+
+def patch_config_dtype(config_path: Path, float_dtype: torch.dtype) -> None:
+    """Patch config.json to match the actual on-disk tensor dtype.
+
+    When models are kept in FP32 but saved as BF16, save_pretrained writes
+    the in-memory dtype to config.json. This patches it to match the saved dtype.
+    """
+    if not config_path.exists():
+        return
+
+    config = json.loads(config_path.read_text())
+    # Convert torch.bfloat16 -> "bfloat16"
+    dtype_str = str(float_dtype).split(".")[-1]
+    # Support both dtype (transformers 5.x) and torch_dtype (older versions)
+    if "dtype" in config:
+        config["dtype"] = dtype_str
+    if "torch_dtype" in config:
+        config["torch_dtype"] = dtype_str
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
 
 
 class SingleGPUCheckpointer(BaseCheckpointer):
@@ -268,10 +324,14 @@ class SingleGPUCheckpointer(BaseCheckpointer):
         )
         optimizers = _as_list(optimizer)
         loaded_list = loaded if isinstance(loaded, list) else [loaded]
-        dtype = float_dtype or model.dtype
+        raw_model = (
+            model.module if isinstance(model, DistributedDataParallel) else model
+        )
+        dtype = float_dtype or raw_model.dtype
         for opt, state_dict in zip(optimizers, loaded_list, strict=True):
             opt.load_state_dict(convert_float_dtype(state_dict, dtype))
 
+    @_rank0_only
     def save_checkpoint(
         self,
         model: PreTrainedModel,
@@ -279,8 +339,13 @@ class SingleGPUCheckpointer(BaseCheckpointer):
         epoch: int | str,
         float_dtype: torch.dtype = torch.bfloat16,
     ):
-        model_state_dict = convert_float_dtype(model.state_dict(), float_dtype)
-        model.save_pretrained(self.path / str(epoch), state_dict=model_state_dict)
+        raw_model: PreTrainedModel = (
+            model.module if isinstance(model, DistributedDataParallel) else model
+        )  # type: ignore[assignment]
+        model_state_dict = convert_float_dtype(raw_model.state_dict(), float_dtype)
+        raw_model.save_pretrained(self.path / str(epoch), state_dict=model_state_dict)
+        patch_config_dtype(self.path / str(epoch) / "config.json", float_dtype)
+
         optimizers = _as_list(optimizer)
         state_dicts = [
             convert_float_dtype(opt.state_dict(), float_dtype) for opt in optimizers
@@ -288,6 +353,7 @@ class SingleGPUCheckpointer(BaseCheckpointer):
         # Preserve the legacy single-optimizer format when there is only one.
         payload = state_dicts[0] if len(state_dicts) == 1 else state_dicts
         torch.save(payload, self.optimizer_path(epoch))
+        self._copy_train_command(epoch)
 
 
 class DistributedCheckpointer(BaseCheckpointer):
@@ -362,32 +428,11 @@ class DistributedCheckpointer(BaseCheckpointer):
         )
         optimizer_state_dict = convert_float_dtype(optimizer_state_dict, float_dtype)
 
-        if dist.get_rank() == 0:
+        if get_rank() == 0:
             # Only rank 0 saves the checkpoint
             model.save_pretrained(self.path / str(epoch), state_dict=model_state_dict)
+            patch_config_dtype(self.path / str(epoch) / "config.json", float_dtype)
             torch.save(optimizer_state_dict, self.optimizer_path(epoch))
-
-        dist.barrier()
-
-    def update_best_symlink(self, epoch: int):
-        if dist.get_rank() == 0:
-            super().update_best_symlink(epoch)
-
-        dist.barrier()
-
-    def cleanup_keep_only_best(self, best_epoch: int) -> None:
-        if dist.get_rank() == 0:
-            super().cleanup_keep_only_best(best_epoch)
-
-        dist.barrier()
-
-    def save_val_metrics(self, epoch: int, val_metrics: dict[str, float]):
-        if dist.get_rank() == 0:
-            super().save_val_metrics(epoch, val_metrics)
-        dist.barrier()
-
-    def save_scheduler_state_dict(self, scheduler: SchedulerOrList, epoch: int | str):
-        if dist.get_rank() == 0:
-            super().save_scheduler_state_dict(scheduler, epoch)
+            self._copy_train_command(epoch)
 
         dist.barrier()

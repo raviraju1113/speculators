@@ -22,7 +22,7 @@ cd "$(dirname "$0")"
 # --- defaults (override via env) -------------------------------------------
 BACKEND="${BACKEND:-vllm}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
-NUM_SAMPLES="${NUM_SAMPLES:-20}"
+NUM_SAMPLES="${NUM_SAMPLES:-50}"                       # match glm52-eval.yaml
 MAX_TOKENS="${MAX_TOKENS:-8192}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 BENCHMARKS="${BENCHMARKS:-aime,gpqa,livecodebench}"

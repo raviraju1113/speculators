@@ -17,13 +17,21 @@ Supported datasets:
 | math500 | HuggingFaceH4/MATH-500 |
 | aime24 | HuggingFaceH4/aime_2024 |
 | aime25 | MathArena/aime_2025 |
+| aime26 | MathArena/aime_2026 |
 | alpaca | tatsu-lab/alpaca |
 | mt-bench | HuggingFaceH4/mt_bench_prompts |
 | humaneval | openai/openai_humaneval |
 | mbpp | google-research-datasets/mbpp |
 | lbpp | CohereLabs/lbpp |
 | swe-bench | princeton-nlp/SWE-bench_Lite |
+| swe-bench-pro | ScaleAI/SWE-bench_Pro |
+| swe-rebench | nebius/SWE-rebench |
 | livecodebench | livecodebench/code_generation_lite |
+| bfcl | gorilla-llm/Berkeley-Function-Calling-Leaderboard |
+
+Also see ``prepare_speedbench.py`` (NVIDIA SPEED-Bench) and
+``prepare_aa_lcr.py`` (ArtificialAnalysis/AA-LCR) for the remaining
+Inferact/Kimi-K3-DSpark acceptance-suite benchmarks.
 
 PerfectBlend comes from mlabonne/open-perfectblend, but the checked-in
 perfectblend.jsonl was built from a regenerated qwen3-4b test cache. The raw HF
@@ -106,6 +114,61 @@ def format_swe_bench(row: dict) -> list[str]:
     ]
 
 
+def format_swe_bench_pro(row: dict) -> list[str]:
+    """SWE-bench Pro prompt: problem + optional requirements/interface contract."""
+    parts = [f"Problem Statement:\n{row['problem_statement']}"]
+    requirements = row.get("requirements")
+    if isinstance(requirements, str) and requirements.strip():
+        parts.append(f"Requirements:\n{requirements.strip()}")
+    interface = row.get("interface")
+    if isinstance(interface, str) and interface.strip():
+        parts.append(f"Interface:\n{interface.strip()}")
+    parts.append(
+        "Please make the minimal source change that satisfies the requirements "
+        "and interface above. Do not modify test files."
+    )
+    return ["\n\n".join(parts)]
+
+
+def format_swe_rebench(row: dict) -> list[str]:
+    """SWE-rebench prompt (Nebius); same shape as SWE-bench problem_statement."""
+    return format_swe_bench(row)
+
+
+# BFCL prompting-mode preamble (mirrors gorilla's non-function-calling format);
+# the function schemas are folded into the first user turn.
+BFCL_PREAMBLE = (
+    "You are an expert in composing functions. You are given a question and a "
+    "set of possible functions. Based on the question, you will need to make "
+    "one or more function/tool calls to achieve the purpose.\n"
+    "If none of the functions can be used, point it out. If the given question "
+    "lacks the parameters required by the function, also point it out.\n"
+    "You should only return the function calls in your response, in the format "
+    "[func_name1(param1=value1, param2=value2...), func_name2(...)], without "
+    "any other text.\n\n"
+    "Here is a list of functions in JSON format that you can invoke:\n"
+    "{functions}"
+)
+
+
+def format_bfcl(row: dict) -> list[str]:
+    """BFCL v3 AST categories: schemas + question folded into user turns."""
+    functions = json.dumps(row["function"], ensure_ascii=False, indent=2)
+    turns = []
+    for turn in row["question"]:
+        contents = [
+            message["content"]
+            for message in turn
+            if message.get("role") == "user" and message.get("content")
+        ]
+        if contents:
+            turns.append("\n\n".join(contents))
+    if not turns:
+        raise ValueError(f"BFCL row {row.get('id')!r} has no user turns.")
+    turns[0] = f"{BFCL_PREAMBLE.format(functions=functions)}\n\n{turns[0]}"
+    return turns
+
+
 def format_livecodebench(row: dict) -> list[str]:
     if "messages" in row:
         turns = [
@@ -144,6 +207,7 @@ DATASET_SPECS = (
     DatasetSpec("math500", "HuggingFaceH4/MATH-500", None, "test", format_math_problem),
     DatasetSpec("aime24", "HuggingFaceH4/aime_2024", None, "train", format_math_problem),
     DatasetSpec("aime25", "MathArena/aime_2025", None, "train", format_math_problem),
+    DatasetSpec("aime26", "MathArena/aime_2026", None, "train", format_math_problem),
     DatasetSpec("alpaca", "tatsu-lab/alpaca", None, "train", format_alpaca),
     DatasetSpec("mt-bench", "HuggingFaceH4/mt_bench_prompts", None, "train", format_mt_bench),
     DatasetSpec("humaneval", "openai/openai_humaneval", None, "test", format_humaneval),
@@ -157,6 +221,26 @@ DATASET_SPECS = (
         parquet_files=("python/test.parquet",),
     ),
     DatasetSpec("swe-bench", "princeton-nlp/SWE-bench_Lite", None, "test", format_swe_bench),
+    DatasetSpec(
+        "swe-bench-pro", "ScaleAI/SWE-bench_Pro", None, "test", format_swe_bench_pro
+    ),
+    DatasetSpec(
+        "swe-rebench", "nebius/SWE-rebench", None, "test", format_swe_rebench
+    ),
+    DatasetSpec(
+        "bfcl",
+        "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
+        None,
+        "test",
+        format_bfcl,
+        # v3 AST core categories; files are line-delimited despite .json names.
+        jsonl_files=(
+            "BFCL_v3_simple.json",
+            "BFCL_v3_multiple.json",
+            "BFCL_v3_parallel.json",
+            "BFCL_v3_parallel_multiple.json",
+        ),
+    ),
     DatasetSpec(
         "livecodebench",
         "livecodebench/code_generation_lite",

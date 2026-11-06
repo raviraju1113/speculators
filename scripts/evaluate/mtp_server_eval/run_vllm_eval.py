@@ -42,6 +42,56 @@ DATA_FILES = {
     "math500": "math500.jsonl",
     "humaneval": "humaneval.jsonl",
     "mbpp": "mbpp.jsonl",
+    # Inferact/Kimi-K3-DSpark acceptance-suite additions
+    "mt-bench": "mt-bench.jsonl",
+    "aime26": "aime26.jsonl",
+    "swe-bench-pro": "swe-bench-pro.jsonl",
+    "swe-rebench": "swe-rebench.jsonl",
+    "aa-lcr": "aa-lcr.jsonl",
+    "bfcl": "bfcl.jsonl",
+    # Held-out slice of the regen training distribution (in-domain sanity check).
+    "heldout_chat": "heldout_chat.jsonl",
+    # MAI Profile V3 delta-extraction traffic (long structured prompts).
+    "sc1_delta": "sc1_delta.jsonl",
+    # AA-LCR context-length sweep: same 100 questions truncated to each length,
+    # so acceptance differences isolate context length (../prepare_aa_lcr_sweep.py).
+    # Needs max_model_len >= bin + max_tokens.
+    "aa-lcr-1k": "aa-lcr-1k.jsonl",
+    "aa-lcr-2k": "aa-lcr-2k.jsonl",
+    "aa-lcr-4k": "aa-lcr-4k.jsonl",
+    "aa-lcr-8k": "aa-lcr-8k.jsonl",
+    "aa-lcr-16k": "aa-lcr-16k.jsonl",
+    "aa-lcr-32k": "aa-lcr-32k.jsonl",
+    "aa-lcr-64k": "aa-lcr-64k.jsonl",
+    "aa-lcr-96k": "aa-lcr-96k.jsonl",
+    "aa-lcr-112k": "aa-lcr-112k.jsonl",
+    # The source documents top out at ~123k tokens, so this bin is the full
+    # untruncated document set (~89k-123k), not an exact 128k point.
+    "aa-lcr-128k": "aa-lcr-128k.jsonl",
+    # SPEED-Bench qualitative: all 11 categories x 80 prompts (see ../README.md)
+    "speed-coding": "speed-coding.jsonl",
+    "speed-humanities": "speed-humanities.jsonl",
+    "speed-math": "speed-math.jsonl",
+    "speed-multilingual": "speed-multilingual.jsonl",
+    "speed-qa": "speed-qa.jsonl",
+    "speed-rag": "speed-rag.jsonl",
+    "speed-reasoning": "speed-reasoning.jsonl",
+    "speed-roleplay": "speed-roleplay.jsonl",
+    "speed-stem": "speed-stem.jsonl",
+    "speed-summarization": "speed-summarization.jsonl",
+    "speed-writing": "speed-writing.jsonl",
+    # SPEED-Bench throughput slice
+    "speed-low-entropy": "speed-low-entropy.jsonl",
+    # RedHatAI/speculator_benchmarks (former evaluate.py defaults)
+    "HumanEval": "HumanEval.jsonl",
+    "math_reasoning": "math_reasoning.jsonl",
+    "qa": "qa.jsonl",
+    "question": "question.jsonl",
+    "rag": "rag.jsonl",
+    "summarization": "summarization.jsonl",
+    "tool_call": "tool_call.jsonl",
+    "translation": "translation.jsonl",
+    "writing": "writing.jsonl",
 }
 
 
@@ -126,6 +176,7 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
     t0 = time.perf_counter()
     first_tok_t = None
     usage = None
+    finish_reason = None
     with requests.post(
         f"{base_url}/v1/chat/completions", json=payload, stream=True, timeout=3600
     ) as r:
@@ -143,9 +194,16 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
                 usage = obj["usage"]
             choices = obj.get("choices") or []
             if choices:
+                if choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
                 delta = choices[0].get("delta") or {}
-                if first_tok_t is None and (
-                    delta.get("content") or delta.get("reasoning_content")
+                # First token = first chunk carrying any non-empty textual field
+                # (content, reasoning_content, or any parser-specific field), except
+                # the leading role-only chunk. Checking just content/reasoning_content
+                # misses reasoning tokens under some reasoning parsers (e.g. glm45),
+                # which left long reasoning outputs with ttft=None -> bogus decode rate.
+                if first_tok_t is None and any(
+                    k != "role" and isinstance(v, str) and v for k, v in delta.items()
                 ):
                     first_tok_t = time.perf_counter()
     t_end = time.perf_counter()
@@ -159,6 +217,10 @@ def send_chat_stream(base_url, model, prompt, max_tokens, temperature):
         "ttft_s": ttft,
         "decode_time_s": decode_time,
         "e2e_s": t_end - t0,
+        # "length" = hit the max_tokens cap, i.e. generation never terminated.
+        # A draft that inflates this is emitting tokens that get thrown away --
+        # invisible in decode tok/s, which is per-token, not per-request.
+        "finish_reason": finish_reason,
     }
 
 
@@ -180,7 +242,15 @@ def main():
     ap.add_argument(
         "--benchmarks",
         default="aime,gpqa,livecodebench",
-        help="comma-separated subset of: aime,gpqa,livecodebench",
+        help=(
+            "comma-separated subset of: aime,gpqa,livecodebench,gsm8k,math500,"
+            "humaneval,mbpp,mt-bench,aime26,swe-bench-pro,swe-rebench,aa-lcr,"
+            "speed-coding,speed-humanities,speed-math,speed-multilingual,"
+            "speed-qa,speed-rag,speed-reasoning,speed-roleplay,speed-stem,"
+            "speed-summarization,speed-writing,"
+            "speed-low-entropy,HumanEval,math_reasoning,qa,question,rag,"
+            "summarization,tool_call,translation,writing"
+        ),
     )
     ap.add_argument(
         "--num-samples", type=int, default=20, help="per benchmark (0 = all)"
@@ -230,6 +300,7 @@ def main():
         tot_decode_time = 0.0
         tot_e2e = 0.0
         ttfts = []
+        runaways = 0
         for s in samples:
             try:
                 res = send_chat_stream(
@@ -247,6 +318,8 @@ def main():
                 tot_decode_time += res["decode_time_s"]
             if res["ttft_s"]:
                 ttfts.append(res["ttft_s"])
+            if res["finish_reason"] == "length":
+                runaways += 1
             rec = {**{k: s[k] for k in ("benchmark", "id")}, **res}
             detail_f.write(json.dumps(rec) + "\n")
             detail_f.flush()
@@ -262,6 +335,11 @@ def main():
         decode_tok_s = tot_decode_tokens / tot_decode_time if tot_decode_time else 0.0
         e2e_tok_s = tot_completion / tot_e2e if tot_e2e else 0.0
         mean_ttft = sum(ttfts) / len(ttfts) if ttfts else None
+        # Request-level metrics. decode_tok_s alone cannot tell "finished the
+        # same work sooner" from "spent the same time emitting more tokens":
+        # tok/req and req/s separate those, and runaways flags the pathological
+        # case outright. Serial harness, so req_per_s == 1 / mean_e2e_s.
+        mean_e2e = tot_e2e / n_ok if n_ok else None
         row = {
             "benchmark": bench,
             "n": n_ok,
@@ -270,6 +348,10 @@ def main():
             "decode_tok_s": round(decode_tok_s, 1),
             "e2e_tok_s": round(e2e_tok_s, 1),
             "mean_ttft_s": round(mean_ttft, 3) if mean_ttft else None,
+            "mean_e2e_s": round(mean_e2e, 3) if mean_e2e else None,
+            "req_per_s": round(n_ok / tot_e2e, 4) if tot_e2e else None,
+            "tok_per_req": round(tot_completion / n_ok, 1) if n_ok else None,
+            "runaways": runaways,
             "accept_length": round(accept_len, 3) if accept_len else None,
             "accept_rate": round(accept_rate, 4) if accept_rate else None,
             "metric_samples": None,
@@ -277,6 +359,8 @@ def main():
         summary.append(row)
         print(
             f"--- {bench}: n={n_ok}  decode_tok/s={decode_tok_s:.1f}  "
+            f"tok/req={row['tok_per_req']}  req/s={row['req_per_s']}  "
+            f"runaway={runaways}  "
             f"accept_length={row['accept_length']}  "
             f"accept_rate={row['accept_rate']}"
         )
@@ -287,13 +371,16 @@ def main():
 
     print("\n============================= SUMMARY =============================")
     print(
-        f"{'benchmark':<16}{'n':>4}{'decode_tok/s':>14}{'accept_len':>12}{'accept_rate':>13}"
+        f"{'benchmark':<16}{'n':>4}{'decode_tok/s':>13}{'tok/req':>9}"
+        f"{'req/s':>8}{'runaway':>8}{'accept_len':>11}{'accept_rate':>12}"
     )
     for r in summary:
         al = "n/a" if r["accept_length"] is None else f"{r['accept_length']:.3f}"
         ar = "n/a" if r["accept_rate"] is None else f"{r['accept_rate']:.4f}"
         print(
-            f"{r['benchmark']:<16}{r['n']:>4}{r['decode_tok_s']:>14.1f}{al:>12}{ar:>13}"
+            f"{r['benchmark']:<16}{r['n']:>4}{r['decode_tok_s']:>13.1f}"
+            f"{r['tok_per_req'] or 0:>9.1f}{r['req_per_s'] or 0:>8.3f}"
+            f"{r['runaways']:>8}{al:>11}{ar:>12}"
         )
     print(
         "\naccept_rate = accepted_tokens / draft_tokens (vLLM cumulative counters, delta over this run)"
