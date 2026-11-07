@@ -1044,6 +1044,71 @@ has been deleted; the user decides. Until then, training runs should prefer A + 
 (snapshot `nemo782k_regen_glm53_snap20pct_shardA_20261104.jsonl` is unaffected).
 
 
+### 9.u Speed-up probes 2026-11-07 — MTP draft on a B300 gives ~1.0×; SambaCloud GLM-5.3 is fast but a different distribution
+
+Context at 12:14 Nov 7: 570k clean rows (72.9%): A 287,985, B1 81,854 (running on c131 since
+08:04), B2 129,706 (DONE 08:04), B3 73,119 (queued). ~208k fillable prompts left; the two
+B300s do ~2,200 rows/h together → finish ~Nov 11. Both nodes were drained for "Uplink Move"
+13:40–14:20 Nov 6 (A and B2 cancelled and resumed, nothing lost; B1/B3 unpinned from c131 via
+`scontrol update ReqNodeList=`, gres b300m288 limits them to c130/c131). No regen run so far
+used a draft (`speculative_config=None` in every server log).
+
+**MTP probe** (job 16326416, sc3-c130, 09:08–~12:30, approved): `run_regen_glm53.sh` with
+`SPEC_MTP=1` (`--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`; vLLM 0.26
+resolves `DeepSeekMTPModel` for `glm_moe_dsa`, n_predict 1 from the checkpoint's layer 78),
+`LIMIT=2000`, every other setting unchanged, rows resume into the shard A file (same pool as the
+plain run it interrupted). ~1,400 of the 2,000 LIMIT slots were eaten by the oversize-prompt
+rejections that every resume re-queues, so it yields ~600 real rows; the verdict is from the
+server metrics at KV-full steady state:
+
+| | plain decode (job 16140579, same pool, 18 h) | MTP k=3 (probe, KV full) |
+|---|---|---|
+| generation tok/s | 2,100–2,180 steady (1,600–1,800 in its first 2 h on the long-prompt tail) | 2,085 mean since KV filled; 2,164 mean over the last 2 h |
+| concurrent requests | ~130 | 56–124 (draft tokens need KV slots, steps are longer) |
+| acceptance | – | mean length 2.4 / step, per-position 68% / 43% / 27%, draft acceptance 46% |
+
+Conclusion: **~1.0× (at best ~1.2× against the matched early window).** MTP accepts ~2.4
+tokens per step but each step costs ~2.3× at batch ~100 with the KV cache full: the node is
+compute/KV-read bound, not latency bound, which is exactly where speculative decoding stops
+paying (the public 2–3× numbers are at concurrency 1–32). DFlash2 would hit the same wall
+(public GLM-5.3 DFlash2 drafts exist: AlayaNeW MIT, incoai/SubconsciousDev CC-BY-NC-ND, need
+vLLM ≥ 0.28 — recorded for the benchmark bar, not for data generation). Shard A goes back to
+plain decoding after the probe; the probe rows are ordinary target samples (rejection sampling
+preserves the distribution) and stay in the file.
+
+**SambaCloud probe** (api.sambanova.ai, model `GLM-5.3`, key in `~/.sn_api_key`,
+`examples/train/glm53/run_regen_glm53_cloud.sh`, 200 prompts of
+`data/glm53/prompts_cloudprobe_b2single_2k.jsonl` = ids whose single-node c131 rows already
+exist, output `data/glm53/cloudprobe_b2single_2k_cloud.jsonl`, concurrency 16, 11:43–12:06):
+
+- Capacity: rate limit **80 requests/min** (`x-ratelimit-limit-requests`; bursts of 32 pass, 64
+  → 23×429, 128 → all 429). Per-stream 90–195 tok/s, **1,586 tok/s aggregate at 16 streams**,
+  0 errors. With ~75 s per reply this supports ~60–90 concurrent streams with 429 retries, i.e.
+  roughly 2–3 B300s in tokens.
+- Parameters: `temperature` is honoured (T=0 near-deterministic, T=1.0 varies);
+  **`chat_template_kwargs` are ignored** — `reasoning_effort` low vs max and even
+  `enable_thinking=false` all produce the same long thinking. The cloud serves GLM-5.3 at its
+  own default effort, not our "max".
+- Paired quality vs the single-node B300 rows of the same 200 prompts (buckets by human-turn chars):
+
+| group | n | truncated | looping | finish=stop | compl. tokens mean / median | reply chars median |
+|---|---|---|---|---|---|---|
+| ALL cloud | 200 | **44.5%** | 0.00% | 61.0% | 8,616 / 7,248 | 20,772 |
+| ALL single-node | 200 | 16.5% | 0.00% | 84.0% | 4,954 / 2,254 | 7,417 |
+| <500 cloud / single | 118 | 41.5% / 17.8% | 0 / 0 | 60.2% / 82.2% | 8,676 / 4,747 (mean) | 19,734 / 5,016 |
+| <2000 cloud / single | 72 | 51.4% / 12.5% | 0 / 0 | 59.7% / 88.9% | 9,034 / 4,720 (mean) | 29,128 / 12,340 |
+| <8000 cloud / single | 10 | 30.0% / 30.0% | 0 / 0 | 80.0% / 70.0% | 4,896 / 9,082 (mean) | 8,188 / 21,894 |
+
+Paired completion-token ratio cloud/single: median 1.03, mean 12.4 (heavy tail: the cloud
+rambles to the 16k cap on prompts the B300 answers briefly). No garbage, no looping.
+
+Conclusion: **the cloud is fast enough to matter (≈ +2 B300s) but its rows are not the same
+data**: different effort/template, 1.7× longer replies, 2.7× the truncation rate. Not a drop-in
+for the training set; kept in its own `_cloud` file. Options: (a) ask the SambaCloud team to
+honour `chat_template_kwargs` (reasoning_effort/thinking) and re-run the paired probe; (b) use
+cloud rows only as a separately weighted/filtered source (finish=stop only) — a biased subset;
+(c) skip the cloud and finish on the two B300s (~Nov 11). Default until decided: (c).
+
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
 **Goal.** Establish the number the DFlash2 draft must beat: GLM-5.3 served with its own
