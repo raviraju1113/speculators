@@ -167,7 +167,13 @@ a{color:var(--accent)}
 <p>Two of our conditions make the rejected-slot term harsher than the paper's: a 32k draft vocabulary (the target's full distribution at a rejected slot is mapped onto it, with 11–28% of first-rejected tokens out of vocabulary) and a hard-label-trained seed that is sharply overconfident where it is wrong. A full-vocab DFlash2 draft with a softer seed, as planned for GLM-5.3, would sit closer to the paper's regime. Even so, the under-trained-seed test was the condition most favourable to OPD and plain SFT still won, so we are not budgeting an OPD stage for GLM.</p>
 </div>
 
-<h2>5. What we keep</h2>
+<h2>5. Decision for the GLM-5.3 draft</h2>
+<div class="prose">
+<p><strong>Do not use Draft-OPD on the GLM-5.3 DFlash2 draft.</strong> Train it with the SFT recipe to convergence, with the learning-rate anneal run to the end, and serve that checkpoint. On a converged draft OPD lost accept length in every configuration we tried, so it is not a cheap final step: the pool and pipeline exist, but running them on the finished draft is expected to make it worse, not better. On an under-trained draft OPD does gain, but plain SFT on the same on-policy rollouts gains more, so there is no checkpoint at which OPD is the better use of the data.</p>
+<p>Two narrow uses remain. If a GLM run has to be stopped before its anneal, one round of on-policy rollouts plus ordinary SFT on them is a half-hour recovery of part of the gap, and the pipeline does that as is. And if there is slack after the draft is trained, one pilot round of OPD against a plain-SFT control on the same rollouts, with benchmark evals, costs about a GPU-day and would confirm the verdict for a full-vocab DFlash2 draft, which sits closer to the paper's regime than our 32k-vocab DSpark. We would run that only as a check, not as a planned stage, and only if the control arm is run alongside it.</p>
+</div>
+
+<h2>6. What we keep</h2>
 <div class="prose">
 <ul>
 <li><strong>The infrastructure:</strong> data-parallel spec-decode rollouts via vLLM with per-slot accept logs, <code>rollouts_to_dataset.py</code>, the OPD loss with OOV masking, SFT-replay blocks, paired pool-acceptance measurement with a stop-on-drop guard, and multi-arm evals. Reusable for any on-policy data generation.</li>
@@ -176,7 +182,7 @@ a{color:var(--accent)}
 </ul>
 </div>
 
-<h2>6. Pointers</h2>
+<h2>7. Pointers</h2>
 <div class="prose">
 <ul>
 <li><code>examples/train/opd/README.md</code> — full write-up, per-arm tables, verdicts by date (§6).</li>
