@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Draft-OPD on Gemma DSpark</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: single reading column (~70ch) for prose, tables and the chart may run to 880px. Lab-notebook tone: condensed headings, mono numbers, one teal accent. */
+:root{
+  --bg:#f6f7f7; --surface:#ffffff; --fg:#17201f; --fg2:#4c5856; --muted:#7c8886; --line:#d9dedd;
+  --accent:#0b6e66; --accent-soft:#dcefec; --neg:#b9352f; --neg-soft:#f6e1df; --pos:#1f6f2a; --pos-soft:#e0efe1;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a;
+  --display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#141817; --surface:#1c2120; --fg:#eef1f0; --fg2:#b9c2c0; --muted:#8a9593; --line:#2f3736;
+  --accent:#4fc1b5; --accent-soft:#163d39; --neg:#f08a84; --neg-soft:#3e2321; --pos:#7fd38a; --pos-soft:#1f3a23;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#141817; --surface:#1c2120; --fg:#eef1f0; --fg2:#b9c2c0; --muted:#8a9593; --line:#2f3736;
+  --accent:#4fc1b5; --accent-soft:#163d39; --neg:#f08a84; --neg-soft:#3e2321; --pos:#7fd38a; --pos-soft:#1f3a23;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; color-scheme:dark }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.55;
+  padding-block:40px 72px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+main{max-width:880px;margin:0 auto}
+.prose{max-width:70ch}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;line-height:1.15;margin:0}
+h1{font-size:2.3rem;font-weight:600;letter-spacing:-.01em}
+h2{font-size:1.45rem;font-weight:600;margin-top:2.6rem;margin-bottom:.6rem;padding-top:1.2rem;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;font-weight:600;margin-top:1.6rem;margin-bottom:.4rem}
+p{margin:0 0 .9rem}
+.eyebrow{font-family:var(--mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:.5rem}
+.meta{color:var(--muted);font-size:.9rem;margin-top:.6rem}
+.verdict{margin-top:1.6rem;padding:1rem 1.2rem;border-left:4px solid var(--accent);background:var(--surface);border-radius:0 6px 6px 0}
+.verdict p:last-child{margin-bottom:0}
+ul,ol{padding-left:1.3rem;margin:0 0 .9rem}
+li{margin-bottom:.4rem}
+li>strong{font-weight:600}
+code{font-family:var(--mono);font-size:.88em;background:var(--accent-soft);padding:.05em .3em;border-radius:3px}
+.tbl{overflow-x:auto;margin:.6rem 0 1.2rem;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:560px}
+th,td{padding:.5rem .7rem;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+th{font-family:var(--display);font-weight:600;font-size:.85rem;letter-spacing:.02em;color:var(--fg2);background:color-mix(in srgb,var(--surface) 70%,var(--bg))}
+tr:last-child td{border-bottom:0}
+td.n,th.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+td.neg{color:var(--neg)} td.pos{color:var(--pos)}
+tr.ctrl td{background:color-mix(in srgb,var(--accent-soft) 45%,var(--surface))}
+tr.grp td{background:color-mix(in srgb,var(--surface) 60%,var(--bg));font-family:var(--display);font-weight:600;color:var(--fg2);font-size:.85rem}
+.tag{display:inline-block;font-family:var(--mono);font-size:.72rem;padding:.08em .45em;border-radius:3px;border:1px solid var(--line);color:var(--fg2);margin-left:.3rem;vertical-align:middle}
+.tag.ctrl{border-color:var(--accent);color:var(--accent)}
+.note{font-size:.88rem;color:var(--fg2)}
+/* chart */
+.viz{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:1rem 1rem .6rem;margin:.6rem 0 1.4rem;position:relative}
+.viz h3{margin:0 0 .2rem;font-size:1rem}
+.viz .sub{font-size:.85rem;color:var(--fg2);margin-bottom:.6rem}
+.legend{display:flex;flex-wrap:wrap;gap:.4rem 1.1rem;font-size:.82rem;color:var(--fg2);margin:.4rem 0 .2rem}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.4rem;vertical-align:-1px;background:var(--c)}
+.legend .ctrl::before{border-radius:2px;background:var(--accent)}
+.viz svg{width:100%;height:auto;display:block;font-family:var(--body)}
+.viz .lbl{font-size:12px;fill:var(--fg2)}
+.viz .lbl.ctrl{fill:var(--accent);font-weight:600}
+.viz .ax{font-size:11px;fill:var(--muted);font-family:var(--mono)}
+.viz .grid{stroke:var(--line);stroke-width:1}
+.viz .zero{stroke:var(--fg2);stroke-width:1.5}
+.viz .dot{stroke:var(--surface);stroke-width:2}
+.viz .hit{fill:transparent;cursor:default}
+.viz .grp{font-size:11px;fill:var(--muted);font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.tip{position:absolute;pointer-events:none;background:var(--fg);color:var(--bg);font-size:.8rem;padding:.35rem .55rem;border-radius:4px;white-space:nowrap;transform:translate(-50%,-120%);opacity:0;transition:opacity .12s}
+.tip[data-on]{opacity:1}
+.cmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.8rem;margin:.6rem 0 1.2rem}
+.cmp div{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:.8rem .9rem}
+.cmp .k{font-family:var(--display);font-weight:600;color:var(--fg2);font-size:.85rem;letter-spacing:.02em;margin-bottom:.25rem}
+.cmp .v{font-family:var(--mono);font-size:1.05rem;font-variant-numeric:tabular-nums}
+.cmp .v small{font-family:var(--body);font-size:.8rem;color:var(--muted)}
+a{color:var(--accent)}
+@media (prefers-reduced-motion:reduce){.tip{transition:none}}
+@media (max-width:520px){h1{font-size:1.8rem} body{font-size:15px}}
+</style>
+
+</head>
+<body>
+<main>
+<div class="eyebrow">Speculative decoding · draft training · Gemma-4-31B-it</div>
+<h1>Draft-OPD on the Gemma DSpark draft</h1>
+<p class="meta">Mengmeng Ji · 2026-11-09 · on-policy distillation (Draft-OPD, arXiv 2605.29343) applied to our DSpark draft, 2026-10-21 → 11-06. Full logs in <code>examples/train/opd/README.md</code>, branch <code>mengmengj/draft-opd</code>.</p>
+
+<div class="verdict prose">
+<p><strong>Conclusion.</strong> Draft-OPD does not improve our draft on held-out benchmarks at any seed checkpoint. On a converged seed every OPD run lowered accept length (1–3% after one round, up to 18% after eight). On an under-trained seed OPD gained 1–2%, but ordinary SFT on the exact same on-policy rollouts gained more (2–4%). In every paired comparison plain SFT ≥ OPD. We reproduce the paper's in-domain gain on its own prompt pool; it does not transfer. <strong>Decision: no OPD stage in the GLM-5.3 DFlash2 plan.</strong> The served draft stays block-12 epoch 33 at k=12.</p>
+</div>
+
+<h2>1. What we tested</h2>
+<div class="prose">
+<p>Draft-OPD trains the draft on its own speculative-decoding rollouts: run the draft+target loop on a prompt pool, then apply a forward KL to the target on accepted slots and a reverse KL on the first rejected slot, so the draft is corrected exactly where it failed. The paper reports +8% accept length (5.51 → 5.96) on Qwen3-4B with a DFlash draft, evaluated in-domain.</p>
+<p>Our draft is a 5-layer all-sliding DSpark with a DFlash2 convolution, 32k draft vocabulary, block 12, trained 25 epochs at block 8 on 782k Gemma-regenerated conversations and 8 more at block 12 (served at k=12: 7.19 / 4.64 / 5.80 accept length on AIME / GPQA / LiveCodeBench). The question was whether OPD is a worthwhile final stage for it, and by extension for the GLM-5.3 draft.</p>
+</div>
+
+<h3>Our setting vs the paper's</h3>
+<div class="tbl"><table>
+<tr><th>knob</th><th>paper</th><th>ours</th><th>why it matters</th></tr>
+<tr><td>target / draft</td><td>Qwen3-4B/8B/30B · DFlash, full vocab, block 16</td><td>Gemma-4-31B · DSpark+conv, 32k draft vocab, block 12</td><td>11–28% of first-rejected tokens are outside our draft vocab (masked)</td></tr>
+<tr><td>seed</td><td>6-epoch SFT checkpoint of a 10-epoch run</td><td>converged blk12 ep33 / ep28; under-trained conv ep8 (89% of final val)</td><td>the seed-convergence hypothesis, tested last</td></tr>
+<tr><td>prompt pool</td><td>16k: GSM8K / MATH / AoPS / CodeAlpaca</td><td>v2: 16k science+chat; v3 onward: the paper's exact mix, rebuilt and hash-disjoint from SFT data</td><td>pool domain ruled out as the cause</td></tr>
+<tr><td>λ_rej</td><td>1 (sweep 0.5–2 flat)</td><td>0.05 (1 collapses: rejected KL ≈ 17–19 nats vs 0.05 accepted)</td><td>our rejected-slot KL is ~100× the paper's regime</td></tr>
+<tr><td>rejected-slot decay γ</td><td>0.8 over the suffix, γ^(k−1)</td><td>first-rejected-only (paper's ablation: equivalent); paper decay also run</td><td>no effect either way</td></tr>
+<tr><td>rounds</td><td>8 passes over the pool, ~5.3k steps</td><td>8 (v2), 2 (track A), 1 (d, e/f)</td><td>more rounds only widened the loss</td></tr>
+<tr><td>optimizer</td><td>AdamW 3e-4 cosine</td><td>5e-5 cosine (3e-4 destroys the draft at our batch)</td><td></td></tr>
+<tr><td>evals</td><td>in-domain (GSM8K, MATH-500, HumanEval, MBPP)</td><td>AIME, GPQA, LiveCodeBench (out of domain for the pool)</td><td><strong>the difference that explains the two results</strong></td></tr>
+</table></div>
+
+<h2>2. Results</h2>
+<div class="prose"><p>Every number is greedy accept length (A100 evals; accept length is hardware-invariant to the second decimal). "Change" is relative to the arm's own seed at the same k. The plain-SFT controls train with the ordinary DSpark loss on the identical on-policy rollouts, so they isolate the OPD objective from the data.</p></div>
+
+<div class="viz" id="viz">
+<h3>Benchmark accept length after OPD, relative to each arm's seed</h3>
+<div class="sub">Dots: AIME, GPQA, LiveCodeBench per arm. Highlighted rows are the plain-SFT controls on the same rollouts. Hover a dot for the raw value.</div>
+<div class="legend"><span style="--c:var(--s1)">AIME</span><span style="--c:var(--s2)">GPQA</span><span style="--c:var(--s3)">LiveCodeBench</span><span class="ctrl">plain-SFT control</span></div>
+<svg id="chart" viewBox="0 0 860 560" role="img" aria-label="Dot chart of percent change in accept length per arm and benchmark"></svg>
+<div class="tip" id="tip"></div>
+</div>
+
+<div class="tbl"><table>
+<tr><th>arm</th><th>seed</th><th>objective</th><th>pool</th><th class="n">rounds</th><th class="n">AIME</th><th class="n">GPQA</th><th class="n">LCB</th><th>change vs seed</th></tr>
+<tr class="grp"><td colspan="9">Converged seed · blk12 ep33 · k=12 · seed 7.19 / 4.64 / 5.80</td></tr>
+<tr><td>v1</td><td>ep33</td><td>OPD λ 1</td><td>science16k</td><td class="n">8</td><td class="n" colspan="3">pool acceptance fell every round</td><td class="neg">stopped</td></tr>
+<tr><td>v2</td><td>ep33</td><td>OPD λ 0.05</td><td>science16k</td><td class="n">8</td><td class="n">6.19</td><td class="n">4.21</td><td class="n">4.73</td><td class="neg">−14% / −9% / −18%</td></tr>
+<tr><td>b1</td><td>ep33</td><td>OPD λ 1</td><td>paper16k</td><td class="n">1</td><td class="n">6.41</td><td class="n">4.38</td><td class="n">5.34</td><td class="neg">−11% / −6% / −8%</td></tr>
+<tr><td>b</td><td>ep33</td><td>OPD λ 0.05</td><td>paper16k</td><td class="n">1</td><td class="n">7.00</td><td class="n">4.58</td><td class="n">5.72</td><td class="neg">−3% / −1% / −1%</td></tr>
+<tr><td>b</td><td>ep33</td><td>OPD λ 0.05</td><td>paper16k</td><td class="n">2</td><td class="n">6.71</td><td class="n">4.43</td><td class="n">5.40</td><td class="neg">−7% / −5% / −7%</td></tr>
+<tr><td>a</td><td>ep33</td><td>OPD λ 0.05 + SFT replay</td><td>paper16k</td><td class="n">1</td><td class="n">6.90</td><td class="n">4.55</td><td class="n">5.67</td><td class="neg">−4% / −2% / −2%</td></tr>
+<tr><td>a</td><td>ep33</td><td>OPD λ 0.05 + SFT replay</td><td>paper16k</td><td class="n">2</td><td class="n">6.50</td><td class="n">4.39</td><td class="n">5.27</td><td class="neg">−10% / −5% / −9%</td></tr>
+<tr class="ctrl"><td>c <span class="tag ctrl">control</span></td><td>ep33</td><td>plain SFT, same rollouts</td><td>paper16k</td><td class="n">1</td><td class="n">7.20</td><td class="n">4.63</td><td class="n">5.76</td><td>0 / 0 / −1%</td></tr>
+<tr class="ctrl"><td>c <span class="tag ctrl">control</span></td><td>ep33</td><td>plain SFT, same rollouts</td><td>paper16k</td><td class="n">2</td><td class="n">6.88</td><td class="n">4.46</td><td class="n">5.52</td><td class="neg">−4% / −4% / −5%</td></tr>
+<tr class="grp"><td colspan="9">Less-converged seed · blk12 ep28 · k=12 · seed 6.81 / 4.52 / 5.55</td></tr>
+<tr><td>d</td><td>ep28</td><td>paper's exact loss: λ 1, γ^(k−1)</td><td>paper16k</td><td class="n">1</td><td class="n">5.97</td><td class="n">4.16</td><td class="n">5.09</td><td class="neg">−12% / −8% / −8%</td></tr>
+<tr class="grp"><td colspan="9">Under-trained seed · conv ep8 (block 8, 89% of final val, saved at high LR) · k=8 · seed 5.47 / 3.92 / 4.57</td></tr>
+<tr><td>e</td><td>ep8</td><td>OPD λ 0.05</td><td>paper16k</td><td class="n">1</td><td class="n">5.60</td><td class="n">3.93</td><td class="n">4.63</td><td class="pos">+2.4% / +0.3% / +1.2%</td></tr>
+<tr class="ctrl"><td>f <span class="tag ctrl">control</span></td><td>ep8</td><td>plain SFT, same rollouts</td><td>paper16k</td><td class="n">1</td><td class="n">5.67</td><td class="n">3.96</td><td class="n">4.67</td><td class="pos">+3.6% / +0.9% / +2.1%</td></tr>
+</table></div>
+
+<h3>Pool acceptance did rise — it just does not transfer</h3>
+<div class="cmp">
+<div><div class="k">v2, science pool, 8 rounds</div><div class="v">0.212 → 0.257 <small>paired rollout accept rate, +22%</small></div></div>
+<div><div class="k">b, paper pool, 1 round</div><div class="v">0.441 → 0.460 <small>+4.2%; control c: 0.469, +6.3%</small></div></div>
+<div><div class="k">λ = 1, any seed (v1, b1, d)</div><div class="v">−10% to −13% <small>in a single round; guard stops the run</small></div></div>
+</div>
+<p class="note prose">Pool acceptance is measured on the same 16k training prompts at temperature 0, so part of the gain is memorization. Benchmarks are the arbiter.</p>
+
+<h2>3. What the sweep rules out</h2>
+<div class="prose">
+<ul>
+<li><strong>Pool domain.</strong> The science/chat pool was our first suspect. Rebuilding the paper's own math/code pool (hash-disjoint from SFT data) made the seed strong on the pool (0.44 vs 0.21) and still lost on benchmarks.</li>
+<li><strong>Forgetting.</strong> Mixing 8k SFT rows per round (ordinary loss) into OPD training cancelled the pool gain and lost <em>more</em> on benchmarks than OPD alone.</li>
+<li><strong>Loss details.</strong> λ_rej = 1 (the paper's value) collapses the draft in one round on every seed and pool: the reverse KL at a rejected slot is 17–19 nats against 0.05 on accepted slots, so at λ 1 the gradient is almost entirely "spread the draft out where it is wrong". The paper's γ decay changes nothing; forward KL on rejected slots is worse than reverse (matches the paper); dropping fully-accepted blocks is worse.</li>
+<li><strong>Seed convergence.</strong> A slightly earlier checkpoint (ep28) behaves like ep33. A genuinely under-trained checkpoint (ep8 of 26, 0.55 below final) does gain from one OPD round, but plain SFT on the same rollouts gains more. The gain is the low-LR anneal of a high-LR checkpoint plus one pass of on-policy text; the OPD objective subtracts from it by the same ~1% it does on the converged seed.</li>
+<li><strong>Rounds.</strong> On a converged seed the loss grows with rounds (v2: ckpt 34 flat, ckpt 41 −14…−18%; track A: −1…−3% at round 1, −5…−7% at round 2). The control also drifts down at round 2 (−4…−5%), so a narrow 16k pool is itself mildly harmful to a converged draft; OPD is below the control at every round.</li>
+</ul>
+<p>Not tested: λ_rej between 0.05 and 1, below 0.05, or λ_acc ≠ 1; more than one round on the under-trained seed. At λ→0 OPD becomes forward-KL distillation on accepted slots only (it never trains on the first wrong token), so that end cannot beat SFT either; an interior optimum above SFT is possible but nothing in the data points to one.</p>
+</div>
+
+<h2>4. Reading</h2>
+<div class="prose">
+<p>The paper's result and ours are consistent. They train on math/code prompts and evaluate on math/code; we train on the same prompts and see the same in-domain gain, then evaluate on AIME, GPQA and LiveCodeBench and see the general distribution pay for it. The acceptance-aware objective sharpens the draft on the pool's prompts at the expense of everything else, and plain SFT on the identical rollouts is a strictly better use of the same data in every paired run we have.</p>
+<p>Two of our conditions make the rejected-slot term harsher than the paper's: a 32k draft vocabulary (the target's full distribution at a rejected slot is mapped onto it, with 11–28% of first-rejected tokens out of vocabulary) and a hard-label-trained seed that is sharply overconfident where it is wrong. A full-vocab DFlash2 draft with a softer seed, as planned for GLM-5.3, would sit closer to the paper's regime. Even so, the under-trained-seed test was the condition most favourable to OPD and plain SFT still won, so we are not budgeting an OPD stage for GLM.</p>
+</div>
+
+<h2>5. What we keep</h2>
+<div class="prose">
+<ul>
+<li><strong>The infrastructure:</strong> data-parallel spec-decode rollouts via vLLM with per-slot accept logs, <code>rollouts_to_dataset.py</code>, the OPD loss with OOV masking, SFT-replay blocks, paired pool-acceptance measurement with a stop-on-drop guard, and multi-arm evals. Reusable for any on-policy data generation.</li>
+<li><strong>A cheap anneal.</strong> One round of ordinary SFT on 16k on-policy rollouts recovers a third of the gap between an early high-LR checkpoint and the end of its run (ep8: 5.47 → 5.67 on AIME). Useful if a GLM run has to be cut short; a proper LR anneal gives the same for free.</li>
+<li><strong>The control discipline.</strong> Pool acceptance on training prompts overstates gains; every on-policy change needs an ordinary-loss arm on the same rollouts and a benchmark eval at the served k.</li>
+</ul>
+</div>
+
+<h2>6. Pointers</h2>
+<div class="prose">
+<ul>
+<li><code>examples/train/opd/README.md</code> — full write-up, per-arm tables, verdicts by date (§6).</li>
+<li><code>examples/train/opd/PLAN.md</code> — dated log of every run, pilot and infra fix.</li>
+<li><code>scripts/evaluate/experiments/gemma4-31b-dspark-opd-v{2,3}.yaml</code> and <code>results/gemma4-31b-dspark-opd-v3/</code> — eval configs and raw summaries.</li>
+<li>Paper: Draft-OPD, arXiv 2605.29343.</li>
+</ul>
+</div>
+</main>
+
+<script>
+(function(){
+  // rows: label, group, ctrl flag, [AIME, GPQA, LCB] % change, raw [seed triple, after triple]
+  const rows = [
+    {g:"converged seed · blk12 ep33 · k=12"},
+    {l:"v2 · OPD λ0.05 · science pool · 8 rounds", v:[-13.9,-9.3,-18.4], raw:["7.19→6.19","4.64→4.21","5.80→4.73"]},
+    {l:"b1 · OPD λ1 · 1 round", v:[-10.8,-5.6,-7.9], raw:["7.19→6.41","4.64→4.38","5.80→5.34"]},
+    {l:"b · OPD λ0.05 · 1 round", v:[-2.6,-1.3,-1.4], raw:["7.19→7.00","4.64→4.58","5.80→5.72"]},
+    {l:"b · OPD λ0.05 · 2 rounds", v:[-6.7,-4.5,-6.9], raw:["7.19→6.71","4.64→4.43","5.80→5.40"]},
+    {l:"a · OPD λ0.05 + replay · 1 round", v:[-4.0,-1.9,-2.2], raw:["7.19→6.90","4.64→4.55","5.80→5.67"]},
+    {l:"a · OPD λ0.05 + replay · 2 rounds", v:[-9.6,-5.4,-9.1], raw:["7.19→6.50","4.64→4.39","5.80→5.27"]},
+    {l:"c · plain SFT control · 1 round", ctrl:true, v:[0.1,-0.2,-0.7], raw:["7.19→7.20","4.64→4.63","5.80→5.76"]},
+    {l:"c · plain SFT control · 2 rounds", ctrl:true, v:[-4.3,-3.9,-4.8], raw:["7.19→6.88","4.64→4.46","5.80→5.52"]},
+    {g:"less-converged seed · blk12 ep28 · k=12"},
+    {l:"d · paper's exact loss (λ1, γ^(k−1)) · 1 round", v:[-12.4,-8.0,-8.3], raw:["6.81→5.97","4.52→4.16","5.55→5.09"]},
+    {g:"under-trained seed · conv ep8 · k=8"},
+    {l:"e · OPD λ0.05 · 1 round", v:[2.4,0.3,1.2], raw:["5.47→5.60","3.92→3.93","4.57→4.63"]},
+    {l:"f · plain SFT control · 1 round", ctrl:true, v:[3.6,0.9,2.1], raw:["5.47→5.67","3.92→3.96","4.57→4.67"]},
+  ];
+  const names=["AIME","GPQA","LiveCodeBench"], cols=["var(--s1)","var(--s2)","var(--s3)"];
+  const W=860, left=330, right=830, top=20, rowH=30, grpH=26;
+  const xmin=-20, xmax=5;
+  const x=v=>left+(v-xmin)/(xmax-xmin)*(right-left);
+  let y=top, parts=[];
+  // grid + axis
+  for(let t=xmin;t<=xmax;t+=5){
+    parts.push(`<line class="${t===0?'zero':'grid'}" x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="__H__"/>`);
+    parts.push(`<text class="ax" x="${x(t)}" y="__HA__" text-anchor="middle">${t>0?'+':''}${t}%</text>`);
+  }
+  rows.forEach(r=>{
+    if(r.g){ y+=grpH; parts.push(`<text class="grp" x="8" y="${y-6}">${r.g}</text>`); return; }
+    const cy=y+rowH/2;
+    parts.push(`<text class="lbl${r.ctrl?' ctrl':''}" x="${left-10}" y="${cy+4}" text-anchor="end">${r.l}</text>`);
+    if(r.ctrl) parts.push(`<rect x="${left}" y="${y+3}" width="${right-left}" height="${rowH-6}" fill="var(--accent-soft)" opacity=".55"/>`);
+    parts.push(`<line class="grid" x1="${left}" x2="${right}" y1="${cy}" y2="${cy}" stroke-dasharray="2 4"/>`);
+    r.v.forEach((v,i)=>{
+      parts.push(`<circle class="dot" cx="${x(v)}" cy="${cy}" r="6" fill="${cols[i]}"/>`);
+      parts.push(`<circle class="hit" cx="${x(v)}" cy="${cy}" r="12" data-t="${names[i]}: ${v>0?'+':''}${v.toFixed(1)}% (${r.raw[i]})"/>`);
+    });
+    y+=rowH;
+  });
+  const H=y+10;
+  const svg=document.getElementById('chart');
+  svg.setAttribute('viewBox',`0 0 ${W} ${H+24}`);
+  svg.innerHTML=parts.join('').replace(/__H__/g,H).replace(/__HA__/g,H+16);
+  const tip=document.getElementById('tip'), viz=document.getElementById('viz');
+  svg.addEventListener('mousemove',e=>{
+    const h=e.target.closest('.hit'); if(!h){tip.removeAttribute('data-on');return;}
+    const b=viz.getBoundingClientRect();
+    tip.textContent=h.dataset.t; tip.style.left=(e.clientX-b.left)+'px'; tip.style.top=(e.clientY-b.top)+'px'; tip.setAttribute('data-on','');
+  });
+  svg.addEventListener('mouseleave',()=>tip.removeAttribute('data-on'));
+})();
+</script>
+
+</body>
+</html>
