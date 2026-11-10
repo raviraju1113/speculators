@@ -268,6 +268,10 @@ block size, loss, γ, anchors, LR, schedule, init, optimiser, selector/conv sett
 7. *Validation:* `check_hidden_states` (shape/token check) already runs per row in
    every process; add a content checksum written by the leader and verified by
    followers so a torn read can never train on partial tensors.
+8. *Cross-node fetch once per node.* When the verifier is on another node, only the
+   leader fetches a row over the network (Mooncake) and writes it to node-local
+   `/dev/shm`; followers read the local file. Eight readers pulling ~1.5 GB/s each
+   would otherwise saturate the 100 GbE link.
 
 Isolation: each draft has its own process, wandb run, checkpoint dir and log. A
 follower crash stalls nobody (rule 4) and resumes at its own step; only the leader's
@@ -346,6 +350,28 @@ exists) and multi-node shared mode.
 | draft-side kernels (CuTeDSL QK-norm/RoPE, FA4 sparse block attention, cuDNN THD packing, CP) | tied to ASpec's model classes and attention layouts; a rewrite of our draft's attention path | weeks | **no** — the verifier bounds epoch time, the draft has ~2.5× margin |
 | sequence packing, selective head/loss computation | already have: multipack sampler at 16k, fused loss, logits only on anchor positions | 0 | nothing to do |
 | Plan/Evidence, exact recovery, strict export | checkpoint resume and ravir's vLLM export already cover our needs | days | not now |
+
+### 5.2.7 Risk register for multi-draft on one node (2026-11-09) — and why the SOTA run stays standalone
+
+| risk | effect | mitigation | residual for a SOTA run inside the group |
+|---|---|---|---|
+| new data-path code (wait, refcounted delete, keyed Mooncake reads) | wrong or missing rows | acceptance test; every row validated (`check_hidden_states` + checksum) | yes, until one clean epoch |
+| pacing | group runs at the slowest member's pace; a hung follower stalls all until the dead-reader timeout | timeout + follower fallback to self-generate | yes: candidate speed depends on 7 other processes |
+| leader death | stream stops for all | restart; followers resume at their own step | uptime only |
+| cross-node fetch bandwidth | 8 readers × ~1.5 GB/s saturate the 100 GbE link | **leader pulls each row once into node-local `/dev/shm`; followers read locally** (added to §5.2.2 as rule 8) | none once implemented |
+| host RAM | 8 × dataloader prefetch of ~450 MB rows ≈ 30 GB per process + the `/dev/shm` buffer | budget `num_workers × prefetch_factor`; node has 2.3 TB | low |
+| GPU memory | two drafts per GPU: one OOM kills both | one draft per GPU | none |
+| checkpoint disk | 8 drafts × 6 saves × up to ~25 GB with optimizer state ≈ 1.3 TB on a 93 %-full NFS | weights-only saves for contrasts; prune | operational |
+| verifier interaction | zero in group mode; followers that overtake or fall back regenerate and take verifier time from the leader | monitor regenerate counts | small |
+| math | 1 rank × accum 8 ≡ 8 ranks × 1 up to float summation order | acceptance test | negligible |
+
+Nothing can silently corrupt a draft (rows are validated; any draft can restart
+standalone from its checkpoint), but three items — new code, pacing, leader death —
+make a grouped run's wall-clock and uptime depend on seven other processes and on
+code that has never run. **Decision: the SOTA candidate runs alone (node A, ravir's
+8-rank launch); the group runs on node B with an L5 copy as leader.** After one epoch
+with parity within noise, the next SOTA-class run may live inside a group. With a
+single B200 node, the candidate goes first and the group waits.
 
 ### 5.3 Option B — one process, N drafts
 
