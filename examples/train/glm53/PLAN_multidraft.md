@@ -1,7 +1,50 @@
 # GLM-5.3 draft training plan — many drafts, one verifier stream
 
-Status: planning, 2026-11-05. Branch `mengmengj/glm-dflash2`. Owner: mengmengj.
-Companion to README §9 (data generation). Nothing here has run yet.
+Status: planning, 2026-11-05; decisions of 2026-11-10 folded in (see the box below).
+Branch `mengmengj/glm-dflash2`. Owner: mengmengj. Companion to README §9 (data
+generation). Nothing here has run yet except the B300 verifier probe (queued).
+
+> **Decisions 2026-11-10 (mengmengj + Claude), for review**
+> 1. **First layout = A**: one B300 verifier (c131, probe job 16963612 queued behind the
+>    last regen job), one B200 node for the SOTA candidate (ravir's 8-rank launch,
+>    nothing shared), one B200 node for the sweep. The probe is the gate: hidden-state
+>    shape/NaN/zero-layer/lm_head-agreement on 4 rows, load test at 32 and 64 in-flight
+>    rows (stream rate from vLLM's prompt tok/s), and a ping to a B200 trainer node
+>    (c131's `mlnx0` is on the same 10.17.16.0/21 network as the B200s' `brcm0`). If it
+>    fails, the SOTA run starts on ravir's proven 3-node B200 layout instead and the
+>    B300 verifier becomes phase-2 work; it does not wait.
+> 2. **Schedule = WSD**, not cosine: warmup 4 %, hold at peak, linear decay over the last
+>    15 % of `--scheduler-total-steps`. The plateau makes extension and mid-run LR cuts
+>    free (no warm-restart dip); the decay leg does the "landing", so the peak LR does
+>    not have to hit the convergence sweet spot itself. A servable intermediate draft
+>    needs its own short decay leg from a plateau checkpoint.
+> 3. **Length = plan 5 epochs (~16 B tokens), decide at every half epoch.** Our rows are
+>    ~4× Gemma's in tokens (one GLM epoch ≈ 3.3 B tokens ≈ 4 Gemma epochs); Gemma was
+>    nearly converged at 8 of its epochs (≈6 B tokens) and still crept up to 25. Stop
+>    when val accept_len flattens; extend before the decay starts if it is still rising.
+> 4. **LR: pilot 1e-4 / 2e-4 / 4e-4 in parallel, not ahead** (three streams, ~1,500
+>    steps each on the first 40k rows); 5e-5 stays a sweep contrast; the 6e-4 arm is
+>    dropped. Prior 2e-4 = Gemma's 6e-4 (Muon+AdamW, 590k tokens/step) scaled by the
+>    square root of our batch ratio (131k tokens/step) for an AdamW-only draft. Take
+>    the highest arm that is still improving and clean at step 1,500.
+> 5. **Data**: all regenerated rows, truncated rows **kept** (dropping would remove 28 %
+>    of math and 20 % of code, README §9.u.2), the 47.8k escaped-Chinese prompts
+>    **kept** (95 % get a correct Chinese answer; our only CJK chat), `SEQ_LENGTH=16384`,
+>    `KEEP_TRUNCATED=1`; dry run of the prep at these settings passed (20k rows, 4 min,
+>    0 zero-mask rows). Full prep ≈ 3 h after regen ends (~09:00 Nov 11).
+> 6. **Aux layers in vLLM ids: `6 20 34 48 62 76`** (+ last appended by launch_vllm) —
+>    the incoai taps as ravir's A1 run passes them; the 0-based `5 19 33 47 61 75` in
+>    the old text is the same set in dflash ids. Use the vLLM convention with his launcher.
+> 7. **Loss**: `kl_div` + fixed-exp-decay γ 4 + selector α 1 (the Kimi K3 recipe as ravir
+>    mapped it; incoai and ravir's 2.83 both used KL-style distillation). `ce` is the
+>    DFlash-paper contrast. The Gemma `ce 0.1 + tv 0.9` mix lives on the DSpark branch
+>    and must be ported before its sweep slot can run.
+> 8. **Sweep contrast added: the K3 served layout** (4 sliding-4096 layers + 1 full
+>    attention, 64q/16kv × hd64) from the CSplashKimi reference; ravir's "Kimi shape" is
+>    all-sliding 2048, which K3 does not serve. §2b.
+> 9. **Coordinate with ravir** before launching contrasts: his A0 (Kimi taps) vs A1
+>    (incoai taps) ablations started 2026-11-10 09:28 on 6 B200 nodes and settle the
+>    taps question in ~2 days.
 
 ## 0. Summary
 
@@ -75,15 +118,15 @@ Anchor = ravir's mapping of the Kimi K3 recipe, changed only where our data diff
 
 | | value | why |
 |---|---|---|
-| data | full cleaned regen (`nemo782k_regen_glm53_all.jsonl` after the §9.v `!{32,}` filter), `prepare_glm53_data.sh` with `SEQ_LENGTH=16384`; keep rows truncated at the 16k cap (they are cut at 16k, README §9.x); loss mask = `<think>…</think>answer` of every assistant turn, non-final-turn thinking blanked | the served distribution, whole |
+| data | all regen rows (shard A + rem1/rem2 + B1/B2/B3, id-deduplicated; single-node B300 output, 0 garbage rows in 737k scanned), `prepare_glm53_data.sh` with `SEQ_LENGTH=16384 KEEP_TRUNCATED=1`; truncated rows kept (28 % of math / 20 % of code would otherwise go), escaped-Chinese prompts kept; loss mask = `<think>…</think>answer` of every assistant turn, non-final-turn thinking blanked. Composition (README §9.u.2): STEM-MCQ 46 %, chat 32 %, math 16 %, code 6 %, IFEval-style 1 %, tool-calling 0.1 % of prompts | the served distribution, whole |
 | validation | `train_ratio 0.998` (~1.3k held-out rows) → val accept_len every half epoch | Gemma practice |
 | draft | **incoai geometry, 5 layers** (decided 2026-11-09): `--draft-config examples/train/glm53/glm53_dflash2_incoai_shape_L5.json` (`_L4` / `_L6` are the depth contrasts, §2b) — hidden 6144, 64 q / 8 kv heads × head_dim 128, MLP 12288, **all-sliding window 2048**, non-causal in-block (`is_causal: false`), rope θ 1e6, full vocab; on the CLI: conv kernel 2 / group 16, selector rank 256 / top-16, `sample_from_anchor=False` (L4/L5/L6 ≈ 1.6 / 1.9 / 2.3B trainable + 1.9B frozen) | incoai's head geometry and attention layout, which reach 3.89 on this target at 6 layers; depth is the first contrast rather than assumed; ravir's results put the gap at position 0 (0.68 vs 0.80), i.e. draft capacity — 5 layers × head_dim 64 is half the attention width. **Do not rely on the speculators default:** it synthesizes 5 layers and copies GLM's head geometry (64 heads × head_dim 192, 64 KV heads, MHA), which neither incoai nor ravir used. The default does agree on all-sliding and non-causal blocks; all-sliding is also what the Gemma AA-LCR bins favoured (README §2) |
-| aux layers | `--target-layer-ids 5 19 33 47 61 75` (+78 appended by launch_vllm) | incoai's set (0-based 5…75, matching its config); 6 layers incl. a deep one |
+| aux layers | `--target-layer-ids 6 20 34 48 62 76` in **vLLM ids** (+ last layer appended by launch_vllm; the draft's `fc` reads the 6 taps, the last layer feeds the KL targets) | incoai's set (dflash ids 5…75 = vLLM ids 6…76, as ravir's A1 run passes them); 6 layers incl. a deep one |
 | block / anchors | `--block-size 8 --max-anchors 512` (k=7 at serve) | incoai; same k as the bar |
 | loss | `--loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4`, selector α 1, `--loss-implementation fused` | Kimi |
-| optimiser | `--optimizer adamw --lr <from the §6 step-1b pilot; prior 2e-4> --weight-decay 0 --scheduler-type cosine --scheduler-warmup-ratio 0.04`, grad clip 1.0 (hard-coded) | from-scratch LR; Kimi's 5e-5 produced 2.83 off-policy and its 2e-5 fine-tune saturated in half an epoch (ravir's results README), so 5e-5 becomes a contrast slot, not the default. Gemma drafts of this size trained stably at 3e-4–6e-4 |
+| optimiser | `--optimizer adamw --lr <pilot: 1e-4 / 2e-4 / 4e-4; prior 2e-4> --weight-decay 0 --scheduler-type wsd --scheduler-warmup-ratio 0.04 --scheduler-wsd-decay-ratio 0.15 --scheduler-total-steps <5 epochs>`, grad clip 1.0 (hard-coded) | WSD: peak held until the decay leg, so the run can be extended or the LR cut mid-run without a restart; too-high LR shows as spikes/worse plateau within ~1,000 steps, too-low costs verifier days. Prior 2e-4 = Gemma's 6e-4 (Muon 10× + AdamW, 590k tok/step) × sqrt(131k/590k) for AdamW only; Kimi's 5e-5 (2.83, converged by epoch 9) is a contrast slot |
 | batch | 8 ranks × 1 packed 16k sequence = 131k tokens/step, no accumulation (~25 conversations/step at 5.3k tok/row vs ~120 on gemma782k) | same tokens/step as ravir |
-| epochs | **3** (≈7.5B tokens ≈ Kimi's 10 × 776M budget), cosine over 3 epochs, checkpoint every 0.5 epoch; extend if val accept_len is still rising at the end | token budget, not epoch count |
+| epochs | **plan 5** (≈16 B tokens; one GLM epoch ≈ 3.3 B tokens ≈ 4 Gemma epochs, Gemma nearly converged at 8 of its own ≈ 6 B tokens), checkpoint every 0.5 epoch, val accept_len every half epoch, short set at epoch ends; stop when val flattens, extend before the decay leg if still rising. Keep the last plateau checkpoint so a decayed draft can be produced at any time | token budget, decided on the curve, not a fixed epoch count |
 | precision | bf16 hidden states, fp32 master weights, DDP | ravir |
 | launch | ravir's `run_glm53_dflash2_3node.sh` trainer role unchanged; verifier role = one B300, vLLM 0.33 TP8, same Mooncake producer flags | reuse |
 
@@ -414,14 +457,16 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    top-1 agreement, NaN scan). Needs a B300 free of regen (shard A ends ~Nov 9;
    c131 is on shard B2). Data: the full cleaned regen set, tokenized with
    `prepare_glm53_data.sh` (truncated-row policy decided once, README §9.x).
-1b. **LR pilot, three independent trainers, no new code (~1 day).** LR 5e-5 / 2e-4 /
-   6e-4 on the first 40k cleaned rows, same seed, warmup 4 % then constant (cosine
-   only in the full run), three trainers on one B200 node with 2 ranks × accum 4
+1b. **LR pilot in parallel with the launch, three independent trainers, no new code.**
+   LR 1e-4 / 2e-4 / 4e-4 on the first 40k rows, same seed, warmup 4 % then constant
+   (the WSD plateau), three trainers on the sweep B200 node with 2 ranks × accum 4
    each (131k tokens/step kept), ~1,500 optimiser steps each; the verifier serves
    each row three times (~120k row-passes ≈ 9 h). Read val accept_len at steps
-   500/1000/1500 and take the highest LR that still improves without instability.
-   This is also the end-to-end check of layout A (B300 verifier, Mooncake, B200
-   trainers) before the long run. Group mode (§5.2) is not needed for this.
+   500/1000/1500 and take the highest LR that still improves without spikes. The
+   SOTA run starts at 2e-4 at the same time; if the pilot picks another arm, the
+   plateau lets the SOTA run switch LR without a restart. The pilot doubles as the
+   end-to-end check of layout A under load (three streams: does `Waiting:` stay 0).
+   Group mode (§5.2) is not needed for this.
 2. **The full run: candidate alone on one node, 8-slot sweep on another (decided
    2026-11-06).** Two independent streams against the verifier:
    - *node A — the candidate:* §2a recipe at the pilot LR, ravir's 8-rank launch
@@ -429,10 +474,13 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    - *node B — the sweep:* 8 single-GPU trainers in group mode (§5.2; 1 rank ×
      accum 8 each, 131k tokens/step): a copy of the candidate config as leader
      (a free standalone-vs-group parity check against node A) plus 7 contrasts —
-     **depth 4, depth 6**, Kimi shape scratch, Kimi warm start, block 12, the
-     pilot's second-best LR, `ce 0.1 + tv 0.9`. Group mode is built now (no GPU
-     needed) and passes its acceptance test (§5.2.4) before node B starts; if it
-     is not ready, node A does not wait.
+     **depth 4, depth 6**, **K3 served layout** (4 sliding-4096 + 1 full, hd64),
+     Kimi warm start (ravir's epoch 9), LR 5e-5, block 12, `ce` (DFlash-paper loss;
+     `ce 0.1 + tv 0.9` only once ported from the DSpark branch). Group mode is
+     built now (no GPU needed) and passes its acceptance test (§5.2.4) before node
+     B starts; **until it exists, node B runs 2–3 independent trainers** (the LR
+     pilot first, then the top contrasts) at the verifier's expense, or gets its own
+     verifier on c130 once regen is done (layout B). Node A never waits.
    - *verifier budget:* the two streams have different row orders, so the verifier
      computes every row twice. With two B300s (after regen) each node gets its own
      verifier and there is no interaction (layout B). With one B300, the LR pilot
@@ -457,8 +505,18 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
 
 ## 7. Open questions
 
-- Truncated rows (14 % at the 16k cap, 30–40 % of tokens): keep or drop is a
-  per-stream decision (§4). README §9.x recommends keeping; one stream can't test both.
+- ~~Truncated rows: keep or drop~~ — decided 2026-11-10: keep (README §9.u.2: 11.6 %
+  of rows, concentrated in math 28.5 % / code 20.2 %). A drop-truncated stream is a
+  possible later data ablation, not part of phase 1.
+- Escaped-Chinese prompts (47.8k, 6 %): kept for phase 1. A later option is to re-run
+  them with the prompt decoded (~1.3 node-days) so the draft does not learn the
+  `\uXXXX`-decoding preamble.
+- CSplashKimi reference (read 2026-11-10): same mechanism as our DFlash2 (fc + norm,
+  GQA with q/k norms, grouped dynamic conv, candidate selector, mask token in an unused
+  slot, taps only into `fc`). Not adoptable: its prediction shift (slot k reads block
+  position k−1), which vLLM's DFlash2 block would read one slot off. Useful as an
+  independent numerical check of our export: load an exported checkpoint into it and
+  compare `propose()` with vLLM's draft tokens.
 - Whether ravir's on-policy fine-tune improved over the off-policy draft — their
   eval is in flight; if it did not, warm-start vs scratch (slot 1 vs twin) becomes
   the first question, not block size.
