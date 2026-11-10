@@ -109,6 +109,7 @@ speed-multilingual (0.61 of incoai) and tool_call (0.67) — a prompt-pool probl
 | recipe (§2a) | incoai geometry, **5 layers** | on-policy | scratch | the candidate | leader |
 | depth 4 / depth 6 | incoai geometry, `_L4` / `_L6` | on-policy | scratch | draft depth at fixed everything else; L6 = the exact incoai shape | yes |
 | Kimi shape, scratch | Kimi (5L × hd64, block 7) | on-policy | scratch | shape vs data: direct comparison with ravir's 2.83 off-policy | yes |
+| **K3 served layout** | `glm53_dflash2_k3_layout.json`: 5L × 64q/16kv × hd64, MLP 12288, **4 sliding-4096 layers + 1 full-attention layer** (the layout Kimi actually serves for K3, per the CSplashKimi reference read 2026-11-10; ravir's "Kimi shape" is all-sliding 2048, which K3 does not use) | on-policy | scratch | does the final full-attention layer matter at this depth; both trainer and vLLM 0.33 support mixed layer_types | yes |
 | Kimi shape, warm start | Kimi | on-policy | ravir's epoch-9 checkpoint | floor = their ftA ~3.0; does a real LR move it further | yes |
 | LR 5e-5 | incoai | on-policy | scratch | the Kimi LR on the new shape | yes |
 | block 12 | incoai | on-policy | scratch | the Gemma block-size win on this class | yes |
