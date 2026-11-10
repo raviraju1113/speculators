@@ -1109,6 +1109,46 @@ honour `chat_template_kwargs` (reasoning_effort/thinking) and re-run the paired 
 cloud rows only as a separately weighted/filtered source (finish=stop only) — a biased subset;
 (c) skip the cloud and finish on the two B300s (~Nov 11). Default until decided: (c).
 
+### 9.u.2 Corpus composition and regen quality snapshot (2026-11-10 12:30, 737,607 of 782,413 rows generated)
+
+Scripts: `examples/train/glm53/category_dist.py` (labels every prompt by regex: `math` = Nemotron
+"put the answer inside \boxed{}" instruction; `stem_mcq` = ≥4 `A:`…`J:` option lines; `code` =
+code fence or language/"write a function" patterns; `tool_calling`; `chat_ifeval` = IFEval-style
+constraints; `chat_other` = rest; plus language, multi-turn and escaped-unicode flags; writes
+`data/glm53/analysis/prompt_categories.tsv`) and `category_dist2.py` (token shares). Raw tables in
+`data/glm53/analysis/category_dist*_20261110.txt`.
+
+| category | prompts | share | generated | trunc % | compl. tok median / mean / p90 | tokens all | tokens kept (non-trunc) |
+|---|---|---|---|---|---|---|---|
+| stem_mcq | 356,392 | 45.6% | 337,988 | 5.2% | 747 / 2,837 / 9,298 | 30.4% | **38.0%** |
+| chat_other | 248,018 | 31.7% | 231,763 | 10.8% | 1,659 / 4,210 / 16,384 | 30.9% | 32.6% |
+| math | 123,500 | 15.8% | 117,127 | **28.5%** | 4,995 / 7,671 / 16,384 | 28.4% | 19.6% |
+| code | 47,145 | 6.0% | 43,804 | **20.2%** | 3,990 / 6,703 / 16,384 | 9.3% | 8.4% |
+| chat_ifeval | 6,892 | 0.9% | 6,483 | 6.4% | 2,832 / 4,575 / 11,649 | 0.9% | 1.3% |
+| tool_calling | 466 | 0.1% | 442 | 10.4% | 4,958 / 6,228 / 16,384 | 0.1% | 0.1% |
+| **all** | 782,413 | | 737,607 | 11.6% | | 3.16 B | 1.76 B |
+
+Other cuts: multi-turn 90,097 prompts (11.5%; 5.8% truncated, 19.6% of kept tokens); language 99.8%
+English/Latin (1,174 CJK, 101 Cyrillic); prompt length <500 chars 43%, 500–2k 47%, 2k–8k 4% (28.5%
+truncated), 8k+ 0.3%. Think share of the reply: 84% stem, 81% math, 78% code, 69% chat.
+
+Findings for curation:
+1. **Truncation at the 16k cap is concentrated in math (28.5%) and code (20.2%)**, the two domains
+   the benchmarks (AIME, LCB) reward. `prepare_glm53_data.sh` drops truncated rows, so the kept
+   token mix tilts further to STEM-MCQ (38%) and chat (33%) and away from math (20%) and code (8%).
+   Options: keep truncated rows as prefix-only training sequences (the draft only needs the
+   target's token distribution, not a finished answer), or regenerate the ~33k truncated math/code
+   rows with a 32k cap (≈2 node-days).
+2. **47,760 prompts (6.1%, 43.5k of them multi-turn, all in the kimi chat part) are Chinese text
+   stored as literal `\uXXXX` escapes** (46.6k are ≥80% escapes). GLM decodes them in the think
+   block and answers in Chinese, so these rows are effectively 6% CJK chat with a damaged prompt
+   and a wasted decode step. Either drop them or re-run them with the prompt decoded
+   (`json.loads('"'+s+'"')`), which costs ~1.3 node-days.
+3. Code is only 6% of prompts / 8% of kept tokens and tool calling is negligible; if LCB-style
+   acceptance matters, code is the domain to top up, not STEM-MCQ.
+4. Quality spot checks (4 rows read in full, 2026-11-09/10): reasoning is coherent, answers correct,
+   no looping, finish=stop; single-node B300 output remains 0 GARBAGE rows across all 737k.
+
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
 **Goal.** Establish the number the DFlash2 draft must beat: GLM-5.3 served with its own
