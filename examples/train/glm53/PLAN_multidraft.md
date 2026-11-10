@@ -6,8 +6,8 @@ Companion to README §9 (data generation). Nothing here has run yet.
 ## 0. Summary
 
 **Scope decision (2026-11-05):** no sweep and no Draft-OPD until a working recipe
-exists. Phase 1 is the from-scratch on-policy recipe (§2a: incoai shape, LR from a one-day
-pilot), run alone on one B200 node with ravir's launch, while a second B200 node runs an
+exists. Phase 1 is the from-scratch on-policy recipe (§2a: incoai geometry at 5 layers, LR
+from a one-day pilot), run alone on one B200 node with ravir's launch, while a second B200 node runs an
 8-slot sweep in group mode against the same (or a second) verifier (§6); validation
 every half epoch. §3–§5 describe the
 capacity and the multi-draft mechanism for phase 2, once one of the two beats the
@@ -77,7 +77,7 @@ Anchor = ravir's mapping of the Kimi K3 recipe, changed only where our data diff
 |---|---|---|
 | data | full cleaned regen (`nemo782k_regen_glm53_all.jsonl` after the §9.v `!{32,}` filter), `prepare_glm53_data.sh` with `SEQ_LENGTH=16384`; keep rows truncated at the 16k cap (they are cut at 16k, README §9.x); loss mask = `<think>…</think>answer` of every assistant turn, non-final-turn thinking blanked | the served distribution, whole |
 | validation | `train_ratio 0.998` (~1.3k held-out rows) → val accept_len every half epoch | Gemma practice |
-| draft | **incoai shape** (2026-11-06): `--draft-config examples/train/glm53/glm53_dflash2_incoai_shape.json` — 6 layers, hidden 6144, 64 q / 8 kv heads × head_dim 128, MLP 12288, **all-sliding window 2048**, non-causal in-block (`is_causal: false`), rope θ 1e6, full vocab; on the CLI: conv kernel 2 / group 16, selector rank 256 / top-16, `sample_from_anchor=False` (≈2.3B trainable + 1.9B frozen) | the shape that reaches 3.89 on this target; ravir's results put the gap at position 0 (0.68 vs 0.80), i.e. draft capacity — 5 layers × head_dim 64 is half the attention width. **Do not rely on the speculators default:** it synthesizes 5 layers and copies GLM's head geometry (64 heads × head_dim 192, 64 KV heads, MHA), which neither incoai nor ravir used. The default does agree on all-sliding and non-causal blocks; all-sliding is also what the Gemma AA-LCR bins favoured (README §2) |
+| draft | **incoai geometry, 5 layers** (decided 2026-11-09): `--draft-config examples/train/glm53/glm53_dflash2_incoai_shape_L5.json` (`_L4` / `_L6` are the depth contrasts, §2b) — hidden 6144, 64 q / 8 kv heads × head_dim 128, MLP 12288, **all-sliding window 2048**, non-causal in-block (`is_causal: false`), rope θ 1e6, full vocab; on the CLI: conv kernel 2 / group 16, selector rank 256 / top-16, `sample_from_anchor=False` (L4/L5/L6 ≈ 1.6 / 1.9 / 2.3B trainable + 1.9B frozen) | incoai's head geometry and attention layout, which reach 3.89 on this target at 6 layers; depth is the first contrast rather than assumed; ravir's results put the gap at position 0 (0.68 vs 0.80), i.e. draft capacity — 5 layers × head_dim 64 is half the attention width. **Do not rely on the speculators default:** it synthesizes 5 layers and copies GLM's head geometry (64 heads × head_dim 192, 64 KV heads, MHA), which neither incoai nor ravir used. The default does agree on all-sliding and non-causal blocks; all-sliding is also what the Gemma AA-LCR bins favoured (README §2) |
 | aux layers | `--target-layer-ids 5 19 33 47 61 75` (+78 appended by launch_vllm) | incoai's set (0-based 5…75, matching its config); 6 layers incl. a deep one |
 | block / anchors | `--block-size 8 --max-anchors 512` (k=7 at serve) | incoai; same k as the bar |
 | loss | `--loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4`, selector α 1, `--loss-implementation fused` | Kimi |
@@ -106,15 +106,17 @@ speed-multilingual (0.61 of incoai) and tool_call (0.67) — a prompt-pool probl
 
 | contrast | shape | data | init | what it isolates | shares the stream? |
 |---|---|---|---|---|---|
-| recipe (§2a) | incoai | on-policy | scratch | the candidate | leader |
+| recipe (§2a) | incoai geometry, **5 layers** | on-policy | scratch | the candidate | leader |
+| depth 4 / depth 6 | incoai geometry, `_L4` / `_L6` | on-policy | scratch | draft depth at fixed everything else; L6 = the exact incoai shape | yes |
 | Kimi shape, scratch | Kimi (5L × hd64, block 7) | on-policy | scratch | shape vs data: direct comparison with ravir's 2.83 off-policy | yes |
 | Kimi shape, warm start | Kimi | on-policy | ravir's epoch-9 checkpoint | floor = their ftA ~3.0; does a real LR move it further | yes |
 | LR 5e-5 | incoai | on-policy | scratch | the Kimi LR on the new shape | yes |
 | block 12 | incoai | on-policy | scratch | the Gemma block-size win on this class | yes |
 | off-policy from scratch | Kimi | gemma782k | scratch | = ravir's existing run; **not rerun** | n/a |
 
-Three parallel drafts at first (recipe, Kimi-shape scratch, Kimi-shape warm start);
-the rest once the recipe clears the bar.
+First group on one B200 node: the L5 candidate as leader plus L4 and L6 (same data,
+seed, LR; only depth differs), then Kimi-shape scratch and Kimi-shape warm start in
+the remaining slots; the rest once the recipe clears the bar.
 
 **Data action now (in the regen lane, before training starts):** add multilingual and
 function-calling prompts to the pool (own `--tag`, merged with
@@ -400,8 +402,8 @@ depends on it. Reservation name rotates (`sn50-hdi-1` today) — check with
    - *node B — the sweep:* 8 single-GPU trainers in group mode (§5.2; 1 rank ×
      accum 8 each, 131k tokens/step): a copy of the candidate config as leader
      (a free standalone-vs-group parity check against node A) plus 7 contrasts —
-     Kimi shape scratch, Kimi warm start, block 12, the pilot's second-best LR,
-     `ce 0.1 + tv 0.9`, γ 12, anchors 1024. Group mode is built now (no GPU
+     **depth 4, depth 6**, Kimi shape scratch, Kimi warm start, block 12, the
+     pilot's second-best LR, `ce 0.1 + tv 0.9`. Group mode is built now (no GPU
      needed) and passes its acceptance test (§5.2.4) before node B starts; if it
      is not ready, node A does not wait.
    - *verifier budget:* the two streams have different row orders, so the verifier
