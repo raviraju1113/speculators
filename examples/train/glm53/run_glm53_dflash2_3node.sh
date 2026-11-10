@@ -20,6 +20,9 @@
 #                    draft config; fresh optimizer/schedule) instead of
 #                    building the draft from glm53_dflash2_draft_config.json
 #   LR / EPOCHS      peak LR (default 5e-5) / epochs (default 10)
+#   TARGET_LAYER_IDS verifier layers tapped for the draft, vLLM ids (default "7 20 44 57 71")
+#   DRAFT_CONFIG     decoder config for a fresh draft (default glm53_dflash2_draft_config.json)
+#   BLOCK_SIZE       DFlash block size (default 7 -> serve at k=6)
 set -uo pipefail
 
 : "${REPO:?set REPO to a frozen code snapshot}"
@@ -31,7 +34,12 @@ WORK="${WORK:-/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2}"
 DATA_PATH="${DATA_PATH:-$WORK/data/gemma782k_glm53_s16k}"
 RUN_NAME="${RUN_NAME:-glm53_dflash2_gemma782k_kimirecipe}"
 SAVE_PATH="${SAVE_PATH:-$WORK/output/$RUN_NAME/checkpoints}"
-TARGET_LAYER_IDS="7 20 44 57 71"   # Kimi [7,23,51,67,83]/93 rescaled to 78 layers, vLLM ids
+# Default: Kimi [7,23,51,67,83]/93 rescaled to 78 layers, vLLM ids. The incoai GLM-5.3 card
+# draft taps dflash ids [5,19,33,47,61,75] = vLLM ids "6 20 34 48 62 76".
+TARGET_LAYER_IDS="${TARGET_LAYER_IDS:-7 20 44 57 71}"
+DRAFT_CONFIG="${DRAFT_CONFIG:-$REPO/examples/train/glm53/glm53_dflash2_draft_config.json}"
+BLOCK_SIZE="${BLOCK_SIZE:-7}"
+NUM_CAPTURED=$(( $(wc -w <<< "$TARGET_LAYER_IDS") + 1 ))   # taps + the verifier's last layer
 VLLM_PORT=8000
 MC_PORT=50051
 SEQ_LEN=16384
@@ -166,7 +174,7 @@ PROBE_ARGS=()
 [[ "${VLLM_EXTRA_ARGS:-}" == *dummy* ]] || PROBE_ARGS+=(--verifier "$MODEL")
 python "$REPO/examples/train/glm53/probe_hidden_states.py" --data-path "$DATA_PATH" \
     --vllm-endpoint "http://$HEAD_IP:$VLLM_PORT/v1" --mooncake-master "$TRAIN_IP:$MC_PORT" \
-    --num-layers 6 --hidden-size 6144 "${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"}" \
+    --num-layers "$NUM_CAPTURED" --hidden-size 6144 "${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"}" \
     || { echo "!! hidden-state probe failed"; touch "$RUN_DIR/TRAIN_DONE"; exit 4; }
 
 # All 8 trainer ranks are on this node: NCCL on loopback (see dspark_online_gemma4_31b.sh).
@@ -182,7 +190,7 @@ EXTRA=()
 if [ -n "${FROM_PRETRAINED:-}" ]; then
     DRAFT_INIT=(--from-pretrained "$FROM_PRETRAINED")
 else
-    DRAFT_INIT=(--draft-config "$REPO/examples/train/glm53/glm53_dflash2_draft_config.json")
+    DRAFT_INIT=(--draft-config "$DRAFT_CONFIG")
 fi
 cd "$REPO"
 python -m torch.distributed.run --nnodes=1 --nproc_per_node 8 \
@@ -199,7 +207,7 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node 8 \
     --speculator-type dflash2 \
     "${DRAFT_INIT[@]}" \
     --target-layer-ids $TARGET_LAYER_IDS \
-    --block-size 7 --max-anchors 512 --total-seq-len "$SEQ_LEN" \
+    --block-size "$BLOCK_SIZE" --max-anchors 512 --total-seq-len "$SEQ_LEN" \
     --optimizer adamw --lr "${LR:-5e-5}" --weight-decay 0.0 \
     --scheduler-type cosine --scheduler-warmup-ratio 0.04 \
     --loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4 \
