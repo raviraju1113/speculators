@@ -33,12 +33,13 @@ ASSISTANT_PATTERN="${ASSISTANT_PATTERN:-<\\|assistant\\|>((?:(?!<\\|assistant\\|
 PYTHON="${PYTHON:-/import/ml-sc-scratch1/mengmengj/condaenvs/dspark/bin/python}"
 
 FILTERED="${REGEN_JSONL%.jsonl}.clean.jsonl"
-if [ "${KEEP_TRUNCATED:-0}" = "1" ]; then
-    FILTERED="$REGEN_JSONL"
-else
-    "$PYTHON" - "$REGEN_JSONL" "$FILTERED" <<'EOF'
-import json, sys
+# The think-blanking of non-final assistant turns ALWAYS runs (it mirrors clear_thinking=true);
+# KEEP_TRUNCATED=1 only stops the truncated-row drop. (Before 2026-11-11 KEEP_TRUNCATED=1 skipped
+# the whole filter, leaving <think> blocks in earlier turns of every multi-turn row.)
+KEEP_TRUNCATED="${KEEP_TRUNCATED:-0}" "$PYTHON" - "$REGEN_JSONL" "$FILTERED" <<'EOF'
+import json, os, sys
 src, dst = sys.argv[1], sys.argv[2]
+keep_truncated = os.environ.get("KEEP_TRUNCATED") == "1"
 kept = dropped = bad = 0
 with open(src, encoding="utf-8") as f, open(dst, "w", encoding="utf-8") as out:
     for line in f:
@@ -50,7 +51,7 @@ with open(src, encoding="utf-8") as f, open(dst, "w", encoding="utf-8") as out:
         except json.JSONDecodeError:
             bad += 1
             continue
-        if row.get("metadata", {}).get("truncated"):
+        if not keep_truncated and row.get("metadata", {}).get("truncated"):
             dropped += 1
             continue
         conv = row.get("conversations") or []
@@ -63,7 +64,6 @@ with open(src, encoding="utf-8") as f, open(dst, "w", encoding="utf-8") as out:
         kept += 1
 print(f"[prepare] kept {kept}, dropped {dropped} truncated, {bad} unparsable -> {dst}")
 EOF
-fi
 
 cd "$REPO"
 "$PYTHON" scripts/prepare_data.py \

@@ -3,6 +3,7 @@
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import torch
 from datasets import Dataset as HFDataset
 from tqdm import tqdm  # type: ignore[import-untyped]
@@ -31,15 +32,24 @@ def save_token_frequency_distribution(
     if path.exists():
         return
 
+    # Batched numpy pass (same counts as the old per-row loop, far faster on
+    # large sets: the per-row torch path ran at ~10 rows/s on 777k rows).
     token_freq: Counter[int] = Counter()
-    for item in tqdm(dataset, desc="Counting token frequencies"):
-        input_ids = item["input_ids"]
-        loss_mask = item["loss_mask"]
-        # Only count tokens where loss_mask is 1 (assistant tokens)
-        masked_token_ids = input_ids[loss_mask.to(torch.bool)]
-        unique_ids, counts = masked_token_ids.unique(return_counts=True)
-        batch_token_freq = dict(zip(unique_ids.tolist(), counts.tolist(), strict=True))
-        token_freq.update(batch_token_freq)
+    plain = dataset.with_format(None) if hasattr(dataset, "with_format") else dataset
+    batch_size = 2048
+    total = len(plain)
+    for start in tqdm(range(0, total, batch_size), desc="Counting token frequencies"):
+        batch = plain[start : start + batch_size]
+        ids = np.concatenate(
+            [
+                np.asarray(i, dtype=np.int64)[np.asarray(m, dtype=bool)]
+                for i, m in zip(batch["input_ids"], batch["loss_mask"], strict=True)
+            ]
+        )
+        if ids.size == 0:
+            continue
+        unique_ids, counts = np.unique(ids, return_counts=True)
+        token_freq.update(dict(zip(unique_ids.tolist(), counts.tolist(), strict=True)))
 
     token_freq_dict = dict(token_freq)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
