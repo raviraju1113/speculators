@@ -85,6 +85,13 @@ experiments:
     speculative_config: {method: dflash}
     num_speculative_tokens: 6
 
+  # incoai warm-started on our clean shard-A on-policy data for half an epoch (1,824 steps,
+  # LR 2e-5): does our data/recipe move a strong draft up or down?
+  - name: incoai_ftA_half_k7
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/incoai_ft_onpolicyA_half/checkpoints_vllm/final
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+
   - name: abl_A0_k6_rep2                # control re-run: run-to-run noise floor
     draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A0_control/checkpoints_vllm/final
     speculative_config: {method: dflash}
