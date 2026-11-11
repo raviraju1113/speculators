@@ -1,0 +1,80 @@
+# Architecture ablations A0-A3 (from scratch, clean shard-A on-policy data, 2 epochs, LR 5e-5),
+# final checkpoint of each, on the FP8 GLM-5.3 single-B200 vLLM 0.33 server used for all our
+# evals. 8 benchmarks x 50 prompts (aime 30) for a less noisy comparison than the 3-bench set;
+# per-position acceptance comes from each experiment's server.log.
+#   A0 control: our taps [7,20,44,57,71], 5L/head_dim 64, block 7 (k=6)
+#   A1: incoai taps (vLLM ids 6 20 34 48 62 76), otherwise A0
+#   A2: A1 + incoai decoder shape (6L, head_dim 128, 8 KV heads, rope 1e6)
+#   A3: A2 + block 8 (k=7)
+# Drafts: output/<run>/checkpoints_vllm/final (export_dflash2_vllm.py of checkpoints/epoch1_end).
+#
+#   srun --jobid=<eval alloc> --overlap -N1 -n1 /usr/bin/bash \
+#     examples/train/glm53/run_eval_glm53_1node.sh examples/train/glm53/eval_glm53_ablations_fp8_v033.yaml --only abl_A0_k6
+
+engine: vllm
+backbone: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3
+gpus: "0,1,2,3,4,5,6,7"
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.92
+  max_model_len: 32768
+  health_timeout: 3600
+  extra_args:
+    - --distributed-executor-backend
+    - mp
+    - --block-size
+    - "64"
+    - --kv-cache-dtype
+    - auto
+    - --enable-expert-parallel
+    - --trust-remote-code
+    - --served-model-name
+    - glm-5.3
+    - --max-num-seqs
+    - "32"
+
+eval:
+  backend: vllm
+  mode: acceptance
+  benchmarks: [aime, gpqa, livecodebench, gsm8k, math500, humaneval, mbpp, mt-bench]
+  num_samples: 50
+  max_tokens: 4096
+  temperature: 1.0
+  top_p: 0.95
+  seed: 42
+  extra_body:
+    chat_template_kwargs:
+      reasoning_effort: max
+      clear_thinking: true
+
+output_dir: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/eval/glm53-ablations-fp8-v033
+
+experiments:
+  - name: abl_A0_k6
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A0_control/checkpoints_vllm/final
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: abl_A1_k6
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A1_incoai_taps/checkpoints_vllm/final
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: abl_A2_k6
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A2_incoai_shape/checkpoints_vllm/final
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
+  - name: abl_A3_k7
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A3_incoai_shape_block8/checkpoints_vllm/final
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+
+  - name: abl_A0_k6_rep2                # control re-run: run-to-run noise floor
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A0_control/checkpoints_vllm/final
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+    eval: {seed: 43}
