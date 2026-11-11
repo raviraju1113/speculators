@@ -73,6 +73,18 @@ experiments:
     speculative_config: {method: dflash}
     num_speculative_tokens: 7
 
+  # References on the same 8 benches: the incoai card draft (= A3's architecture) and our best
+  # production draft (off-policy Kimi recipe + clean on-policy FT, epoch 2).
+  - name: incoai_k7
+    draft: /import/ml-sc-nlpcheckpoints-scratch3/mengmengj/glm-5.3-dflash2-incoai
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 7
+
+  - name: ftA_ep2best_k6
+    draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_dflash2_onpolicyA_ft3ep_lr2e-5/snapshots_vllm/ep2_end_best
+    speculative_config: {method: dflash}
+    num_speculative_tokens: 6
+
   - name: abl_A0_k6_rep2                # control re-run: run-to-run noise floor
     draft: /import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/output/glm53_abl_A0_control/checkpoints_vllm/final
     speculative_config: {method: dflash}
