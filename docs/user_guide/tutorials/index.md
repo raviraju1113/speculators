@@ -46,7 +46,7 @@ Same Gemma-4-31B-it + Google Assistant (MTP) k=5 configuration on 4× A100 (vLLM
 
 ## [Throughput vs. Interactivity](throughput_interactivity.md)
 
-Measure output-token throughput against per-user speed for a server with one or more speculators, the way InferenceX does, on real prompts.
+Run concurrency sweeps with AIPerf and view historical throughput-versus-interactivity comparisons.
 
 ## [Serve in vLLM](serve_vllm.md)
 

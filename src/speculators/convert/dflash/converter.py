@@ -98,18 +98,12 @@ class DFlashConverter:
         }
 
         verifier_config_dict, _ = PretrainedConfig.get_config_dict(base_model)
-        # Multimodal verifiers (e.g. gemma4) nest the decoder settings under
-        # text_config; read through to it so hidden_size/num_hidden_layers
-        # resolve for those too.
-        if "num_hidden_layers" not in verifier_config_dict and isinstance(
-            verifier_config_dict.get("text_config"), dict
-        ):
-            verifier_config_dict = {
-                **verifier_config_dict,
-                **verifier_config_dict["text_config"],
-            }
+        # Multimodal verifiers (e.g. Qwen3.5) nest the text model's dimensions
+        verifier_text_config = (
+            verifier_config_dict.get("text_config") or verifier_config_dict
+        )
         source_hidden = transformer_config.get("hidden_size")
-        target_hidden = verifier_config_dict.get("hidden_size")
+        target_hidden = verifier_text_config.get("hidden_size")
         if source_hidden and target_hidden and source_hidden != target_hidden:
             raise ValueError(
                 f"Architecture mismatch: source DFlash checkpoint has "
@@ -130,7 +124,7 @@ class DFlashConverter:
             # Exclude the last verifier layer — it is always included
             # implicitly by launch_vllm.py (--include-last-layer) and split
             # off as verifier_last_hidden_states during training.
-            num_verifier_layers = verifier_config_dict["num_hidden_layers"]
+            num_verifier_layers = verifier_text_config["num_hidden_layers"]
             aux_hidden_state_layer_ids = [
                 i + 1 for i in target_layer_ids if i + 1 != num_verifier_layers
             ]

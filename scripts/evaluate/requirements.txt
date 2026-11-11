@@ -1,14 +1,14 @@
-# Core dependencies for performance benchmarking with guidellm
-vllm>=0.12.0
-guidellm~=0.7.1
-speculators>0.7.1
+# Installs Speculators, the pinned AIPerf client, and the MRCR dataset plugin.
+# Run from the repository root.
+-e .
+-e ./scripts/evaluate
 
-# Visualization dependencies
+# Server-side evaluators in this fork: mtp_server_eval/ (GuideLLM modes and
+# direct /metrics eval), experiments/ (config-driven runs), and their plots.
+guidellm~=0.7.1
 matplotlib
 numpy
 scikit-learn
 scipy
-
-# Direct server eval (mtp_server_eval/) + config-driven experiments (experiments/)
 requests
 pyyaml
