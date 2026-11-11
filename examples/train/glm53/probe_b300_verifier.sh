@@ -58,7 +58,7 @@ children+=($!)
 cd "$SNAP"
 ARGS=(--tensor-parallel-size 8 --host 0.0.0.0 --port "$VLLM_PORT"
       --max-model-len $((SEQ_LEN + 1024)) --max-num-batched-tokens 32768
-      --max-num-seqs 256 --gpu-memory-utilization 0.90 --block-size 64
+      --max-num-seqs 256 --gpu-memory-utilization "${GPU_MEM_UTIL:-0.80}" --block-size 64
       --no-enable-prefix-caching --enforce-eager)
 # shellcheck disable=SC2206
 ARGS+=(${VLLM_EXTRA_ARGS:-})
