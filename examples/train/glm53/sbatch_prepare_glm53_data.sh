@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full GLM-5.3 data prep on a dedicated node (the login node ran the 777k-row prep at ~10 rows/s
 # under load 200+). CPU only; an idle A100 node is fine. Usage:
-#   sbatch --nodelist=<node> examples/train/glm53/sbatch_prepare_glm53_data.sh
+#   sbatch --nodelist=<node> --gres=gpu:1 examples/train/glm53/sbatch_prepare_glm53_data.sh   (gpuonly QOS needs >=1 GPU)
 # Env (all optional): REGEN_JSONL OUTPUT SEQ_LENGTH KEEP_TRUNCATED WORKERS (see prepare_glm53_data.sh)
 #SBATCH --job-name=glm53_prep
 #SBATCH --partition=gpuonly
