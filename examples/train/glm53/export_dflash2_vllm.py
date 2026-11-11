@@ -69,6 +69,8 @@ def main() -> None:
             "selector_top_k": cfg["selector_top_k"],
             "target_layer_ids": [i - 1 for i in aux],
             "causal": not cfg.get("sliding_window_non_causal", True),
+            # Explicit for SGLang, whose DSpark/NVFP4 config readers default it to True.
+            "sample_from_anchor": False,
         },
     )
     if cfg.get("target_hidden_size") is not None:
