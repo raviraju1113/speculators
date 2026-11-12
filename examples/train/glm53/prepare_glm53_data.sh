@@ -29,7 +29,10 @@ REGEN_JSONL="${REGEN_JSONL:-$REPO/data/glm53/nemo782k_regen_glm53.jsonl}"
 OUTPUT="${OUTPUT:-/import/ml-sc-scratch1/mengmengj/datasets/glm53_nemotron_782k}"
 SEQ_LENGTH="${SEQ_LENGTH:-8192}"
 WORKERS="${WORKERS:-32}"
-ASSISTANT_PATTERN="${ASSISTANT_PATTERN:-<\\|assistant\\|>((?:(?!<\\|assistant\\|).)*?)(?=<\\|user\\|>|$)}"
+# Default kept in a single-quoted variable: inlining it in ${ASSISTANT_PATTERN:-...} trips the
+# parser of the bash on some nodes ("command substitution: syntax error near `?!'", sc3-c98).
+DEFAULT_ASSISTANT_PATTERN='<\|assistant\|>((?:(?!<\|assistant\|).)*?)(?=<\|user\|>|$)'
+ASSISTANT_PATTERN="${ASSISTANT_PATTERN:-$DEFAULT_ASSISTANT_PATTERN}"
 PYTHON="${PYTHON:-/import/ml-sc-scratch1/mengmengj/condaenvs/dspark/bin/python}"
 
 FILTERED="${REGEN_JSONL%.jsonl}.clean.jsonl"
