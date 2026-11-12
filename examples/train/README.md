@@ -1170,6 +1170,7 @@ Findings for curation:
   (`--gres=gpu:1` needed for the gpuonly QOS); the login node at load 200 ran it at 10 rows/s.
 - B300 verifier probe (PLAN layout A): gate passed (finite, lm_head top-1 agreement 0.73-0.93); load test passes at 32 concurrent
   requests with `--gpu-memory-utilization 0.80` (0.90 OOMs); 64 overflows the Mooncake store. Trainer must keep <= 32 in flight.
+- **SOTA run launched 2026-11-12 09:38**: `glm53_dflash2_sota1_L5_lr2e-4_wsd` via `sbatch_glm53_dflash2_layoutA.sh` — verifier job 17375750 on sc3-c131 (B300), trainer job 17375751 on sc3-cp108 (B200). Settings: incoai shape L5 (`glm53_dflash2_incoai_shape_L5.json`), taps vLLM ids 6 20 34 48 62 76, block 8 / 512 anchors, kl_div + fixed-exp-decay γ4, AdamW LR 2e-4 wd 0, WSD (warmup 4 %, decay last 15 %), 5 epochs, checkpoint + val every 0.5 epoch, 16k packed sequences × 8 ranks, train ratio 0.998, wandb `mmj710-stanford-university/glm53_dflash2`. Run dir `output/glm53/<run>/run`, checkpoints `output/glm53/<run>/checkpoints`. ravir's 2.5-epoch off-policy ablations (eval `glm53-ablations-fp8-v033`, mean accept_len over 8 benchmarks): Kimi taps 2.72 / incoai taps 2.75 / incoai shape 2.94 / incoai shape + block 8 2.98; on-policy FT of the Kimi draft 3.28; incoai 4.13, incoai + half-A on-policy FT 4.22 — supports the shape + block-8 choice.
 
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
