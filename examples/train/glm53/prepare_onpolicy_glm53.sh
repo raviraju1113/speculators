@@ -22,6 +22,8 @@
 #   OUTPUT       dataset dir (required)
 #   SEQ_LENGTH   default 16384
 #   WORKERS      tokenizer processes (default 32)
+#   KEEP_TRUNCATED=1  keep rows cut by max_tokens (only skips that drop; earlier-turn
+#                     reasoning is still stripped). Matches Mengmeng's prepare_glm53_data.sh.
 set -euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
@@ -40,8 +42,9 @@ FILTERED="${FILTERED:-${OUTPUT}.clean.jsonl}"
 mkdir -p "$(dirname "$FILTERED")"
 if [ ! -s "$FILTERED" ]; then
     "$PYTHON" - "$REGEN_JSONL" "$FILTERED" <<'EOF'
-import json, sys
+import json, os, sys
 src, dst = sys.argv[1], sys.argv[2]
+keep_truncated = os.environ.get("KEEP_TRUNCATED") == "1"
 kept = dropped = bad = 0
 with open(src, encoding="utf-8") as f, open(dst, "w", encoding="utf-8") as out:
     for line in f:
@@ -54,7 +57,8 @@ with open(src, encoding="utf-8") as f, open(dst, "w", encoding="utf-8") as out:
             bad += 1
             continue
         conv = row.get("conversations") or []
-        if row.get("metadata", {}).get("truncated") or not conv or conv[-1].get("from") != "gpt":
+        truncated = row.get("metadata", {}).get("truncated") and not keep_truncated
+        if truncated or not conv or conv[-1].get("from") != "gpt":
             dropped += 1
             continue
         for t in conv[:-1]:

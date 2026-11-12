@@ -4,6 +4,10 @@
 
 ## TL;DR
 
+> **Update 2026-11-12:**
+> - **incoai's weights can't be used in production (license).** The 4.04 incoai-fine-tuned draft is analysis-only. The best shippable draft is our own `ftA_ep2best`.
+> - **Next:** full-scale A0 vs A3 training on the full on-policy + multilingual regen, handed to Mengmeng. See [`HANDOFF_full_scale_A0_A3.md`](HANDOFF_full_scale_A0_A3.md).
+
 - **Our best draft from our own training reaches 77–80% of incoai's acceptance.** It was trained off-policy for 10 epochs, then fine-tuned for 2 epochs on GLM-5.3's own answers.
   - 22-bench FP8: accept_len 2.99 vs 3.89 (2.01× vs 2.53× speedup).
   - 8-bench suite: 3.14 vs 3.95.

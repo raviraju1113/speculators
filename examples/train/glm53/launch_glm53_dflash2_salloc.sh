@@ -20,8 +20,9 @@ set -euo pipefail
 : "${REPO:?frozen code snapshot}"
 export REPO
 export RUN_NAME="${RUN_NAME:-glm53_dflash2_gemma782k_kimirecipe}"
-export RUN_DIR="${RUN_DIR:-/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/runs/${RUN_NAME}_$(date +%Y%m%d_%H%M%S)}"
-LOG="/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2/logs/${RUN_NAME}_srun_$(date +%Y%m%d_%H%M%S).log"
+export WORK="${WORK:-/import/ml-sc-scratch1/ravir/spec_decoding_work/glm53_dflash2}"   # also read by run_glm53_dflash2_3node.sh
+export RUN_DIR="${RUN_DIR:-$WORK/runs/${RUN_NAME}_$(date +%Y%m%d_%H%M%S)}"
+LOG="$WORK/logs/${RUN_NAME}_srun_$(date +%Y%m%d_%H%M%S).log"
 mkdir -p "$(dirname "$LOG")"
 setsid nohup srun --jobid="$JOBID" --overlap -N3 -n3 --ntasks-per-node=1 --kill-on-bad-exit=0 \
     bash "$REPO/examples/train/glm53/run_glm53_dflash2_3node.sh" > "$LOG" 2>&1 < /dev/null &
