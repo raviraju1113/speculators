@@ -1149,6 +1149,28 @@ Findings for curation:
 4. Quality spot checks (4 rows read in full, 2026-11-09/10): reasoning is coherent, answers correct,
    no looping, finish=stop; single-node B300 output remains 0 GARBAGE rows across all 737k.
 
+### 9.u.3 Data complete (2026-11-12 09:20): 777,925 English + 50,000 multilingual rows, 0 garbage
+
+- English regen finished Nov 11 08:27 (rem1 50,305 + rem2 50,277 on the B300s; 765 oversize prompts rejected with HTTP 400). All six
+  shard files merged, deduplicated by id, into `data/glm53/nemo782k_regen_glm53_all.jsonl` (777,925 rows, 16.4 GB). The shard files and
+  the merged file are chmod a-w.
+- Multilingual: ravir's `prompts_v2/prompts_multilingual_all.jsonl` (152,496 single-turn prompts, 13 languages + OPUS translation).
+  A seeded 50,000-row random sample (`data/glm53/prompts_mling_v2_50k.jsonl`, seed 20261111, language proportions preserved) was
+  regenerated with the standard settings in two halves on c130/c131 (jobs 17155401, 17206159; ~1,700 rows/h per node, ~2,150 tok/s).
+  50,000 rows, 0 garbage, 0 errors, 12.6% truncated. Per-language truncation follows the source: Nemotron-sourced fr/ja/de/es/it ~20%
+  (math-heavy), WildChat-sourced zh/ru/ar/ko/pt/vi 2-8%. Looping (zlib ratio < 0.15) <= 0.04% everywhere. Replies are in the prompt's
+  script for 88-95% of zh/ar/th/ru rows; the Japanese "misses" (41%) are answer-only `\boxed{}` math replies and translate-to-English
+  prompts, i.e. correct behaviour.
+- Merged training pool: `data/glm53/nemo782k_mling50k_regen_glm53.jsonl` (827,925 rows, a-w). Prep: job 17373466 on sc3-c97 ->
+  `/import/ml-sc-scratch1/mengmengj/datasets/glm53_nemotron_782k_mling50k_s16k` (SEQ 16384, truncated kept). The English-only prep
+  `glm53_nemotron_782k_s16k` (777,925 rows, 30 shards, 14.5 GB) was built Nov 11 in 52 min on the same node.
+- Prep bug fixed Nov 11 (commit 8d16491d): `KEEP_TRUNCATED=1` used to skip the whole filter, so the `<think>` blocks of earlier
+  assistant turns (every multi-turn row, 11%) stayed in; the blanking now always runs. Token-frequency counting vectorised
+  (identical counts, 32x faster). Prep runs on a dedicated node via `examples/train/glm53/sbatch_prepare_glm53_data.sh`
+  (`--gres=gpu:1` needed for the gpuonly QOS); the login node at load 200 ran it at 10 rows/s.
+- B300 verifier probe (PLAN layout A): gate passed (finite, lm_head top-1 agreement 0.73-0.93); load test passes at 32 concurrent
+  requests with `--gpu-memory-utilization 0.80` (0.90 OOMs); 64 overflows the Mooncake store. Trainer must keep <= 32 in flight.
+
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
 **Goal.** Establish the number the DFlash2 draft must beat: GLM-5.3 served with its own
