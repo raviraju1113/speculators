@@ -1,3 +1,5 @@
+import tempfile
+import os
 import bisect
 import io
 import json
@@ -11,7 +13,7 @@ from typing import cast
 import pyarrow as pa
 import pyarrow.json as paj
 import torch
-from datasets import Dataset as HFDataset
+from datasets import load_from_disk, Dataset as HFDataset
 from datasets import concatenate_datasets, load_dataset
 from datasets.exceptions import DatasetGenerationError
 from packaging.version import Version
@@ -774,7 +776,18 @@ def _load_local_json_dataset(train_data_path: str) -> HFDataset:
     )
     log.info(f"Loaded {table.num_rows} records with columns {table.schema.names}")
 
-    return HFDataset(table)
+    # Materialise the table on disk and reopen it memory-mapped. An in-memory
+    # HFDataset is pickled to every .map(num_proc=N) worker (N copies of the whole
+    # table through pipes): 827k rows ran at ~150 rows/s with 48 workers and
+    # OOM-killed a 500 GB node with 80, against ~1,600 rows/s for the mmap path.
+    cache_root = os.environ.get("SPECULATORS_RAW_CACHE") or os.path.dirname(
+        os.path.abspath(train_data_path)
+    )
+    cache_dir = tempfile.mkdtemp(prefix=".raw_cache_", dir=cache_root)
+    HFDataset(table).save_to_disk(cache_dir)
+    del table
+    log.info(f"Raw table cached at {cache_dir} (delete after preprocessing)")
+    return load_from_disk(cache_dir)
 
 
 def load_raw_dataset(
