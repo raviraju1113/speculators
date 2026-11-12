@@ -1,5 +1,9 @@
 # GLM-5.3 DFlash2 draft — eval results (2026-11-03 .. 11-06)
 
+> **Start with [`../SUMMARY.md`](../SUMMARY.md)**: the whole GLM-5.3 DFlash2 story (training
+> lineage, the incoai gap analysis, conclusions, next steps). This file covers the Nov 3–6 eval
+> suites in detail.
+
 Draft acceptance for our GLM-5.3 DFlash2 drafts vs the released incoai GLM-5.3-DFlash2 card
 draft, measured with Mengmeng's evaluation harness (`scripts/evaluate/experiments/run_experiments.py`
 + `mtp_server_eval/run_vllm_eval.py` on `mengmengj/glm-dflash2`).

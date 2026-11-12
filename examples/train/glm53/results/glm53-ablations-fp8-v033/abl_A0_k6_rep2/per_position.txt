@@ -1,0 +1,3 @@
+draft_steps 353329
+per_position 0.646 0.382 0.215 0.119 0.065 0.032
+accept_len 2.459
