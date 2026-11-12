@@ -12,7 +12,8 @@
 #   REPO                 frozen code snapshot (never the live worktree)
 #   DATA_PATH            prepared dataset dir (trainer waits for its token_freq.pt)
 #   DRAFT_CONFIG, TARGET_LAYER_IDS (vLLM ids), BLOCK_SIZE, LR, EPOCHS, SCHEDULER (wsd),
-#   WSD_DECAY_RATIO, WARMUP_RATIO, CHECKPOINT_FREQ, FROM_PRETRAINED, VLLM_EXTRA_ARGS, SMOKE=1
+#   WSD_DECAY_RATIO, WARMUP_RATIO, SCHEDULER_TOTAL_STEPS, CHECKPOINT_FREQ, FROM_PRETRAINED,
+#   VLLM_EXTRA_ARGS, SMOKE=1 MAX_STEPS=n (step cap), VERIFIER_DIR (share another run's verifier)
 set -uo pipefail
 : "${ROLE:?ROLE=verifier|trainer}"; : "${RUN_NAME:?}"; : "${RUN_DIR:?}"; : "${REPO:?frozen snapshot}"
 VENV="${VENV:-/import/ml-sc-scratch1/ravir/envs/glm53_dflash2}"
@@ -98,17 +99,20 @@ if [ "$ROLE" = verifier ]; then
 fi
 
 # ---- trainer (B200) ---------------------------------------------------------
-echo "waiting for the prepared data ($DATA_PATH/token_freq.pt) and the verifier (ip_verifier)"
+# VERIFIER_DIR: another run's RUN_DIR whose verifier this trainer shares (pilot arms); the
+# shared verifier only stops on its own RUN_DIR's TRAIN_DONE, i.e. by hand (scancel).
+VERIFIER_DIR="${VERIFIER_DIR:-$RUN_DIR}"
+echo "waiting for the prepared data ($DATA_PATH/token_freq.pt) and the verifier ($VERIFIER_DIR/ip_verifier)"
 for _ in $(seq 1 1440); do   # up to 12 h: covers the data prep + the 1.5 TB weight load
-    [ -e "$RUN_DIR/VLLM_DIED" ] && { echo "!! verifier died"; exit 1; }
-    [ -s "$RUN_DIR/ip_verifier" ] && [ -e "$DATA_PATH/token_freq.pt" ] && break
+    [ -e "$VERIFIER_DIR/VLLM_DIED" ] && { echo "!! verifier died"; exit 1; }
+    [ -s "$VERIFIER_DIR/ip_verifier" ] && [ -e "$DATA_PATH/token_freq.pt" ] && break
     sleep 30
 done
-VIP=$(cat "$RUN_DIR/ip_verifier") || { echo "!! no verifier"; exit 3; }
+VIP=$(cat "$VERIFIER_DIR/ip_verifier") || { echo "!! no verifier"; exit 3; }
 echo "verifier at $VIP; data ready $(date '+%T')"
 until curl -sf "http://$VIP:$VLLM_PORT/v1/completions" -H 'Content-Type: application/json' \
         -d '{"model":"'"$MODEL"'","prompt":"1+1=","max_tokens":1}' >/dev/null 2>&1; do
-    [ -e "$RUN_DIR/VLLM_DIED" ] && { echo "!! verifier died"; exit 1; }; sleep 15
+    [ -e "$VERIFIER_DIR/VLLM_DIED" ] && { echo "!! verifier died"; exit 1; }; sleep 15
 done
 echo "verifier answers a completion"
 
