@@ -252,3 +252,21 @@ scaled by target size), i.e. 4–6 days on one 8-GPU node.
   draft-vocab mapping must be the checkpoint's `d2t/t2d` (rebuilt from
   token_freq it differs -> slot-0 acc 0.00); anchor offset corrected to the
   last verified token. Gate 2 passed (argmax match 0.997).
+- 2026-11-04 **track A verdict: closed, negative.** Pool after 1 round: c
+  (ordinary loss) 0.469, b (OPD λ0.05) 0.460, a (OPD + replay) 0.441 (flat),
+  b1 (λ=1) 0.395; seed 0.441. Benchmarks k=12 (seed 7.19/4.64/5.80): c34
+  flat, b34 −3/−1/−1%, a34 −4/−2/−2%, b35 −7/−5/−7%, a35 −10/−5/−9%, b1_34
+  −11/−6/−8%, c35 −4/−4/−5%. OPD < plain-SFT control at every round.
+- 2026-11-04/05 **arm d** (paper's exact loss, λ 1 + γ^(k−1), seed blk12
+  ep28, job 15659070): pool 0.421 → 0.365 in one round, guard stopped;
+  benchmarks 6.81/4.52/5.55 → 5.97/4.16/5.09 (−12/−8/−8%).
+- 2026-11-05/06 **arm e/f** (under-trained seed conv ep8, val 4.23 = 89% of
+  ep25, k=8; e = OPD λ0.05 job 15955532, f = plain SFT on e's rollouts job
+  16091747 after 15958487 died in the dataset build — env fix in
+  run_rounds.sh): seed 5.47/3.92/4.57 → e9 5.60/3.93/4.63, f9
+  **5.67/3.96/4.67**. Control wins; the gain is the anneal. **OPD closed at
+  any seed epoch.**
+- 2026-11-09 report `draft_opd_report.html` written (served on snvm-web
+  under `/ml/` and `/mengmengj/`), GLM decision recorded in README.md:
+  no OPD stage for the GLM-5.3 draft; pipeline kept for an emergency
+  rollout+SFT anneal and an optional 1-GPU-day pilot with a control arm.

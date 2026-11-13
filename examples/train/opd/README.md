@@ -1,11 +1,26 @@
 # Draft-OPD on the Gemma-4-31B DSpark draft — status and lessons
 
-Status (2026-11-04): **tried twice, works mechanically, not adopted — closed.** Eight rounds of
-on-policy post-training raised acceptance on its own prompt pool by 22% and
-lowered it on every standard benchmark by 9–18%. The served draft remains the
-SFT checkpoint `conv_blk12/checkpoints/33` at k=12 (main README §0). This doc
-is the summary; `PLAN.md` is the chronological log; the paper is
-[arXiv 2605.29343](https://arxiv.org/abs/2605.29343).
+Status (2026-11-09): **closed at any seed epoch — not adopted, and not planned
+for the GLM-5.3 draft.** Across v2, track A (arms a/b/b1/c), arm d and arm
+e/f — three seeds (blk12 ep33, blk12 ep28, conv ep8), λ_rej 0.05 and 1, both
+decays, two pools, with and without SFT replay — no OPD arm beat the
+ordinary-loss control trained on the same on-policy rollouts on AIME / GPQA /
+LiveCodeBench, and on converged seeds every OPD arm lost 1–18%. The served
+draft remains the SFT checkpoint `conv_blk12/checkpoints/33` at k=12 (main
+README §0). This doc is the summary (§6 has every arm and the verdicts by
+date); `PLAN.md` is the chronological log; the shareable write-up is
+`draft_opd_report.html` (served at
+<https://snvm-web.sambanovasystems.com/ml/draft_opd_report.html>); the paper
+is [arXiv 2605.29343](https://arxiv.org/abs/2605.29343).
+
+**Decision for GLM-5.3 (2026-11-09):** do not use Draft-OPD on the DFlash2
+draft. Train with the SFT recipe to convergence with the LR anneal run to the
+end and serve that checkpoint. Two narrow uses of the pipeline remain: (1) if
+a run has to stop before its anneal, one round of on-policy rollouts + plain
+SFT on them recovers part of the gap in ~30 min (arm f); (2) only if there is
+slack after the draft is trained, one pilot OPD round against a plain-SFT
+control on the same rollouts (~1 GPU-day) to confirm the verdict for a
+full-vocab draft — a check, never a planned stage.
 
 ## 1. What Draft-OPD does
 
@@ -354,6 +369,14 @@ AIME/GPQA/LCB with no loss at k=8. A realistic win is +0.3…+0.5 accept_len,
 the paper's +8%; three points is not on the table.
 
 ## 7. Pointers
+
+- `draft_opd_report.html` (this directory) — standalone HTML report for
+  sharing: conclusion, setting-vs-paper table, chart and table of every arm,
+  what the sweep rules out, GLM decision. Copies served at
+  <https://snvm-web.sambanovasystems.com/ml/draft_opd_report.html> and
+  <https://snvm-web.sambanovasystems.com/mengmengj/draft_opd_report.html>
+  (web root is `/home/snvm_webadmin/`; basic auth = username before the @);
+  claude.ai artifact <https://claude.ai/artifact/2SruxA7w24vUW9XN5yiB1B>.
 
 - Log with every job id and diagnosis: `PLAN.md`.
 - Driver: `run_rounds.sh` (defaults = v2 recipe), 8×B200 wrapper
