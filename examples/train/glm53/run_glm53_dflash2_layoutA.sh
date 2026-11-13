@@ -143,7 +143,7 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node 8 \
     --vllm-endpoint "http://$VIP:$VLLM_PORT/v1" \
     --hidden-states-backend mooncake --mooncake-master "$VIP:$MC_PORT" --mooncake-protocol tcp \
     --on-missing generate --on-generate delete --request-timeout 600 \
-    --num-workers "${NUM_WORKERS:-16}" --prefetch-factor 4 \
+    --num-workers "${NUM_WORKERS:-16}" --prefetch-factor "${PREFETCH:-4}" \
     --save-path "$SAVE_PATH" --log-dir "$RUN_DIR/train_logs" \
     --run-name "$RUN_NAME" --logger wandb \
     --speculator-type dflash2 \
@@ -155,7 +155,7 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node 8 \
     --scheduler-wsd-decay-ratio "${WSD_DECAY_RATIO:-0.15}" \
     --loss-fn kl_div --per-position-loss-weight fixed-exp-decay --dflash-decay-gamma 4 \
     --epochs "${EPOCHS:-5}" --checkpoint-freq "${CHECKPOINT_FREQ:-0.5}" \
-    --train-data-ratio 0.998 \
+    --train-data-ratio "${TRAIN_DATA_RATIO:-0.998}" \
     "${EXTRA[@]+"${EXTRA[@]}"}"
 RC=$?
 echo "=== trainer exited rc=$RC $(date '+%F %T') ==="
