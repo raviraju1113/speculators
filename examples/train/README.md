@@ -1172,6 +1172,48 @@ Findings for curation:
   requests with `--gpu-memory-utilization 0.80` (0.90 OOMs); 64 overflows the Mooncake store. Trainer must keep <= 32 in flight.
 - **SOTA run launched 2026-11-12 09:38**: `glm53_dflash2_sota1_L5_lr2e-4_wsd` via `sbatch_glm53_dflash2_layoutA.sh` — verifier job 17375750 on sc3-c131 (B300), trainer job 17375751 on sc3-cp108 (B200). Settings: incoai shape L5 (`glm53_dflash2_incoai_shape_L5.json`), taps vLLM ids 6 20 34 48 62 76, block 8 / 512 anchors, kl_div + fixed-exp-decay γ4, AdamW LR 2e-4 wd 0, WSD (warmup 4 %, decay last 15 %), 5 epochs, checkpoint + val every 0.5 epoch, 16k packed sequences × 8 ranks, train ratio 0.998, wandb `mmj710-stanford-university/glm53_dflash2`. Run dir `output/glm53/<run>/run`, checkpoints `output/glm53/<run>/checkpoints`. ravir's 2.5-epoch off-policy ablations (eval `glm53-ablations-fp8-v033`, mean accept_len over 8 benchmarks): Kimi taps 2.72 / incoai taps 2.75 / incoai shape 2.94 / incoai shape + block 8 2.98; on-policy FT of the Kimi draft 3.28; incoai 4.13, incoai + half-A on-policy FT 4.22 — supports the shape + block-8 choice.
 
+### 9.u.4 LR pilot done, validation OOM found, reservation lost (2026-11-13 01:00)
+
+- **LR pilot (3 arms × 1,500 steps, shared verifier on c130, jobs 17377297-99): 2e-4 wins.**
+  Means over steps 1,300-1,500 — total loss 2.810 / **2.751** / 2.888, unary loss 1.936 /
+  **1.936** / 2.132, accept rate 0.188 / **0.189** / 0.166, accept_len 1.98 / **1.98** / 1.83
+  for 1e-4 / 2e-4 / 4e-4. 4e-4 only wins the selector loss (0.756 vs 0.815) and spiked to
+  25-30 during warmup. The SOTA run stays at 2e-4; no relaunch. Pilot verifier cancelled 00:00.
+- **All three pilot trainers were SIGKILLed 12-15 min into their first validation pass**
+  (host OOM, not a code error). Cause: the loaders use spawned *persistent* workers; each
+  training rank keeps 16 workers × (2 GB registered Mooncake buffer + 4 prefetched 16k
+  hidden-state batches) ≈ 146 GB of shared memory per rank, ~1.15 TB per node. Validation
+  spawns a second identical loader while the training workers stay alive → exceeds the
+  2.27 TB node. The validation split itself is small (0.2 % = 1,656 random rows, ~6 min of
+  verifier time) and is not the problem. The SOTA trainer (same settings) will hit this at
+  its first epoch end (~Nov 14 19:00); the epoch-end checkpoint is written *before*
+  validation, so no training is lost, but the run needs a restart with a smaller loader.
+- **Fix (launcher knobs, commit 87640d88): `NUM_WORKERS=8 PREFETCH=2`** (16 batches in flight
+  per rank instead of 64; the verifier is the bottleneck, ~80 waiting / <12 running, so
+  throughput is unchanged). Restart = cancel the trainer job only and resubmit it with the
+  knobs; the trainer fast-skips to the saved local_step (sampler slice, no vLLM calls).
+  Scripts: `submit_layoutA_job.sh` (one job, does not clear another run's handshake files),
+  `restart_sota_trainer_small_loader.sh <trainer_jobid>`, `launch_sweep_group1.sh`.
+  Best moment: right after the half-epoch checkpoint `checkpoints/epoch0_step15290`
+  (~Nov 13 16:30), or after the epoch-end checkpoint if the validation crash happens first.
+- **Blocked: reservation sn50-hdi-1 (all B200/B300 nodes) now lists Users=bowenl,ryany only**
+  (changed after our 10:53 submissions; running jobs are kept by IGNORE_JOBS). Every sbatch
+  is refused with "Access denied to requested reservation": no trainer restart, no smoke
+  test, no phase-2 sweep until mengmengj is re-added. No GPU node outside reservations fits
+  (A100-80G ×4/8, H100 ×2; sc3-c127 H200 is in "standup").
+- **Phase-2 sweep, as far as it can go with one verifier:** group mode (PLAN §5.2) is not
+  built and the trainer has no gradient accumulation, so each arm is a full 8-rank B200 node
+  and the shared c130 verifier serves every row once per arm (3 arms → ~20 s/step each, as in
+  the pilot; 8 arms → ~52 s/step, 18 days/epoch: not useful). Prepared: `launch_sweep_group1.sh`
+  = verifier on c130 + depth-4 / depth-6 / K3-served-layout trainers on cp100-102 at the SOTA
+  recipe (compare to the SOTA curve at equal step; ~10k steps ≈ 2.3 days). To validate first
+  on a 2,000-row subset (`datasets/glm53_smoke2k_s16k`): small-loader validation pass, the
+  mid-epoch resume ("Fast-skipping N batches"), and that the K3 layout config loads.
+  Mooncake `--on-generate cache` sharing across arms is NOT safe: an evicted key raises
+  RuntimeError in `hs_connectors/mooncake_store.py`.
+- SOTA status 2026-11-13 00:00: step 5,909, loss 2.06, accept rate 0.32, lr 1.93e-4 (end of
+  warmup), ~6.3 s/step; host memory flat at 1.65-1.70 TB used.
+
 ### 9.w GLM-5.3 baseline evaluation plan (native MTP) — running since 2026-11-02 09:45
 
 **Goal.** Establish the number the DFlash2 draft must beat: GLM-5.3 served with its own
